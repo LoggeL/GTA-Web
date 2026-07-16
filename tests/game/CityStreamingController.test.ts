@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { CityStreamingController } from '../../src/game/CityStreamingController';
+import {
+  CityStreamingController,
+  baseResolutionScaleForQuality,
+} from '../../src/game/CityStreamingController';
 import { currentAndAdjacentCellIds } from '../../src/navigation/cells';
 import type {
   CellId,
@@ -71,6 +74,14 @@ describe('CityStreamingController cell residency', () => {
 });
 
 describe('CityStreamingController quality and adaptive performance', () => {
+  it('caps automatic low quality at 0.8 without rewriting explicit scales', () => {
+    expect(baseResolutionScaleForQuality(1, 'auto', 'low')).toBe(0.8);
+    expect(baseResolutionScaleForQuality(0.65, 'auto', 'low')).toBe(0.65);
+    expect(baseResolutionScaleForQuality(1, 'auto', 'high')).toBe(1);
+    expect(baseResolutionScaleForQuality(1, 'low', 'low')).toBe(1);
+    expect(baseResolutionScaleForQuality(0.7, 'high', 'high')).toBe(0.7);
+  });
+
   it('matches pooled actor capacities and exposes per-quality draw limits', () => {
     const controller = new CityStreamingController({ quality: 'high' });
     controller.updateCells('cell:0:0');

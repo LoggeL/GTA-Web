@@ -31,7 +31,13 @@ Play the latest passing build at **[loggel.github.io/GTA-Web](https://loggel.git
 | Jobs and mission log | J |
 | Pause | Esc |
 
-Landscape mobile play uses a virtual movement stick, right-side camera drag, contextual action buttons, and aim assist. Portrait orientation displays a rotate-device prompt.
+Landscape mobile play uses a virtual movement stick, right-side camera drag, contextual action buttons, and aim assist. Menus remain usable in portrait; active gameplay pauses and asks the player to rotate.
+
+## Browser requirements
+
+Use a current Chrome, Edge, Firefox, or Safari release with WebGL2 and hardware acceleration enabled. Desktop gameplay requires a keyboard and mouse; mobile gameplay is designed for a landscape touch viewport. Web Audio is required for sound, but the game remains playable if audio cannot start.
+
+Persistent progress requires IndexedDB and available browser storage. When storage is unavailable, HEATLINE clearly switches to a session-only mode: the current tab remains playable, but progress is lost when it closes. The interface also provides checked JSON exports for local backups and emergency recovery.
 
 ## Local development
 

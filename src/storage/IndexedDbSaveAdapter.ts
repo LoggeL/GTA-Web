@@ -6,8 +6,12 @@ import type {
   StoredSaveSlotRecord,
 } from '../core';
 
-interface SlotRow extends StoredSaveSlotRecord {
+interface SlotRow {
   slotId: SaveSlotId;
+  active: unknown;
+  backup: unknown | null;
+  /** Rows created before cross-tab CAS support intentionally omit this field. */
+  revision?: number;
 }
 
 interface MetaRow {
@@ -52,18 +56,36 @@ export class IndexedDbSaveAdapter implements SaveStorageAdapter {
     const request = transaction.objectStore(SLOT_STORE).get(slotId);
     const row = await this.#request<SlotRow | undefined>(request);
     await this.#transaction(transaction);
-    return row ? { active: row.active, backup: row.backup } : null;
+    return row ? {
+      active: row.active,
+      backup: row.backup,
+      revision: normalizeRevision(row.revision),
+    } : null;
   }
 
   async writeSlotAtomic(
     slotId: SaveSlotId,
     active: SaveEnvelopeV1,
     backup: SaveEnvelopeV1 | null,
-  ): Promise<void> {
+    expectedRevision?: number,
+  ): Promise<boolean> {
     const database = this.#requireDatabase();
     const transaction = database.transaction(SLOT_STORE, 'readwrite', { durability: 'strict' });
-    transaction.objectStore(SLOT_STORE).put({ slotId, active, backup } satisfies SlotRow);
+    const store = transaction.objectStore(SLOT_STORE);
+    const existing = await this.#request<SlotRow | undefined>(store.get(slotId));
+    const currentRevision = normalizeRevision(existing?.revision);
+    if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+      await this.#transaction(transaction);
+      return false;
+    }
+    store.put({
+      slotId,
+      active,
+      backup,
+      revision: currentRevision + 1,
+    } satisfies SlotRow);
     await this.#transaction(transaction);
+    return true;
   }
 
   async deleteSlot(slotId: SaveSlotId): Promise<void> {
@@ -113,4 +135,8 @@ export class IndexedDbSaveAdapter implements SaveStorageAdapter {
       transaction.addEventListener('error', () => reject(transaction.error ?? new Error('IndexedDB transaction failed')));
     });
   }
+}
+
+function normalizeRevision(value: unknown): number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : 0;
 }

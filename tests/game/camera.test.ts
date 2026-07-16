@@ -40,6 +40,29 @@ describe('third-person camera placement', () => {
     expect(obstructed.safeFraction).toBeLessThan(1);
     expect(obstructed.position.z).toBeLessThan(clear.position.z);
   });
+
+  it('preserves camera placement when streamed blockers are outside the segment bounds', () => {
+    const base = {
+      target: { x: 4, y: 1.5, z: -3 },
+      yaw: 0.35,
+      pitch: 0.28,
+      distance: 7,
+      mode: 'follow' as const,
+      shoulderSide: 'right' as const,
+    };
+    const clear = computeCameraPlacement({ ...base, collisions: [] });
+    const withFarBlockers = computeCameraPlacement({
+      ...base,
+      collisions: Array.from({ length: 200 }, (_, index): CollisionRect => ({
+        minX: 100 + index * 4,
+        maxX: 103 + index * 4,
+        minZ: -300 - index * 3,
+        maxZ: -297 - index * 3,
+        height: 80,
+      })),
+    });
+    expect(withFarBlockers).toEqual(clear);
+  });
 });
 
 describe('camera shake presentation', () => {

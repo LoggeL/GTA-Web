@@ -130,9 +130,24 @@ export function cameraSafeFraction(
   const directionX = desiredCamera.x - target.x;
   const directionY = desiredCamera.y - target.y;
   const directionZ = desiredCamera.z - target.z;
+  const segmentMinX = Math.min(target.x, desiredCamera.x) - padding;
+  const segmentMaxX = Math.max(target.x, desiredCamera.x) + padding;
+  const segmentMinZ = Math.min(target.z, desiredCamera.z) - padding;
+  const segmentMaxZ = Math.max(target.z, desiredCamera.z) + padding;
   let safeFraction = 1;
 
   for (const collision of collisions) {
+    // Most streamed blockers are nowhere near the short follow-camera segment.
+    // Reject them before the more expensive slab tests (which also allocate
+    // interval tuples) without changing the exact intersection result.
+    if (
+      collision.maxX < segmentMinX
+      || collision.minX > segmentMaxX
+      || collision.maxZ < segmentMinZ
+      || collision.minZ > segmentMaxZ
+    ) {
+      continue;
+    }
     let interval = lineInterval(
       target.x,
       directionX,

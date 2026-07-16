@@ -43,14 +43,15 @@ class GatedSaveAdapter extends InMemorySaveAdapter {
     slotId: SaveSlotId,
     active: SaveEnvelopeV1,
     backup: SaveEnvelopeV1 | null,
-  ): Promise<void> {
+    expectedRevision?: number,
+  ): Promise<boolean> {
     const gate = this.nextWriteGate;
     this.nextWriteGate = null;
     if (gate) {
       gate.started();
       await gate.wait;
     }
-    await super.writeSlotAtomic(slotId, active, backup);
+    return super.writeSlotAtomic(slotId, active, backup, expectedRevision);
   }
 }
 
@@ -65,17 +66,89 @@ class FailingSaveAdapter extends InMemorySaveAdapter {
     slotId: SaveSlotId,
     active: SaveEnvelopeV1,
     backup: SaveEnvelopeV1 | null,
-  ): Promise<void> {
+    expectedRevision?: number,
+  ): Promise<boolean> {
     if (this.nextWriteFailure !== undefined) {
       const error = this.nextWriteFailure;
       this.nextWriteFailure = undefined;
       throw error;
     }
-    await super.writeSlotAtomic(slotId, active, backup);
+    return super.writeSlotAtomic(slotId, active, backup, expectedRevision);
   }
 }
 
 describe('CoreSaveService persistence safety', () => {
+  it('exposes previews only from checksummed, fully validated active or backup saves', async () => {
+    const adapter = new InMemorySaveAdapter();
+    const service = new CoreSaveService(adapter);
+    const first = createInitialSaveGame(2, 'feminine', {
+      timestamp: 41,
+      label: 'Coastal run',
+    });
+    first.player.level = 6;
+    first.activeDistrict = 'neon-strand';
+    first.playtimeSeconds = 3_721;
+    first.missions['dock-run'] = {
+      state: 'available',
+      checkpointId: null,
+      completedObjectives: [],
+    };
+    first.missions['coastal-heat'] = {
+      state: 'active',
+      checkpointId: 'reach-pier',
+      completedObjectives: [],
+    };
+    first.missionRuntime = {
+      snapshotVersion: 1,
+      campaign: { activeMissionId: 'coastal-heat' },
+      active: { missionId: 'coastal-heat' },
+    };
+    await service.saveSlot(first);
+
+    expect((await service.listSlots())[1]).toEqual({
+      slotId: 2,
+      status: 'ready',
+      metadata: {
+        id: 2,
+        label: 'Coastal run',
+        createdAt: 41,
+        updatedAt: 41,
+      },
+      preview: {
+        label: 'Coastal run',
+        updatedAt: 41,
+        alexPreset: 'feminine',
+        level: 6,
+        activeMissionId: 'coastal-heat',
+        activeDistrict: 'neon-strand',
+        playtimeSeconds: 3_721,
+      },
+    });
+
+    const second = createSaveWithMoney(2, 90, 42);
+    second.player.level = 19;
+    second.activeDistrict = 'breakwater';
+    await service.saveSlot(second);
+    const record = await adapter.readSlot(2);
+    if (!record || record.backup === null) throw new Error('expected a backup generation');
+    const tamperedActive = record.active as SaveEnvelopeV1;
+    tamperedActive.payload.player.level = 20;
+    await adapter.writeSlotAtomic(2, tamperedActive, record.backup as SaveEnvelopeV1);
+
+    expect((await service.listSlots())[1]).toMatchObject({
+      status: 'recovered',
+      preview: {
+        label: 'Coastal run',
+        updatedAt: 41,
+        alexPreset: 'feminine',
+        level: 6,
+        activeMissionId: 'coastal-heat',
+        activeDistrict: 'neon-strand',
+        playtimeSeconds: 3_721,
+      },
+    });
+  });
+
   it('serializes overlapping autosaves so the backup is the immediately previous good save', async () => {
     const adapter = new GatedSaveAdapter();
     const service = new CoreSaveService(adapter);
@@ -103,6 +176,27 @@ describe('CoreSaveService persistence safety', () => {
       recoveredFromBackup: true,
       save: { player: { money: 20 } },
     });
+  });
+
+  it('retries a cross-service conflict so active and backup are the two newest commits', async () => {
+    const adapter = new GatedSaveAdapter();
+    const firstService = new CoreSaveService(adapter);
+    const secondService = new CoreSaveService(adapter);
+    await firstService.saveSlot(createSaveWithMoney(1, 10, 1));
+
+    const gate = adapter.gateNextWrite();
+    const firstTabWrite = firstService.saveSlot(createSaveWithMoney(1, 20, 2));
+    await gate.started;
+    const secondTabWrite = secondService.saveSlot(createSaveWithMoney(1, 30, 3));
+    await secondTabWrite;
+    gate.release();
+    await firstTabWrite;
+
+    const record = await adapter.readSlot(1);
+    expect(readEnvelopeMoney(record?.active)).toBe(20);
+    expect(readEnvelopeMoney(record?.backup)).toBe(30);
+    expect(readEnvelopeMoney(record?.backup)).not.toBe(10);
+    expect(record?.revision).toBe(3);
   });
 
   it('preserves committed snapshots and provides a valid emergency export on quota failure', async () => {
@@ -197,8 +291,9 @@ describe('CoreSaveService persistence safety', () => {
 
     expect((await service.listSlots())[2]).toEqual({
       slotId: 3,
-      status: 'corrupt',
+      status: 'unsupported-version',
       metadata: null,
+      preview: null,
     });
 
     let failure: unknown;
@@ -213,7 +308,14 @@ describe('CoreSaveService persistence safety', () => {
       code: 'unsupported-version',
       slotId: 3,
     });
-    expect(JSON.parse(readError.preservedSnapshot ?? '{}')).toEqual(futureEnvelope);
+    const preservedSerialization = JSON.stringify(futureEnvelope, null, 2);
+    expect(readError.preservedSnapshot).toBe(preservedSerialization);
+    await expect(service.exportSlot(3)).resolves.toBe(preservedSerialization);
+    await expect(service.saveSlot(createSaveWithMoney(3, 99, 2))).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'unsupported-version',
+      preservedSnapshot: preservedSerialization,
+    });
     expect(await adapter.readSlot(3)).toEqual(storedBeforeLoad);
   });
 
@@ -225,11 +327,15 @@ describe('CoreSaveService persistence safety', () => {
     await adapter.writeSlotAtomic(1, futureEnvelope, olderBackup);
     const storedBeforeOperations = await adapter.readSlot(1);
 
-    expect((await service.listSlots())[0]?.status).toBe('corrupt');
+    expect((await service.listSlots())[0]).toMatchObject({
+      status: 'unsupported-version',
+      preview: null,
+    });
     await expect(service.loadSlot(1)).rejects.toMatchObject({
       name: 'SaveSlotReadError',
       code: 'unsupported-version',
     });
+    await expect(service.exportSlot(1)).resolves.toBe(JSON.stringify(futureEnvelope, null, 2));
     await expect(service.saveSlot(createSaveWithMoney(1, 22, 2))).rejects.toMatchObject({
       name: 'SaveSlotReadError',
       code: 'unsupported-version',
@@ -239,6 +345,78 @@ describe('CoreSaveService persistence safety', () => {
     await service.deleteSlot(1);
     await service.saveSlot(createSaveWithMoney(1, 22, 2));
     expect((await service.loadSlot(1))?.save.player.money).toBe(22);
+  });
+
+  it('preflights an intact future backup before exposing a valid active generation', async () => {
+    const adapter = new InMemorySaveAdapter();
+    const service = new CoreSaveService(adapter);
+    const currentActive = createSaveEnvelopeForTest(createSaveWithMoney(2, 31, 1));
+    const futureBackup = createFutureEnvelope(2, 88);
+    const futureSerialization = JSON.stringify(futureBackup, null, 2);
+    await adapter.writeSlotAtomic(2, currentActive, futureBackup);
+    const storedBeforeOperations = await adapter.readSlot(2);
+
+    expect((await service.listSlots())[1]).toEqual({
+      slotId: 2,
+      status: 'unsupported-version',
+      metadata: null,
+      preview: null,
+    });
+    await expect(service.loadSlot(2)).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'unsupported-version',
+      preservedSnapshot: futureSerialization,
+    });
+    await expect(service.exportSlot(2)).resolves.toBe(futureSerialization);
+    await expect(service.saveSlot(createSaveWithMoney(2, 44, 2))).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'unsupported-version',
+    });
+    expect(await adapter.readSlot(2)).toEqual(storedBeforeOperations);
+  });
+
+  it('refuses every destructive path for unrecoverable corruption until explicit deletion', async () => {
+    const adapter = new InMemorySaveAdapter();
+    const service = new CoreSaveService(adapter);
+    const corrupt = createSaveEnvelopeForTest(createSaveWithMoney(1, 12, 1));
+    corrupt.payload.player.money = 999;
+    await adapter.writeSlotAtomic(1, corrupt, null);
+    const storedBeforeOperations = await adapter.readSlot(1);
+    const importSource = JSON.stringify(
+      createSaveEnvelopeForTest(createSaveWithMoney(2, 55, 4)),
+      null,
+      2,
+    );
+
+    expect((await service.listSlots())[0]).toEqual({
+      slotId: 1,
+      status: 'corrupt',
+      metadata: null,
+      preview: null,
+    });
+    await expect(service.loadSlot(1)).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'corrupt',
+      slotId: 1,
+      preservedSnapshot: null,
+    });
+    await expect(service.exportSlot(1)).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'corrupt',
+    });
+    await expect(service.saveSlot(createSaveWithMoney(1, 22, 2))).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'corrupt',
+    });
+    await expect(service.importIntoSlot(importSource, 1, 5)).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'corrupt',
+    });
+    expect(await adapter.readSlot(1)).toEqual(storedBeforeOperations);
+
+    await service.deleteSlot(1);
+    await service.importIntoSlot(importSource, 1, 6);
+    expect((await service.loadSlot(1))?.save.player.money).toBe(55);
   });
 
   it('does not misclassify a tampered future-version claim as a preservable export', async () => {
@@ -253,6 +431,15 @@ describe('CoreSaveService persistence safety', () => {
       name: 'SaveSlotReadError',
       code: 'corrupt',
       preservedSnapshot: null,
+    });
+    await expect(service.exportSlot(1)).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'corrupt',
+      preservedSnapshot: null,
+    });
+    await expect(service.saveSlot(createSaveWithMoney(1, 25, 2))).rejects.toMatchObject({
+      name: 'SaveSlotReadError',
+      code: 'corrupt',
     });
     expect(await adapter.readSlot(1)).toEqual(storedBeforeLoad);
   });

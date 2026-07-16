@@ -65,6 +65,13 @@ export type DialogueRestoreResult =
   | { success: true; migratedFromVersion: 1 | null }
   | { success: false; reason: string };
 
+export function validateDialogueRuntimeSnapshot(value: unknown): DialogueRestoreResult {
+  const result = parseSnapshot(value);
+  return result.success
+    ? { success: true, migratedFromVersion: result.migratedFromVersion }
+    : result;
+}
+
 export interface DialogueRuntimeOptions {
   entries?: readonly DialogueEntry[];
   missions?: readonly MissionDefinition[];

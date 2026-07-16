@@ -57,6 +57,18 @@ button {
   display: none !important;
 }
 
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+}
+
 .boot-fallback {
   display: grid;
   min-height: 100%;
@@ -83,6 +95,55 @@ button {
   background:
     radial-gradient(circle at 78% 22%, rgb(255 106 61 / 25%), transparent 30%),
     linear-gradient(140deg, #07121b, #163747 60%, #271826);
+}
+
+.persistence-warning {
+  position: absolute;
+  z-index: 120;
+  top: max(0.7rem, env(safe-area-inset-top));
+  right: max(0.7rem, env(safe-area-inset-right));
+  left: max(0.7rem, env(safe-area-inset-left));
+  display: flex;
+  width: min(48rem, calc(100% - 1.4rem));
+  min-height: 3.6rem;
+  margin-inline: auto;
+  padding: 0.72rem 0.85rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border: 1px solid rgb(255 213 106 / 62%);
+  border-left: 0.28rem solid var(--yellow);
+  border-radius: 0.5rem;
+  background: rgb(25 19 10 / 96%);
+  box-shadow: 0 0.9rem 2.5rem rgb(0 0 0 / 56%);
+  pointer-events: auto;
+}
+
+.persistence-warning strong,
+.persistence-warning p {
+  margin: 0;
+}
+
+.persistence-warning strong {
+  display: block;
+  color: var(--yellow);
+  font-size: 0.76rem;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.persistence-warning p {
+  margin-top: 0.18rem;
+  color: var(--ink);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.persistence-warning .button {
+  flex: 0 0 auto;
+  min-height: 2.75rem;
+  padding-block: 0.55rem;
+  font-size: 0.66rem;
 }
 
 .world-mount,
@@ -252,7 +313,11 @@ h3 {
 .menu-screen,
 .loading-screen {
   display: grid;
-  padding: clamp(1rem, 5vw, 5rem);
+  padding:
+    max(clamp(1rem, 5vw, 5rem), env(safe-area-inset-top))
+    max(clamp(1rem, 5vw, 5rem), env(safe-area-inset-right))
+    max(clamp(1rem, 5vw, 5rem), env(safe-area-inset-bottom))
+    max(clamp(1rem, 5vw, 5rem), env(safe-area-inset-left));
   place-items: center;
   background:
     radial-gradient(circle at 75% 25%, rgb(255 106 61 / 24%), transparent 30%),
@@ -304,7 +369,7 @@ h3 {
 }
 
 .wide-card {
-  width: min(94vw, 70rem);
+  width: min(100%, 70rem);
   max-height: 90vh;
   padding: clamp(1.25rem, 4vw, 3rem);
 }
@@ -342,6 +407,24 @@ h3 {
   border-left-color: var(--teal);
 }
 
+.save-card--empty {
+  border-left-color: var(--teal);
+}
+
+.save-card--recovered {
+  border-left-color: var(--yellow);
+}
+
+.save-card--corrupt {
+  border-left-color: var(--danger);
+  background: rgb(255 79 94 / 5%);
+}
+
+.save-card--unsupported-version {
+  border-left-color: #b989ff;
+  background: rgb(185 137 255 / 5%);
+}
+
 .save-card h3,
 .save-card p {
   margin: 0.2rem 0;
@@ -360,9 +443,186 @@ h3 {
   text-transform: uppercase;
 }
 
+.save-card__copy {
+  min-width: 0;
+}
+
+.save-card__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.save-card__status {
+  padding: 0.2rem 0.38rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgb(0 0 0 / 18%);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.save-card--recovered .save-card__status {
+  color: var(--yellow);
+}
+
+.save-card--corrupt .save-card__status {
+  color: #ffadb5;
+}
+
+.save-card--unsupported-version .save-card__status {
+  color: #d8bdff;
+}
+
 .save-card__actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.55rem;
+}
+
+.save-transfer {
+  display: grid;
+  margin-top: 1rem;
+  padding: clamp(0.9rem, 2.5vw, 1.35rem);
+  border: 1px solid var(--line);
+  border-top: 0.2rem solid var(--teal);
+  border-radius: 0.55rem;
+  background: rgb(83 223 208 / 4%);
+  gap: 0.85rem;
+}
+
+.save-transfer h3,
+.save-transfer p {
+  margin: 0;
+}
+
+.save-transfer__intro,
+.save-transfer__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.save-transfer__intro {
+  justify-content: space-between;
+}
+
+.save-transfer__intro > div {
+  min-width: 0;
+}
+
+.save-transfer__intro h3 {
+  margin-top: 0.2rem;
+}
+
+.save-transfer__intro p:not(.eyebrow),
+.save-transfer__actions > small,
+.save-import-review p,
+.save-import-review small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.save-transfer__intro .button {
+  flex: 0 0 auto;
+}
+
+.visually-hidden:focus-visible + .save-import-file-trigger {
+  border-color: var(--teal);
+  outline: 0.15rem solid var(--teal);
+  outline-offset: 0.16rem;
+}
+
+.modal-persistence-warning {
+  margin: 0 0 0.85rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgb(255 193 94 / 42%);
+  border-left: 0.22rem solid var(--yellow);
+  border-radius: 0.42rem;
+  color: #fff4d8;
+  background: rgb(255 193 94 / 8%);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.save-import-review {
+  min-height: 4.5rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--line);
+  border-left: 0.22rem solid var(--muted);
+  border-radius: 0.42rem;
+  background: rgb(0 0 0 / 18%);
+}
+
+.save-import-review strong,
+.save-import-review p,
+.save-import-review small {
+  display: block;
+}
+
+.save-import-review p {
+  margin-top: 0.22rem;
+}
+
+.save-import-review small {
+  margin-top: 0.35rem;
+}
+
+.save-import-review[data-state='valid'] {
+  border-left-color: var(--teal);
+  background: rgb(83 223 208 / 7%);
+}
+
+.save-import-review[data-state='valid'] strong {
+  color: var(--teal);
+}
+
+.save-import-review[data-state='invalid'] {
+  border-left-color: var(--danger);
+  background: rgb(255 79 94 / 6%);
+}
+
+.save-import-review[data-state='invalid'] strong {
+  color: #ffadb5;
+}
+
+.save-transfer__actions {
+  flex-wrap: wrap;
+}
+
+.save-transfer__actions label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.save-transfer__actions select {
+  min-height: 2.75rem;
+  padding: 0.45rem 2.2rem 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  color: var(--ink);
+  background: #0d222c;
+}
+
+.save-transfer__actions > small {
+  flex: 1 1 14rem;
+}
+
+.save-transfer button:disabled,
+.save-transfer select:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .preset-card > p:not(.eyebrow) {
@@ -873,6 +1133,17 @@ kbd {
 .pause-tagline {
   margin: -0.35rem 0 1rem;
   color: var(--muted);
+}
+
+.pause-save-status {
+  margin: 0 0 0.85rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgb(255 182 72 / 48%);
+  border-radius: 0.35rem;
+  background: rgb(53 31 9 / 72%);
+  color: #ffe2a6;
+  font-size: 0.76rem;
+  line-height: 1.45;
 }
 
 .stream-failure-overlay {
@@ -3030,7 +3301,7 @@ kbd {
 }
 
 @media (orientation: portrait) and (pointer: coarse) {
-  .rotate-overlay {
+  .is-playing.is-orientation-blocked .rotate-overlay:not([hidden]) {
     position: absolute;
     z-index: 100;
     inset: 0;
@@ -3086,6 +3357,17 @@ kbd {
 }
 
 @media (max-width: 760px) {
+  .persistence-warning {
+    bottom: max(0.7rem, env(safe-area-inset-bottom));
+    top: auto;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .persistence-warning .button {
+    width: 100%;
+  }
+
   .save-card {
     align-items: stretch;
     flex-direction: column;
@@ -3094,6 +3376,24 @@ kbd {
   .save-card__actions,
   .save-card__actions .button {
     width: 100%;
+  }
+
+  .save-transfer__intro,
+  .save-transfer__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .save-transfer__intro .button,
+  .save-transfer__actions .button,
+  .save-transfer__actions label,
+  .save-transfer__actions select {
+    width: 100%;
+  }
+
+  .save-transfer__actions label {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .preset-grid,
@@ -3274,6 +3574,21 @@ kbd {
 }
 
 @media (max-height: 500px) {
+  .persistence-warning {
+    top: max(0.35rem, env(safe-area-inset-top));
+    bottom: auto;
+    min-height: 2.85rem;
+    padding: 0.42rem 0.55rem;
+  }
+
+  .persistence-warning strong {
+    font-size: 0.66rem;
+  }
+
+  .persistence-warning p {
+    font-size: 0.63rem;
+  }
+
   .pause-overlay,
   .panel-overlay {
     padding:

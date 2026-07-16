@@ -134,6 +134,14 @@ export type RuntimeActionResult =
   | { success: true }
   | { success: false; reason: string };
 
+export function validateMissionRuntimeSnapshot(
+  value: unknown,
+  missions: readonly MissionDefinition[] = MISSIONS,
+): RuntimeActionResult {
+  const result = validateMissionSnapshot(value, missions);
+  return result.success ? { success: true } : result;
+}
+
 export interface MissionRuntimeOptions {
   missions?: readonly MissionDefinition[];
   campaign?: CampaignState;

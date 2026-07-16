@@ -25,15 +25,19 @@ import { validateSaveGame, type SaveValidationRegistry } from './save-validation
 
 export const SAVE_SLOT_IDS: readonly SaveSlotId[] = [1, 2, 3];
 
+const MAX_SAVE_COMMIT_ATTEMPTS = 8;
+
 export interface StoredSaveSlotRecord {
   active: unknown;
   backup: unknown | null;
+  /** Monotonic adapter-owned generation used for optimistic cross-tab commits. */
+  revision: number;
 }
 
 /**
  * Persistence boundary designed for IndexedDB. Implementations must write the
- * active/backup pair in one transaction (temporary record + pointer swap in IDB)
- * and leave the previously committed pair unchanged when that write rejects.
+ * active/backup pair in one transaction, leave the previously committed pair
+ * unchanged when that write rejects, and return false on a revision mismatch.
  */
 export interface SaveStorageAdapter {
   initialize(): Promise<void>;
@@ -42,7 +46,9 @@ export interface SaveStorageAdapter {
     slotId: SaveSlotId,
     active: SaveEnvelopeV1,
     backup: SaveEnvelopeV1 | null,
-  ): Promise<void>;
+    /** Omit only for deliberate administrative/test replacement. */
+    expectedRevision?: number,
+  ): Promise<boolean>;
   deleteSlot(slotId: SaveSlotId): Promise<void>;
   readSettings(): Promise<unknown | null>;
   writeSettingsAtomic(settings: GameSettings): Promise<void>;
@@ -91,12 +97,29 @@ export class SaveSlotReadError extends Error {
   }
 }
 
-export type SaveSlotStatus = 'empty' | 'ready' | 'recovered' | 'corrupt';
+export type SaveSlotStatus =
+  | 'empty'
+  | 'ready'
+  | 'recovered'
+  | 'corrupt'
+  | 'unsupported-version';
+
+/** UI-safe fields copied only from a checksummed and fully validated save. */
+export interface SaveSlotPreview {
+  label: string;
+  updatedAt: number;
+  alexPreset: SaveGameV1['alexPreset'];
+  level: number;
+  activeMissionId: string | null;
+  activeDistrict: SaveGameV1['activeDistrict'];
+  playtimeSeconds: number;
+}
 
 export interface SaveSlotSummary {
   slotId: SaveSlotId;
   status: SaveSlotStatus;
   metadata: SaveSlotMetadata | null;
+  preview: SaveSlotPreview | null;
 }
 
 export interface SaveLoadResult {
@@ -138,23 +161,21 @@ export class CoreSaveService implements SaveService {
     return Promise.all(SAVE_SLOT_IDS.map(async (slotId): Promise<SaveSlotSummary> => {
       const record = await this.adapter.readSlot(slotId);
       if (!record) {
-        return { slotId, status: 'empty', metadata: null };
+        return { slotId, status: 'empty', metadata: null, preview: null };
       }
-      const active = this.readEnvelopeForSlot(record.active, slotId);
-      if (active.success) {
-        return { slotId, status: 'ready', metadata: cloneJson(active.save.slot) };
+      const inspection = this.inspectStoredSlot(record, slotId);
+      if (inspection.status === 'unsupported-version') {
+        return { slotId, status: inspection.status, metadata: null, preview: null };
       }
-      // Never treat a last-generation backup as the playable source when the
-      // active snapshot is an intact save from a newer build. Doing so would
-      // let the next autosave silently overwrite the only future-version copy.
-      if (inspectUnsupportedSnapshot(record.active) !== null) {
-        return { slotId, status: 'corrupt', metadata: null };
+      if (inspection.status === 'ready' || inspection.status === 'recovered') {
+        return {
+          slotId,
+          status: inspection.status,
+          metadata: cloneJson(inspection.save.slot),
+          preview: createSaveSlotPreview(inspection.save),
+        };
       }
-      const backup = this.readEnvelopeForSlot(record.backup, slotId);
-      if (backup.success) {
-        return { slotId, status: 'recovered', metadata: cloneJson(backup.save.slot) };
-      }
-      return { slotId, status: 'corrupt', metadata: null };
+      return { slotId, status: 'corrupt', metadata: null, preview: null };
     }));
   }
 
@@ -164,34 +185,14 @@ export class CoreSaveService implements SaveService {
     if (!record) {
       return null;
     }
-
-    const active = this.readEnvelopeForSlot(record.active, slotId);
-    if (active.success) {
-      return { save: cloneJson(active.save), recoveredFromBackup: false };
+    const inspection = this.inspectStoredSlot(record, slotId);
+    if (inspection.status === 'ready' || inspection.status === 'recovered') {
+      return {
+        save: cloneJson(inspection.save),
+        recoveredFromBackup: inspection.status === 'recovered',
+      };
     }
-    const unsupportedActive = inspectUnsupportedSnapshot(record.active);
-    if (unsupportedActive !== null) {
-      throw new SaveSlotReadError(
-        slotId,
-        'unsupported-version',
-        active.errors,
-        unsupportedActive.serialized,
-      );
-    }
-
-    const backup = this.readEnvelopeForSlot(record.backup, slotId);
-    if (backup.success) {
-      return { save: cloneJson(backup.save), recoveredFromBackup: true };
-    }
-
-    const errors = [...active.errors, ...backup.errors];
-    const preserved = findUnsupportedSnapshot(record);
-    throw new SaveSlotReadError(
-      slotId,
-      preserved === null ? 'corrupt' : 'unsupported-version',
-      errors,
-      preserved?.serialized ?? null,
-    );
+    throw createSlotReadError(slotId, inspection);
   }
 
   public async saveSlot(save: SaveGameV1): Promise<SaveSlotMetadata> {
@@ -207,32 +208,26 @@ export class CoreSaveService implements SaveService {
 
     return this.runSlotOperation(slotId, async () => {
       try {
-        const existing = await this.adapter.readSlot(slotId);
-        let backup: SaveEnvelopeV1 | null = null;
-        if (existing) {
-          const active = this.readEnvelopeForSlot(existing.active, slotId);
-          const previousBackup = this.readEnvelopeForSlot(existing.backup, slotId);
-          const preserved = findUnsupportedSnapshot(existing);
-          if (preserved !== null) {
-            throw new SaveSlotReadError(
-              slotId,
-              'unsupported-version',
-              [
-                ...(active.success ? [] : active.errors),
-                ...(previousBackup.success ? [] : previousBackup.errors),
-              ],
-              preserved.serialized,
-            );
+        for (let attempt = 0; attempt < MAX_SAVE_COMMIT_ATTEMPTS; attempt += 1) {
+          const existing = await this.adapter.readSlot(slotId);
+          let backup: SaveEnvelopeV1 | null = null;
+          if (existing) {
+            const inspection = this.inspectStoredSlot(existing, slotId);
+            if (inspection.status === 'unsupported-version' || inspection.status === 'corrupt') {
+              throw createSlotReadError(slotId, inspection);
+            }
+            backup = createSaveEnvelope(inspection.save);
           }
-          if (active.success) {
-            backup = createSaveEnvelope(active.save);
-          } else if (previousBackup.success) {
-            backup = createSaveEnvelope(previousBackup.save);
-          }
-        }
 
-        await this.adapter.writeSlotAtomic(slotId, activeEnvelope, backup);
-        return cloneJson(metadata);
+          const committed = await this.adapter.writeSlotAtomic(
+            slotId,
+            activeEnvelope,
+            backup,
+            existing?.revision ?? 0,
+          );
+          if (committed) return cloneJson(metadata);
+        }
+        throw new Error(`save slot ${slotId} changed too often to commit safely`);
       } catch (error: unknown) {
         if (error instanceof PersistenceWriteError || error instanceof SaveSlotReadError) throw error;
         throw createPersistenceWriteError('save-slot', slotId, emergencyExport, error);
@@ -267,11 +262,19 @@ export class CoreSaveService implements SaveService {
   }
 
   public async exportSlot(slotId: SaveSlotId): Promise<string> {
-    const loaded = await this.loadSlot(slotId);
-    if (!loaded) {
+    await this.waitForSlotOperations(slotId);
+    const record = await this.adapter.readSlot(slotId);
+    if (!record) {
       throw new Error(`save slot ${slotId} is empty`);
     }
-    return serializeSaveGame(loaded.save, true);
+    const inspection = this.inspectStoredSlot(record, slotId);
+    if (inspection.status === 'unsupported-version') {
+      return inspection.preserved.serialized;
+    }
+    if (inspection.status === 'ready' || inspection.status === 'recovered') {
+      return serializeSaveGame(inspection.save, true);
+    }
+    throw createSlotReadError(slotId, inspection);
   }
 
   public inspectImport(serialized: string): SaveImportResult {
@@ -314,9 +317,33 @@ export class CoreSaveService implements SaveService {
   }
 
   /**
-   * Serializes each slot's read/rotate/write sequence. Without this queue, two
-   * overlapping autosaves can both rotate the same stale active snapshot and
-   * silently skip the newer last-known-good backup.
+   * One preflight owns list/load/save/export classification. Future-version
+   * snapshots intentionally win over an otherwise playable generation so no
+   * operation can silently rotate away data written by a newer build.
+   */
+  private inspectStoredSlot(record: StoredSaveSlotRecord, slotId: SaveSlotId): StoredSlotInspection {
+    const active = this.readEnvelopeForSlot(record.active, slotId);
+    const backup = this.readEnvelopeForSlot(record.backup, slotId);
+    const preserved = findUnsupportedSnapshot(record);
+    const errors = [
+      ...(active.success ? [] : active.errors),
+      ...(backup.success ? [] : backup.errors),
+    ];
+    if (preserved !== null) {
+      return { status: 'unsupported-version', preserved, errors };
+    }
+    if (active.success) {
+      return { status: 'ready', save: active.save };
+    }
+    if (backup.success) {
+      return { status: 'recovered', save: backup.save };
+    }
+    return { status: 'corrupt', errors };
+  }
+
+  /**
+   * Serializes each slot's read/rotate/write sequence within one service.
+   * Adapter-level revision checks cover independent services and browser tabs.
    */
   private runSlotOperation<Value>(
     slotId: SaveSlotId,
@@ -357,14 +384,22 @@ export class InMemorySaveAdapter implements SaveStorageAdapter {
     slotId: SaveSlotId,
     active: SaveEnvelopeV1,
     backup: SaveEnvelopeV1 | null,
-  ): Promise<void> {
+    expectedRevision?: number,
+  ): Promise<boolean> {
+    const current = this.slots.get(slotId);
+    const currentRevision = current?.revision ?? 0;
+    if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+      return Promise.resolve(false);
+    }
     const next: StoredSaveSlotRecord = {
       active: cloneJson(active),
       backup: backup ? cloneJson(backup) : null,
+      revision: currentRevision + 1,
     };
     // A real IDB adapter replaces this pair and its active pointer in one transaction.
     this.slots.set(slotId, next);
     await Promise.resolve();
+    return true;
   }
 
   public async deleteSlot(slotId: SaveSlotId): Promise<void> {
@@ -389,6 +424,47 @@ function cloneJson<Value>(value: Value): Value {
 interface UnsupportedSnapshot {
   schemaVersion: number;
   serialized: string;
+}
+
+type StoredSlotInspection =
+  | { status: 'ready'; save: SaveGameV1 }
+  | { status: 'recovered'; save: SaveGameV1 }
+  | { status: 'corrupt'; errors: readonly string[] }
+  | {
+    status: 'unsupported-version';
+    preserved: UnsupportedSnapshot;
+    errors: readonly string[];
+  };
+
+function createSaveSlotPreview(save: SaveGameV1): SaveSlotPreview {
+  return {
+    label: save.slot.label,
+    updatedAt: save.slot.updatedAt,
+    alexPreset: save.alexPreset,
+    level: save.player.level,
+    activeMissionId: runtimeActiveMissionId(save),
+    activeDistrict: save.activeDistrict,
+    playtimeSeconds: save.playtimeSeconds,
+  };
+}
+
+function runtimeActiveMissionId(save: Readonly<SaveGameV1>): string | null {
+  const runtime = save.missionRuntime;
+  if (!isRecord(runtime) || !isRecord(runtime.campaign)) return null;
+  const activeMissionId = runtime.campaign.activeMissionId;
+  return typeof activeMissionId === 'string' ? activeMissionId : null;
+}
+
+function createSlotReadError(
+  slotId: SaveSlotId,
+  inspection: Extract<StoredSlotInspection, { status: 'corrupt' | 'unsupported-version' }>,
+): SaveSlotReadError {
+  return new SaveSlotReadError(
+    slotId,
+    inspection.status,
+    inspection.errors,
+    inspection.status === 'unsupported-version' ? inspection.preserved.serialized : null,
+  );
 }
 
 function findUnsupportedSnapshot(record: StoredSaveSlotRecord): UnsupportedSnapshot | null {

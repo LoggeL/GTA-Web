@@ -1352,16 +1352,18 @@ export class RainField {
 
   public constructor(seed: number, quality: WorldQuality) {
     this.count = quality === 'high' ? 1_200 : 520;
-    this.positions = new Float32Array(this.count * 3);
+    const positions = new Float32Array(this.count * 3);
     const rng = new SeededRandom(seed ^ 0xa17c93);
     for (let index = 0; index < this.count; index += 1) {
       const offset = index * 3;
-      this.positions[offset] = rng.range(-72, 72);
-      this.positions[offset + 1] = rng.range(2, 72);
-      this.positions[offset + 2] = rng.range(-72, 72);
+      positions[offset] = rng.range(-72, 72);
+      positions[offset + 1] = rng.range(2, 72);
+      positions[offset + 2] = rng.range(-72, 72);
     }
     this.geometry = new BufferGeometry();
-    this.geometry.setAttribute('position', new Float32BufferAttribute(this.positions, 3));
+    const positionAttribute = new Float32BufferAttribute(positions, 3);
+    this.geometry.setAttribute('position', positionAttribute);
+    this.positions = positionAttribute.array as Float32Array;
     this.material = new PointsMaterial({
       color: 0xccecff,
       size: quality === 'high' ? 0.17 : 0.23,
@@ -1378,6 +1380,10 @@ export class RainField {
   public update(deltaSeconds: number, intensity: number, center: Readonly<Vec3Data>): void {
     const normalizedIntensity = Math.max(0, Math.min(1, intensity));
     this.points.visible = normalizedIntensity > 0.005;
+    if (normalizedIntensity === 0) {
+      this.geometry.setDrawRange(0, 0);
+      return;
+    }
     this.points.position.set(center.x, 0, center.z);
     this.material.opacity = 0.2 + normalizedIntensity * 0.58;
     this.geometry.setDrawRange(0, Math.ceil(this.count * normalizedIntensity));

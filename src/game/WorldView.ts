@@ -22,6 +22,7 @@ import type {
   CitySimulationSnapshot,
   CombatNpcSnapshot,
   PlayerDamageEvent,
+  SimulationObstacle,
   WeaponDefinition as SimulationWeaponDefinition,
 } from '../simulation';
 import { directionFromHeading, headingFromDirection } from '../simulation/math';
@@ -93,6 +94,20 @@ const DEFAULT_CAMERA_YAW = Math.PI * 0.14;
 const DEFAULT_CAMERA_PITCH = 0.42;
 const CAMERA_TARGET_HEIGHT = 1.48;
 const TRAFFIC_INTERACTION_PREFIX = 'traffic:';
+const LOW_QUALITY_VISUAL_INTERVAL_SECONDS = 1 / 30;
+
+const NO_SOFT_COVER: SoftCoverResult = Object.freeze({
+  engaged: false,
+  coverId: null,
+  coverHeight: null,
+  distanceMeters: Number.POSITIVE_INFINITY,
+  normal: null,
+  corner: null,
+  peeking: false,
+  exposure: 1,
+  incomingDamageMultiplier: 1,
+  positionCorrection: null,
+});
 
 const DEFAULT_PROGRESSION_MODIFIERS: Readonly<WorldProgressionModifiers> = Object.freeze({
   meleeDamageMultiplier: 1,
@@ -250,18 +265,7 @@ export class WorldView {
   private cameraPitch = DEFAULT_CAMERA_PITCH;
   private currentAim = false;
   private aimTargetId: string | null = null;
-  private softCover: SoftCoverResult = {
-    engaged: false,
-    coverId: null,
-    coverHeight: null,
-    distanceMeters: Number.POSITIVE_INFINITY,
-    normal: null,
-    corner: null,
-    peeking: false,
-    exposure: 1,
-    incomingDamageMultiplier: 1,
-    positionCorrection: null,
-  };
+  private softCover: SoftCoverResult = NO_SOFT_COVER;
   private shoulderSide: ShoulderSide = 'right';
   private running = false;
   private paused = false;
@@ -273,9 +277,15 @@ export class WorldView {
   private elapsedSeconds = 0;
   private interiorTransitionPending = false;
   private exteriorCollisions: readonly CollisionRect[];
+  private exteriorCollisionCache: readonly CollisionRect[];
+  private exteriorObstructions: readonly SimulationObstacle[];
+  private policeCollisionSignature = '';
+  private portalVisualElapsed = 0;
+  private environmentVisualElapsed = 0;
   private policeResponseLevel: PoliceVisualLevel = 0;
   private policeResponsePhase: PoliceVisualPhase = 'clear';
   private policeResponsePlan: Readonly<PoliceResponseSnapshot> | null = null;
+  private lastRenderedPoliceResponseLevel: PoliceVisualLevel = 0;
 
   public constructor(options: WorldViewOptions) {
     this.mount = options.mount;
@@ -295,6 +305,8 @@ export class WorldView {
     this.onPlayerDamage = options.onPlayerDamage ?? null;
     this.progressionModifiers = normalizeProgressionModifiers(options.progressionModifiers);
     this.exteriorCollisions = this.layout.collisions;
+    this.exteriorCollisionCache = this.exteriorCollisions;
+    this.exteriorObstructions = this.createObstructions(this.exteriorCollisionCache);
     this.player = createPlayerState(options.initialPosition ?? PLAYER_SPAWN);
     this.player.heading = options.initialHeading ?? 0;
     const initialVehicle = options.initialVehicle ?? {
@@ -440,6 +452,7 @@ export class WorldView {
     this.assertAlive();
     updateEnvironment(this.environment, update);
     this.applyEnvironmentVisuals();
+    this.environmentVisualElapsed = 0;
     this.emitSnapshot(true);
   }
 
@@ -496,6 +509,7 @@ export class WorldView {
         z: (collision.minZ + collision.maxZ) / 2,
       })),
     );
+    this.rebuildExteriorCollisionCache();
     this.interiorPortalVisual.setResidentCellIds(residentCellIds);
     return this.cityVisuals.applyStreamingState(
       renderableActiveCellIds,
@@ -626,6 +640,7 @@ export class WorldView {
   ): void {
     this.assertAlive();
     this.roadClosureVisual.setClosures(closures);
+    this.rebuildExteriorCollisionCache();
   }
 
   public setPoliceResponse(level: PoliceVisualLevel, phase: PoliceVisualPhase): void {
@@ -986,10 +1001,9 @@ export class WorldView {
       return;
     }
     this.elapsedSeconds += dt;
-    this.interiorPortalVisual.update(this.elapsedSeconds, this.reducedMotion);
+    this.updatePortalVisual(dt);
     if (this.interiorTransitionPending) {
-      advanceEnvironment(this.environment, dt);
-      this.applyEnvironmentVisuals();
+      this.advanceEnvironmentVisuals(dt);
       this.updateCamera(dt);
       this.snapshotElapsed += dt;
       this.emitSnapshot(false);
@@ -1011,6 +1025,7 @@ export class WorldView {
       this.toggleVehicle();
     }
 
+    const collisions = this.activeCollisions();
     let playerThreatening = false;
     if (this.vehicle.occupied) {
       this.vehicleSirenActive = this.vehicle.vehicleClassId === 'police-cruiser'
@@ -1018,18 +1033,18 @@ export class WorldView {
       if (input.vehicleReset) {
         this.recoverVehiclePose('unstuck');
       }
-      stepVehicle(this.vehicle, input, this.activeCollisions(), dt, {
+      stepVehicle(this.vehicle, input, collisions, dt, {
         rainIntensity: this.environment.rainIntensity,
         stabilityMultiplier: this.progressionModifiers.vehicleStabilityMultiplier,
         brakingMultiplier: this.progressionModifiers.vehicleBrakingMultiplier,
         durabilityMultiplier: this.progressionModifiers.vehicleDurabilityMultiplier,
       });
-      this.updateVehicleRecovery(dt);
+      this.updateVehicleRecovery(dt, collisions);
       this.vehicleVisual.sync(this.vehicle, dt);
       this.stepCombatRuntime(dt, input, false);
     } else {
       this.vehicleSirenActive = false;
-      stepPlayer(this.player, input, this.cameraYaw, this.activeCollisions(), dt);
+      stepPlayer(this.player, input, this.cameraYaw, collisions, dt);
       this.avatarVisual.sync(this.player);
       playerThreatening = this.stepCombatRuntime(dt, input, aimJustStarted);
     }
@@ -1062,17 +1077,12 @@ export class WorldView {
                 ? 0.08 * this.progressionModifiers.crouchedNoiseMultiplier
                 : 0.24,
         input: simulationInput,
-        obstructions: this.activeCollisions().map((collision) => ({
-          x: (collision.minX + collision.maxX) / 2,
-          z: (collision.minZ + collision.maxZ) / 2,
-          radius: Math.max(collision.maxX - collision.minX, collision.maxZ - collision.minZ) / 2,
-        })),
+        obstructions: this.exteriorObstructions,
       });
     }
     this.updatePoliceResponseVisual();
 
-    advanceEnvironment(this.environment, dt);
-    this.applyEnvironmentVisuals();
+    this.advanceEnvironmentVisuals(dt);
     const focus = this.vehicle.occupied ? this.vehicle.position : this.player.position;
     this.rainField.update(
       dt,
@@ -1317,7 +1327,10 @@ export class WorldView {
     return true;
   }
 
-  private updateVehicleRecovery(deltaSeconds: number): void {
+  private updateVehicleRecovery(
+    deltaSeconds: number,
+    collisions: readonly CollisionRect[],
+  ): void {
     const pitch = Math.abs(this.vehicle.pitch ?? 0);
     const roll = Math.abs(this.vehicle.roll ?? 0);
     const tipped = pitch > Math.PI * 0.46 || roll > Math.PI * 0.46;
@@ -1339,7 +1352,7 @@ export class WorldView {
       && isVehicleRecoveryTransformSafe(
         transform,
         this.vehicle.vehicleClassId,
-        this.activeCollisions(),
+        collisions,
       )
     ) {
       this.lastSafeVehicleTransform = transform;
@@ -1347,6 +1360,9 @@ export class WorldView {
   }
 
   private updatePoliceResponseVisual(): void {
+    if (this.policeResponseLevel === 0 && this.lastRenderedPoliceResponseLevel === 0) {
+      return;
+    }
     const actor = this.vehicle.occupied ? this.vehicle : this.player;
     this.policeResponseVisual.update({
       playerPosition: actor.position,
@@ -1356,6 +1372,8 @@ export class WorldView {
       reducedMotion: this.reducedMotion,
       responsePlan: this.policeResponsePlan,
     });
+    this.lastRenderedPoliceResponseLevel = this.policeResponseLevel;
+    this.refreshPoliceCollisionCache();
   }
 
   private stepCombatRuntime(
@@ -1378,7 +1396,22 @@ export class WorldView {
       meleeDamageMultiplier: this.progressionModifiers.meleeDamageMultiplier,
       reloadTimeMultiplier: this.progressionModifiers.reloadTimeMultiplier,
     });
-    const aimDirection = this.resolveCombatAim(aimJustStarted || frame.weaponChanged);
+    if (this.vehicle.occupied) {
+      this.aimTargetId = null;
+      return false;
+    }
+    const aimRequired = this.aimAssistDevice === 'mobile'
+      || this.currentAim
+      || Boolean(frame.shot?.fired)
+      || Boolean(frame.meleeAttack?.performed)
+      || aimJustStarted
+      || frame.weaponChanged;
+    const aimDirection = aimRequired
+      ? this.resolveCombatAim(aimJustStarted || frame.weaponChanged)
+      : null;
+    if (!aimRequired) {
+      this.aimTargetId = null;
+    }
     let attacked = false;
     if (frame.shot?.fired) {
       const handling = frame.shot.handling;
@@ -1394,7 +1427,7 @@ export class WorldView {
       this.citySimulation.fireResolvedWeapon(
         definition,
         { ...this.player.position, y: this.player.position.y + 1.24 },
-        aimDirection,
+        aimDirection ?? directionFromHeading(this.cameraYaw),
         handling.noiseRadiusMeters,
       );
       attacked = true;
@@ -1415,7 +1448,7 @@ export class WorldView {
         this.citySimulation.fireResolvedWeapon(
           definition,
           { ...this.player.position, y: this.player.position.y + 1.05 },
-          aimDirection,
+          aimDirection ?? directionFromHeading(this.cameraYaw),
           12,
         );
       }
@@ -1465,6 +1498,10 @@ export class WorldView {
   }
 
   private updateSoftCover(input: Readonly<WorldInputState>): void {
+    if (this.vehicle.occupied) {
+      this.softCover = NO_SOFT_COVER;
+      return;
+    }
     const forward = directionFromHeading(this.cameraYaw);
     const nearby = this.activeCollisions()
       .filter((collision) => {
@@ -1559,8 +1596,38 @@ export class WorldView {
       placement.lookTarget.z,
     );
     this.camera.lookAt(this.desiredLookTarget);
-    this.camera.fov = MathUtils.damp(this.camera.fov, placement.fov, 10, deltaSeconds);
-    this.camera.updateProjectionMatrix();
+    const nextFov = MathUtils.damp(this.camera.fov, placement.fov, 10, deltaSeconds);
+    if (Math.abs(nextFov - this.camera.fov) > Number.EPSILON) {
+      this.camera.fov = nextFov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  private updatePortalVisual(deltaSeconds: number): void {
+    if (this.layout.quality === 'high') {
+      this.interiorPortalVisual.update(this.elapsedSeconds, this.reducedMotion);
+      return;
+    }
+    this.portalVisualElapsed += deltaSeconds;
+    if (this.portalVisualElapsed + Number.EPSILON < LOW_QUALITY_VISUAL_INTERVAL_SECONDS) {
+      return;
+    }
+    this.portalVisualElapsed %= LOW_QUALITY_VISUAL_INTERVAL_SECONDS;
+    this.interiorPortalVisual.update(this.elapsedSeconds, this.reducedMotion);
+  }
+
+  private advanceEnvironmentVisuals(deltaSeconds: number): void {
+    advanceEnvironment(this.environment, deltaSeconds);
+    if (this.layout.quality === 'high') {
+      this.applyEnvironmentVisuals();
+      return;
+    }
+    this.environmentVisualElapsed += deltaSeconds;
+    if (this.environmentVisualElapsed + Number.EPSILON < LOW_QUALITY_VISUAL_INTERVAL_SECONDS) {
+      return;
+    }
+    this.environmentVisualElapsed %= LOW_QUALITY_VISUAL_INTERVAL_SECONDS;
+    this.applyEnvironmentVisuals();
   }
 
   private applyEnvironmentVisuals(): void {
@@ -1597,11 +1664,43 @@ export class WorldView {
 
   private activeCollisions(): readonly CollisionRect[] {
     return this.interiorRuntime.currentDefinition?.scene.collisions
-      ?? [
-        ...this.exteriorCollisions,
-        ...this.roadClosureVisual.collisions,
-        ...this.policeResponseVisual.collisions,
-      ];
+      ?? this.exteriorCollisionCache;
+  }
+
+  private rebuildExteriorCollisionCache(): void {
+    this.exteriorCollisionCache = [
+      ...this.exteriorCollisions,
+      ...this.roadClosureVisual.collisions,
+      ...this.policeResponseVisual.collisions,
+    ];
+    this.exteriorObstructions = this.createObstructions(this.exteriorCollisionCache);
+  }
+
+  private refreshPoliceCollisionCache(): void {
+    const signature = this.policeResponseVisual.collisions
+      .map((collision) => [
+        collision.id ?? '',
+        collision.minX,
+        collision.maxX,
+        collision.minZ,
+        collision.maxZ,
+        collision.height,
+        collision.kind ?? '',
+      ].join(':'))
+      .join('|');
+    if (signature === this.policeCollisionSignature) return;
+    this.policeCollisionSignature = signature;
+    this.rebuildExteriorCollisionCache();
+  }
+
+  private createObstructions(
+    collisions: readonly CollisionRect[],
+  ): readonly SimulationObstacle[] {
+    return collisions.map((collision) => ({
+      x: (collision.minX + collision.maxX) / 2,
+      z: (collision.minZ + collision.maxZ) / 2,
+      radius: Math.max(collision.maxX - collision.minX, collision.maxZ - collision.minZ) / 2,
+    }));
   }
 
   private interiorActorState(): InteriorActorState {

@@ -1,8 +1,12 @@
 import {
   CoreSaveService,
   InMemorySaveAdapter,
+  PersistenceWriteError,
+  SaveSlotReadError,
   createInitialSaveGame,
+  serializeSaveGame,
   type GameSettings,
+  type PersistenceWriteOperation,
   type SaveGameV1,
   type SavedInventory,
   type SavedItemInstance,
@@ -38,7 +42,10 @@ import {
   type MissionId,
   type ObjectiveDefinition,
 } from '../data';
-import { CityStreamingController } from '../game/CityStreamingController';
+import {
+  CityStreamingController,
+  baseResolutionScaleForQuality,
+} from '../game/CityStreamingController';
 import {
   DomInputAdapter,
   InputController,
@@ -149,6 +156,11 @@ import {
   type TacticalInventoryState,
   type WantedRuntimeSnapshot,
 } from '../systems';
+import { GAME_SAVE_VALIDATION_REGISTRY } from './save-validation-registry';
+import {
+  AUTOSAVE_RETRY_MILLISECONDS,
+  isAutosaveScheduleDue,
+} from './autosave-policy';
 
 const DISTRICT_LABELS: Record<WorldSnapshot['district'], string> = {
   'neon-strand': 'Neon Strand',
@@ -156,6 +168,21 @@ const DISTRICT_LABELS: Record<WorldSnapshot['district'], string> = {
   'arroyo-heights': 'Arroyo Heights',
   breakwater: 'Breakwater',
 };
+
+const formatPreset = (preset: AlexPreset): string => preset === 'feminine'
+  ? 'Feminine Alex'
+  : 'Masculine Alex';
+
+const formatSavePlaytime = (seconds: number): string => {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(safeSeconds / 3_600);
+  const minutes = Math.floor((safeSeconds % 3_600) / 60);
+  return hours > 0 ? `${hours}h ${minutes}m played` : `${minutes}m played`;
+};
+
+const errorMessage = (error: unknown): string => error instanceof Error
+  ? error.message
+  : String(error);
 
 const DISTRICT_TARGET_CENTERS: Readonly<Record<MissionDefinition['district'], { x: number; z: number }>> = {
   'neon-strand': { x: -230, z: 70 },
@@ -273,6 +300,45 @@ type QaGlobal = typeof globalThis & {
   __HEATLINE_QA__?: HeatlineQaApi;
 };
 
+type PersistenceMode = 'indexeddb' | 'session-only';
+type PersistenceFailureOperation = PersistenceWriteOperation | 'list-slots' | 'load-slot' | 'import-slot';
+
+const SOFTWARE_WEBGL_RENDERER_PATTERN = /swiftshader|llvmpipe|softpipe|software|lavapipe/i;
+
+/**
+ * A software WebGL device is a valid fallback, but it is never a high-quality
+ * target. Detect it before constructing the long-lived renderer so automatic
+ * quality can disable antialiasing/shadows and start from the low-resolution
+ * budget instead of spending the whole adaptation window above frame budget.
+ */
+function detectSoftwareWebGlRenderer(): boolean {
+  const canvas = document.createElement('canvas');
+  const attributes: WebGLContextAttributes = {
+    antialias: false,
+    powerPreference: 'high-performance',
+  };
+  const context = canvas.getContext('webgl2', attributes)
+    ?? canvas.getContext('webgl', attributes);
+  if (!context) return false;
+  const debug = context.getExtension('WEBGL_debug_renderer_info') as {
+    readonly UNMASKED_RENDERER_WEBGL: number;
+  } | null;
+  const description = [
+    String(context.getParameter(context.RENDERER)),
+    debug ? String(context.getParameter(debug.UNMASKED_RENDERER_WEBGL)) : '',
+  ].join(' ');
+  context.getExtension('WEBGL_lose_context')?.loseContext();
+  return SOFTWARE_WEBGL_RENDERER_PATTERN.test(description);
+}
+
+interface PersistenceFailureState {
+  readonly operation: PersistenceFailureOperation;
+  readonly slotId: SaveSlotId | null;
+  readonly message: string;
+  readonly emergencyExport: string | null;
+  readonly sequence: number;
+}
+
 const nextAnimationFrame = (): Promise<void> => new Promise((resolve) => {
   let settled = false;
   let frameId: number | null = null;
@@ -293,6 +359,8 @@ const nextAnimationFrame = (): Promise<void> => new Promise((resolve) => {
 export class App {
   readonly #root: HTMLElement;
   readonly #saveService: SaveService;
+  readonly #persistenceMode: PersistenceMode;
+  readonly #softwareWebGlRenderer: boolean;
   readonly #audio = new AudioEngine();
   readonly #ui: GameUI;
   readonly #minimap: MinimapRenderer;
@@ -306,9 +374,18 @@ export class App {
   #activeSlot: SaveSlotId | null = null;
   #paused = false;
   #panelOpen = false;
-  #saving = false;
+  #quitting = false;
+  #saveMenuOperationPending = false;
+  #saveQueued = false;
+  #saveToastQueued = false;
+  #saveDrainPromise: Promise<boolean> | null = null;
   #lastSnapshotAt = 0;
   #lastAutosaveAt = 0;
+  #autosaveRetryAt = 0;
+  #autosaveBlocked = false;
+  readonly #persistenceFailures = new Map<string, PersistenceFailureState>();
+  #persistenceFailureSequence = 0;
+  readonly #slotStatuses = new Map<SaveSlotId, SaveSlotSummary['status']>();
   #orientationBlocked = false;
   #lastVehicleSirenActive = false;
   #settingsSaveTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -357,15 +434,30 @@ export class App {
   #policeVisibleSeconds = 0;
   #defeatResolving = false;
 
-  private constructor(root: HTMLElement, saveService: SaveService, settings: GameSettings) {
+  private constructor(
+    root: HTMLElement,
+    saveService: SaveService,
+    settings: GameSettings,
+    persistenceMode: PersistenceMode,
+    softwareWebGlRenderer: boolean,
+  ) {
     this.#root = root;
     this.#saveService = saveService;
+    this.#persistenceMode = persistenceMode;
+    this.#softwareWebGlRenderer = softwareWebGlRenderer;
     this.#settings = settings;
     this.#ui = new GameUI(root, {
       onRequestSaveSlots: () => void this.#showSaveSlots(),
       onStartNewGame: (slot, preset) => void this.#startNewGame(slot, preset),
       onContinueGame: (slot) => void this.#continueGame(slot),
       onDeleteSlot: (slot) => void this.#deleteSlot(slot),
+      onExportSaveSlot: (slot) => void this.#exportSaveSlot(slot),
+      onInspectSaveImport: (serialized) => this.#inspectSaveImport(serialized),
+      onImportSave: (serialized, destination) => void this.#importSave(serialized, destination),
+      onExportEmergencySave: (serialized) => this.#downloadSaveJson(
+        serialized,
+        `heatline-emergency-slot-${this.#activeSlot ?? 'unknown'}.json`,
+      ),
       onResume: () => this.#resume(),
       onPause: () => this.#pause(),
       onQuitToMenu: () => void this.#quitToMenu(),
@@ -382,21 +474,38 @@ export class App {
     this.#applySettings();
     this.#bindGlobalEvents();
     this.#ui.showSplash();
+    this.#refreshPersistenceWarning();
   }
 
   static async boot(root: HTMLElement): Promise<App> {
     let saveService: SaveService;
+    let settings: GameSettings;
+    let persistenceMode: PersistenceMode = 'indexeddb';
     try {
       if (!('indexedDB' in globalThis)) throw new Error('IndexedDB unavailable');
-      saveService = new CoreSaveService(new IndexedDbSaveAdapter());
+      saveService = new CoreSaveService(
+        new IndexedDbSaveAdapter(),
+        GAME_SAVE_VALIDATION_REGISTRY,
+      );
       await saveService.initialize();
+      settings = await saveService.loadSettings();
     } catch (error) {
       console.warn('Persistent saves are unavailable; using an in-memory session.', error);
-      saveService = new CoreSaveService(new InMemorySaveAdapter());
+      persistenceMode = 'session-only';
+      saveService = new CoreSaveService(
+        new InMemorySaveAdapter(),
+        GAME_SAVE_VALIDATION_REGISTRY,
+      );
       await saveService.initialize();
+      settings = await saveService.loadSettings();
     }
-    const settings = await saveService.loadSettings();
-    return new App(root, saveService, settings);
+    return new App(
+      root,
+      saveService,
+      settings,
+      persistenceMode,
+      detectSoftwareWebGlRenderer(),
+    );
   }
 
   async #unlockAudio(): Promise<void> {
@@ -407,56 +516,142 @@ export class App {
     }
   }
 
+  #beginSaveMenuOperation(): boolean {
+    if (this.#saveMenuOperationPending) return false;
+    this.#saveMenuOperationPending = true;
+    this.#ui.setSaveMenuPending(true);
+    return true;
+  }
+
+  #endSaveMenuOperation(): void {
+    this.#saveMenuOperationPending = false;
+    this.#ui.setSaveMenuPending(false);
+  }
+
   async #showSaveSlots(): Promise<void> {
     void this.#unlockAudio();
-    const summaries = await this.#saveService.listSlots();
-    const slots: SaveSlotSummary[] = summaries.map((summary) => {
-      const metadata = summary.metadata;
-      const exists = summary.status !== 'empty' && summary.status !== 'corrupt';
-      return {
-        slot: summary.slotId,
-        exists,
-        level: exists ? 1 : undefined,
-        mission: summary.status === 'recovered' ? 'Recovered backup' : exists ? 'Solara free roam' : undefined,
-        district: exists ? 'Arroyo Heights' : undefined,
-        updatedAt: metadata?.updatedAt,
-      };
-    });
-    this.#ui.showSaveSlots(slots);
+    try {
+      const summaries = await this.#saveService.listSlots();
+      this.#slotStatuses.clear();
+      const slots: SaveSlotSummary[] = summaries.map((summary) => {
+        this.#slotStatuses.set(summary.slotId, summary.status);
+        const preview = summary.preview;
+        const activeMission = preview?.activeMissionId
+          ? MISSIONS.find((mission) => mission.id === preview.activeMissionId)
+          : undefined;
+        return {
+          slot: summary.slotId,
+          status: summary.status,
+          canExport: summary.status === 'ready'
+            || summary.status === 'recovered'
+            || summary.status === 'unsupported-version',
+          level: preview?.level,
+          mission: activeMission?.title ?? preview?.label,
+          district: preview ? DISTRICT_LABELS[preview.activeDistrict] : undefined,
+          playtimeSeconds: preview?.playtimeSeconds,
+          updatedAt: preview?.updatedAt,
+          preset: preview?.alexPreset,
+        };
+      });
+      // listSlots just performed a fresh read/classification of every slot, so
+      // any earlier per-slot load/export warning is now stale. Clear those and
+      // the list failure together without briefly surfacing a lower-priority
+      // warning between individual refreshes.
+      for (const summary of summaries) {
+        this.#persistenceFailures.delete(this.#persistenceFailureKey('load-slot', summary.slotId));
+      }
+      this.#persistenceFailures.delete(this.#persistenceFailureKey('list-slots', null));
+      this.#refreshPersistenceWarning();
+      this.#ui.showSaveSlots(slots);
+    } catch (error: unknown) {
+      console.error(error);
+      this.#slotStatuses.clear();
+      this.#recordPersistenceFailure(
+        error,
+        'Save slots could not be read. They are locked to prevent accidental replacement.',
+        'list-slots',
+        null,
+      );
+      this.#ui.showSaveSlots(([1, 2, 3] as const).map((slot) => ({
+        slot,
+        status: 'unavailable',
+        canExport: false,
+      })));
+    }
   }
 
   async #startNewGame(slot: SaveSlotId, preset: AlexPreset): Promise<void> {
-    void this.#unlockAudio();
-    const timestamp = Date.now();
-    const save = createInitialSaveGame(slot, preset, { timestamp, seed: `slot-${slot}-${timestamp}` });
-    save.player.transform.position = { ...PLAYER_SPAWN };
-    save.player.lastSafeTransform.position = { ...PLAYER_SPAWN };
-    save.missions['past-due'] = {
-      state: 'available',
-      checkpointId: null,
-      completedObjectives: [],
-    };
-    save.player.money = 850;
-    ensureStarterVehicle(save);
-    ensureM5StarterInventory(save);
-    await this.#saveService.saveSlot(save);
-    await this.#loadGame(save, true);
+    if (!this.#beginSaveMenuOperation()) return;
+    try {
+      void this.#unlockAudio();
+      const timestamp = Date.now();
+      const save = createInitialSaveGame(slot, preset, { timestamp, seed: `slot-${slot}-${timestamp}` });
+      save.player.transform.position = { ...PLAYER_SPAWN };
+      save.player.lastSafeTransform.position = { ...PLAYER_SPAWN };
+      save.missions['past-due'] = {
+        state: 'available',
+        checkpointId: null,
+        completedObjectives: [],
+      };
+      save.player.money = 850;
+      ensureStarterVehicle(save);
+      ensureM5StarterInventory(save);
+      try {
+        await this.#saveService.saveSlot(save);
+        this.#clearPersistenceFailure('save-slot', slot);
+      } catch (error: unknown) {
+        console.error(error);
+        if (error instanceof PersistenceWriteError) {
+          this.#recordPersistenceFailure(
+            error,
+            'The new game is running, but browser storage rejected its first save.',
+            'save-slot',
+            slot,
+          );
+        } else {
+          this.#recordPersistenceFailure(
+            error,
+            'This slot is not safe to replace. Export or delete its existing data first.',
+            'load-slot',
+            slot,
+          );
+          await this.#showSaveSlots();
+          return;
+        }
+      }
+      await this.#loadGame(save, true);
+    } finally {
+      this.#endSaveMenuOperation();
+    }
   }
 
   async #continueGame(slot: SaveSlotId): Promise<void> {
-    void this.#unlockAudio();
+    if (!this.#beginSaveMenuOperation()) return;
     try {
-      const result = await this.#saveService.loadSlot(slot);
-      if (!result) {
-        this.#ui.toast('That save slot is empty.', 'warning');
+      void this.#unlockAudio();
+      try {
+        const result = await this.#saveService.loadSlot(slot);
+        if (!result) {
+          this.#clearPersistenceFailure('load-slot', slot);
+          this.#ui.toast('That save slot is empty.', 'warning');
+          await this.#showSaveSlots();
+          return;
+        }
+        this.#clearPersistenceFailure('load-slot', slot);
+        await this.#loadGame(result.save, false);
+        if (result.recoveredFromBackup) this.#ui.toast('Recovered the last known-good save.', 'warning');
+      } catch (error) {
+        console.error(error);
+        const message = error instanceof SaveSlotReadError
+          ? error.code === 'unsupported-version'
+            ? `Slot ${slot} was created by a newer HEATLINE build. Export it or update the game; it was not changed.`
+            : `Slot ${slot} is damaged and cannot be loaded. Delete it explicitly only after preserving any external backup.`
+          : `Slot ${slot} could not be read because browser storage is temporarily unavailable. No data was changed.`;
+        this.#recordPersistenceFailure(error, message, 'load-slot', slot);
         await this.#showSaveSlots();
-        return;
       }
-      await this.#loadGame(result.save, false);
-      if (result.recoveredFromBackup) this.#ui.toast('Recovered the last known-good save.', 'warning');
-    } catch (error) {
-      console.error(error);
-      this.#ui.toast('The save could not be loaded. Export or delete it from the save menu.', 'warning');
+    } finally {
+      this.#endSaveMenuOperation();
     }
   }
 
@@ -468,6 +663,8 @@ export class App {
     this.#activeSlot = save.slot.id;
     this.#lastSnapshotAt = performance.now();
     this.#lastAutosaveAt = performance.now();
+    this.#autosaveRetryAt = 0;
+    this.#autosaveBlocked = false;
     this.#ui.showLoading('Reading Solara street grid…', 12);
     await nextAnimationFrame();
     this.#ui.updateLoading('Building four districts…', 42);
@@ -476,6 +673,13 @@ export class App {
     const mount = this.#root.querySelector<HTMLElement>('[data-world-mount]');
     if (!mount) throw new Error('Missing 3D world mount');
     const quality = this.#resolveQuality();
+    mount.dataset.worldQuality = quality;
+    mount.dataset.rendererClass = this.#softwareWebGlRenderer ? 'software' : 'hardware';
+    const resolutionScale = baseResolutionScaleForQuality(
+      this.#settings.video.resolutionScale,
+      this.#settings.video.quality,
+      quality,
+    );
     const position = save.player.transform.position;
     this.#wantedRuntime = new WantedRuntime({
       seed: `${save.trafficSeed}:wanted-runtime`,
@@ -500,7 +704,7 @@ export class App {
         rainIntensity: save.clock.weather === 'rain' ? 0.62 : 0,
         reducedMotion: this.#settings.accessibility.reducedMotion,
         cameraShake: this.#settings.accessibility.cameraShake,
-        resolutionScale: this.#settings.video.resolutionScale,
+        resolutionScale,
         aimAssistLevel: this.#settings.controls.aimAssist,
         aimAssistDevice: matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
         desktopSoftLockEnabled: this.#settings.controls.softLock,
@@ -748,8 +952,17 @@ export class App {
     this.#drawNavigation(navigationSnapshot);
     if (snapshot.interiorId === null) this.#queueNavigationUpdate(snapshot);
 
-    if (this.#currentSave && now - this.#lastAutosaveAt >= 90_000 && !this.#paused) {
-      this.#lastAutosaveAt = now;
+    if (
+      this.#currentSave
+      && !this.#autosaveBlocked
+      && isAutosaveScheduleDue({
+        now,
+        lastSuccessfulSaveAt: this.#lastAutosaveAt,
+        retryAt: this.#autosaveRetryAt,
+      })
+      && !this.#paused
+      && this.#isAutosaveSafe(snapshot)
+    ) {
       void this.#saveNow(false);
     }
   }
@@ -1808,10 +2021,12 @@ export class App {
   }
 
   #syncOrientationBlock(): void {
-    const blocked = matchMedia('(pointer: coarse)').matches
+    const blocked = this.#world !== null
+      && this.#root.classList.contains('is-playing')
+      && matchMedia('(pointer: coarse)').matches
       && matchMedia('(orientation: portrait)').matches;
     this.#orientationBlocked = blocked;
-    this.#root.classList.toggle('is-orientation-blocked', blocked);
+    this.#ui.setOrientationBlocked(blocked);
     if (!this.#world) return;
     this.#inputController?.releaseAll();
     if (blocked) {
@@ -1838,7 +2053,7 @@ export class App {
   }
 
   #resume(): void {
-    if (!this.#world) return;
+    if (!this.#world || this.#quitting) return;
     this.#paused = false;
     if (!this.#panelOpen && !this.#orientationBlocked && !this.#failedStreamCellId) {
       if (this.#lastWorldSnapshot) this.#syncWorldAudio(this.#lastWorldSnapshot);
@@ -1849,6 +2064,7 @@ export class App {
   }
 
   #openPanel(_panel: OverlayPanel): void {
+    if (this.#quitting) return;
     this.#panelOpen = true;
     this.#inputController?.releaseAll();
     this.#audio.setWorldAudioState({ active: false });
@@ -2797,33 +3013,306 @@ export class App {
   }
 
   async #quitToMenu(): Promise<void> {
-    await this.#saveNow(true);
+    if (this.#quitting) return;
+    this.#quitting = true;
+    this.#ui.showPause();
+    this.#ui.setQuitSavePending(true);
+    const saved = await this.#saveNow(false);
+    if (!saved) {
+      this.#ui.setQuitSavePending(
+        false,
+        'Progress was not saved. Retry, or export the emergency save before closing this tab.',
+      );
+      this.#quitting = false;
+      return;
+    }
+    this.#ui.setQuitSavePending(false);
+    this.#ui.hidePause();
     this.#teardownWorld();
     this.#currentSave = null;
     this.#activeSlot = null;
     this.#ui.showMainMenu();
+    this.#quitting = false;
   }
 
   async #deleteSlot(slot: SaveSlotId): Promise<void> {
     if (!globalThis.confirm(`Delete save slot ${slot}? This cannot be undone.`)) return;
-    await this.#saveService.deleteSlot(slot);
-    this.#audio.playUi('cancel');
-    await this.#showSaveSlots();
+    if (!this.#beginSaveMenuOperation()) return;
+    try {
+      try {
+        await this.#saveService.deleteSlot(slot);
+        this.#clearSlotPersistenceFailure(slot);
+        this.#audio.playUi('cancel');
+        await this.#showSaveSlots();
+      } catch (error: unknown) {
+        console.error(error);
+        this.#recordPersistenceFailure(
+          error,
+          `Slot ${slot} could not be deleted. Its existing data was not changed.`,
+          'delete-slot',
+          slot,
+        );
+      }
+    } finally {
+      this.#endSaveMenuOperation();
+    }
   }
 
-  async #saveNow(showToast: boolean): Promise<void> {
-    if (!this.#currentSave || this.#saving) return;
-    this.#saving = true;
+  async #exportSaveSlot(slot: SaveSlotId): Promise<void> {
+    if (!this.#beginSaveMenuOperation()) return;
     try {
-      this.#syncCampaignSave();
-      this.#currentSave.slot.updatedAt = Date.now();
-      await this.#saveService.saveSlot(this.#currentSave);
-      if (showToast) this.#ui.toast(`Saved to slot ${this.#activeSlot ?? ''}`, 'success');
-    } catch (error) {
-      console.error(error);
-      this.#ui.toast('Save failed. Keep this tab open and try again.', 'warning');
+      try {
+        const serialized = await this.#saveService.exportSlot(slot);
+        this.#downloadSaveJson(serialized, `heatline-solara-slot-${slot}.json`);
+        this.#clearPersistenceFailure('load-slot', slot);
+      } catch (error: unknown) {
+        console.error(error);
+        const message = error instanceof SaveSlotReadError
+          ? error.code === 'unsupported-version'
+            ? `Slot ${slot} could not be exported, but its newer-version data remains protected.`
+            : `Slot ${slot} has no intact snapshot to export.`
+          : `Slot ${slot} could not be read for export. Browser storage may be temporarily unavailable; no data was changed.`;
+        this.#recordPersistenceFailure(
+          error,
+          message,
+          'load-slot',
+          slot,
+        );
+        await this.#showSaveSlots();
+      }
     } finally {
-      this.#saving = false;
+      this.#endSaveMenuOperation();
+    }
+  }
+
+  #inspectSaveImport(serialized: string): void {
+    const result = this.#saveService.inspectImport(serialized);
+    if (!result.success) {
+      this.#ui.showSaveImportError(result.errors.join(' · '));
+      return;
+    }
+    const save = result.save;
+    this.#ui.showSaveImportReview({
+      valid: true,
+      title: `Level ${save.player.level} · ${save.slot.label || 'Solara story'}`,
+      detail: `${DISTRICT_LABELS[save.activeDistrict]} · ${formatPreset(save.alexPreset)} · ${formatSavePlaytime(save.playtimeSeconds)}`,
+      sourceSlot: save.slot.id,
+      updatedAt: save.slot.updatedAt,
+      migratedFromVersion: result.migratedFrom,
+    });
+  }
+
+  async #importSave(serialized: string, destination: SaveSlotId): Promise<void> {
+    const status = this.#slotStatuses.get(destination);
+    if (status === 'corrupt' || status === 'unsupported-version') {
+      this.#ui.showSaveImportError(
+        `Slot ${destination} is protected. Export or delete its existing data before importing.`,
+      );
+      return;
+    }
+    if (
+      (status === 'ready' || status === 'recovered')
+      && !globalThis.confirm(`Replace save slot ${destination} with this imported save?`)
+    ) {
+      return;
+    }
+    if (!this.#beginSaveMenuOperation()) return;
+    try {
+      try {
+        await this.#saveService.importIntoSlot(serialized, destination, Date.now());
+        this.#clearSlotPersistenceFailure(destination);
+        this.#ui.resetSaveImport();
+        await this.#showSaveSlots();
+      } catch (error: unknown) {
+        console.error(error);
+        this.#recordPersistenceFailure(
+          error,
+          `The import did not replace slot ${destination}. Review the file or delete protected slot data first.`,
+          'import-slot',
+          destination,
+        );
+        this.#ui.showSaveImportError(
+          error instanceof SaveSlotReadError
+            ? `Slot ${destination} is protected: ${error.message}`
+            : `Import failed: ${errorMessage(error)}`,
+        );
+      }
+    } finally {
+      this.#endSaveMenuOperation();
+    }
+  }
+
+  #downloadSaveJson(serialized: string, filename: string): void {
+    const blob = new Blob([serialized], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async #saveNow(showToast: boolean): Promise<boolean> {
+    if (!this.#currentSave) return false;
+    this.#saveQueued = true;
+    this.#saveToastQueued ||= showToast;
+    if (this.#saveDrainPromise) return this.#saveDrainPromise;
+    this.#saveDrainPromise = this.#drainSaveQueue();
+    try {
+      return await this.#saveDrainPromise;
+    } finally {
+      this.#saveDrainPromise = null;
+    }
+  }
+
+  async #drainSaveQueue(): Promise<boolean> {
+    let allWritesSucceeded = true;
+    while (this.#saveQueued && this.#currentSave) {
+      this.#saveQueued = false;
+      const showToast = this.#saveToastQueued;
+      this.#saveToastQueued = false;
+      const save = this.#currentSave;
+      try {
+        this.#syncCampaignSave();
+        save.slot.updatedAt = Date.now();
+        await this.#saveService.saveSlot(save);
+        this.#lastAutosaveAt = performance.now();
+        this.#autosaveRetryAt = 0;
+        this.#autosaveBlocked = false;
+        this.#clearPersistenceFailure('save-slot', save.slot.id);
+        if (showToast) this.#ui.toast(`Saved to slot ${save.slot.id}`, 'success');
+      } catch (error: unknown) {
+        console.error(error);
+        allWritesSucceeded = false;
+        const retryable = error instanceof PersistenceWriteError;
+        this.#autosaveRetryAt = retryable
+          ? performance.now() + AUTOSAVE_RETRY_MILLISECONDS
+          : 0;
+        this.#autosaveBlocked = !retryable;
+        this.#saveQueued = false;
+        this.#saveToastQueued = false;
+        let emergencyExport = error instanceof PersistenceWriteError
+          ? error.emergencyExport
+          : null;
+        if (this.#currentSave?.slot.id === save.slot.id) {
+          // A second save request may have mutated the authoritative in-memory
+          // state while the failed write was pending. Export that newest state,
+          // not merely the older envelope captured when the write began.
+          this.#syncCampaignSave();
+          try {
+            const refreshedExport = serializeSaveGame(this.#currentSave, true);
+            if (this.#saveService.inspectImport(refreshedExport).success) {
+              emergencyExport = refreshedExport;
+            }
+          } catch (exportError: unknown) {
+            console.error('Could not refresh the emergency save export.', exportError);
+          }
+        }
+        const failureMessage = error instanceof SaveSlotReadError
+          ? error.code === 'unsupported-version'
+            ? 'This slot contains data from a newer build and is protected. Current progress remains in this tab; export the emergency save to another slot.'
+            : 'This slot contains damaged protected data. Current progress remains in this tab; export it before deleting or replacing the stored slot.'
+          : error instanceof PersistenceWriteError
+            ? 'Progress could not be saved. Keep this tab open or export the emergency save.'
+            : 'Current progress failed save validation. Automatic saves are paused until the data is corrected.';
+        this.#recordPersistenceFailure(
+          error,
+          failureMessage,
+          'save-slot',
+          save.slot.id,
+          emergencyExport,
+        );
+      }
+    }
+    return allWritesSucceeded;
+  }
+
+  #isAutosaveSafe(snapshot: Readonly<WorldSnapshot>): boolean {
+    return snapshot.activeCombatants === 0
+      && snapshot.policePhase !== 'pursuit'
+      && snapshot.interiorPhase !== 'loading-enter'
+      && snapshot.interiorPhase !== 'loading-exit'
+      && !this.#defeatResolving
+      && !this.#missionRecoveryInProgress
+      && !this.#streamRetryPending
+      && this.#failedStreamCellId === null;
+  }
+
+  #recordPersistenceFailure(
+    error: unknown,
+    fallbackMessage: string,
+    operation: PersistenceFailureOperation,
+    slotId: SaveSlotId | null,
+    emergencyExportOverride?: string | null,
+  ): void {
+    const message = error instanceof PersistenceWriteError && error.code === 'quota-exceeded'
+      ? 'Browser storage is full. Progress remains in this tab; export the emergency save before closing it.'
+      : fallbackMessage;
+    const resolvedOperation = error instanceof PersistenceWriteError ? error.operation : operation;
+    const resolvedSlotId = error instanceof PersistenceWriteError ? error.slotId : slotId;
+    const failure: PersistenceFailureState = {
+      operation: resolvedOperation,
+      slotId: resolvedSlotId,
+      message,
+      emergencyExport: emergencyExportOverride !== undefined
+        ? emergencyExportOverride
+        : error instanceof PersistenceWriteError
+          ? error.emergencyExport
+          : error instanceof SaveSlotReadError
+            ? error.preservedSnapshot
+            : null,
+      sequence: this.#persistenceFailureSequence += 1,
+    };
+    this.#persistenceFailures.set(
+      this.#persistenceFailureKey(resolvedOperation, resolvedSlotId),
+      failure,
+    );
+    this.#refreshPersistenceWarning();
+  }
+
+  #clearPersistenceFailure(
+    operation: PersistenceFailureOperation,
+    slotId: SaveSlotId | null,
+  ): void {
+    this.#persistenceFailures.delete(this.#persistenceFailureKey(operation, slotId));
+    this.#refreshPersistenceWarning();
+  }
+
+  #clearSlotPersistenceFailure(slotId: SaveSlotId): void {
+    for (const [key, failure] of this.#persistenceFailures) {
+      if (failure.slotId === slotId) this.#persistenceFailures.delete(key);
+    }
+    this.#refreshPersistenceWarning();
+  }
+
+  #persistenceFailureKey(
+    operation: PersistenceFailureOperation,
+    slotId: SaveSlotId | null,
+  ): string {
+    return `${operation}:${slotId ?? 'settings'}`;
+  }
+
+  #refreshPersistenceWarning(): void {
+    const failures = [...this.#persistenceFailures.values()];
+    const failure = failures.sort((left, right) => {
+      const leftHasRecovery = left.emergencyExport === null ? 0 : 1;
+      const rightHasRecovery = right.emergencyExport === null ? 0 : 1;
+      return rightHasRecovery - leftHasRecovery || right.sequence - left.sequence;
+    })[0];
+    if (failure) {
+      this.#ui.showPersistenceWarning({
+        message: failure.message,
+        emergencyExport: failure.emergencyExport,
+      });
+    } else if (this.#persistenceMode === 'session-only') {
+      this.#ui.showPersistenceWarning({
+        message: 'Browser storage is unavailable. This session can be played, but progress will be lost when the tab closes.',
+      });
+    } else {
+      this.#ui.clearPersistenceWarning();
     }
   }
 
@@ -2834,7 +3323,11 @@ export class App {
 
   #resolveQuality(): 'low' | 'high' {
     if (this.#settings.video.quality !== 'auto') return this.#settings.video.quality;
-    return matchMedia('(pointer: coarse)').matches || innerWidth < 900 ? 'low' : 'high';
+    return this.#softwareWebGlRenderer
+      || matchMedia('(pointer: coarse)').matches
+      || innerWidth < 900
+      ? 'low'
+      : 'high';
   }
 
   #applySettings(): void {
@@ -2862,11 +3355,16 @@ export class App {
       || JSON.stringify(this.#settings.controls.bindings) !== JSON.stringify(settings.controls.bindings);
     this.#settings = settings;
     this.#applySettings();
-    const adaptiveLimits = this.#cityStreaming?.setBaseResolutionScale(settings.video.resolutionScale);
+    const resolutionScale = baseResolutionScaleForQuality(
+      settings.video.resolutionScale,
+      settings.video.quality,
+      this.#world?.layout.quality ?? this.#resolveQuality(),
+    );
+    const adaptiveLimits = this.#cityStreaming?.setBaseResolutionScale(resolutionScale);
     this.#world?.setPresentation({
       reducedMotion: settings.accessibility.reducedMotion,
       cameraShake: settings.accessibility.cameraShake,
-      resolutionScale: adaptiveLimits?.resolutionScale ?? settings.video.resolutionScale,
+      resolutionScale: adaptiveLimits?.resolutionScale ?? resolutionScale,
     });
     if (this.#cityStreaming) this.#applyCityStreaming();
     if (this.#world && inputChanged) this.#rebindWorldInput();
@@ -2884,9 +3382,15 @@ export class App {
     }
     try {
       await this.#saveService.saveSettings(this.#settings);
-    } catch (error) {
+      this.#clearPersistenceFailure('save-settings', null);
+    } catch (error: unknown) {
       console.error(error);
-      this.#ui.toast('Settings could not be saved.', 'warning');
+      this.#recordPersistenceFailure(
+        error,
+        'Settings could not be saved. Gameplay can continue with the current values in this tab.',
+        'save-settings',
+        null,
+      );
     }
   }
 
@@ -2901,6 +3405,10 @@ export class App {
     this.#root.addEventListener('drop', this.#onInventoryDrop);
     globalThis.addEventListener('keydown', (event) => {
       if (!this.#world || event.repeat) return;
+      if (this.#quitting) {
+        event.preventDefault();
+        return;
+      }
       const pauseBinding = this.#settings.controls.bindings.pause.some(
         (binding) => binding.device === 'keyboard' && binding.code === event.code,
       );
@@ -2973,6 +3481,7 @@ export class App {
     this.#ui.hideStreamFailure();
     this.#world?.dispose();
     this.#world = null;
+    this.#syncOrientationBlock();
     this.#mapRenderer = null;
     this.#mapModel = null;
     this.#inventorySelection = null;
@@ -3040,7 +3549,11 @@ export class App {
     this.#cityStreaming = new CityStreamingController({
       platform: matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
       quality: world.layout.quality,
-      baseResolutionScale: this.#settings.video.resolutionScale,
+      baseResolutionScale: baseResolutionScaleForQuality(
+        this.#settings.video.resolutionScale,
+        this.#settings.video.quality,
+        world.layout.quality,
+      ),
     });
     const graph = buildRoadGraph(world.layout);
     this.#roadGraph = graph;

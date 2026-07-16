@@ -4,15 +4,64 @@ import { isValidKeyboardCode } from '../input';
 export type AlexPreset = 'masculine' | 'feminine';
 export type OverlayPanel = 'map' | 'inventory' | 'skills' | 'garage' | 'properties' | 'missions' | 'settings';
 
+export type SaveSlotStatus =
+  | 'empty'
+  | 'ready'
+  | 'recovered'
+  | 'corrupt'
+  | 'unsupported-version'
+  /** Transient read failure: the stored state is unknown and no action is safe. */
+  | 'unavailable';
+export type SaveSlotAction = 'new' | 'continue' | 'export' | 'delete';
+
+/**
+ * The save menu never infers a playable action from metadata alone. This
+ * matrix is the presentation contract for every persistence state.
+ */
+export const SAVE_SLOT_ACTION_MATRIX: Readonly<Record<SaveSlotStatus, readonly SaveSlotAction[]>> = {
+  empty: ['new'],
+  ready: ['continue', 'export', 'delete'],
+  recovered: ['continue', 'export', 'delete'],
+  corrupt: ['delete'],
+  'unsupported-version': ['export', 'delete'],
+  unavailable: [],
+};
+
 export interface SaveSlotSummary {
   slot: 1 | 2 | 3;
-  exists: boolean;
+  status: SaveSlotStatus;
+  /** False when the service has no intact snapshot to export. */
+  canExport?: boolean;
   level?: number;
   mission?: string;
   district?: string;
   playtimeSeconds?: number;
   updatedAt?: number;
   preset?: AlexPreset;
+}
+
+export interface SaveImportReview {
+  valid: boolean;
+  title: string;
+  detail: string;
+  sourceSlot?: 1 | 2 | 3;
+  updatedAt?: number;
+  migratedFromVersion?: number | null;
+}
+
+export interface PersistenceWarning {
+  message: string;
+  /** A checksummed export string supplied by the persistence boundary. */
+  emergencyExport?: string | null;
+}
+
+export function getSaveSlotActions(summary: Readonly<SaveSlotSummary>): readonly SaveSlotAction[] {
+  const actions = SAVE_SLOT_ACTION_MATRIX[summary.status];
+  return summary.canExport === false ? actions.filter((action) => action !== 'export') : actions;
+}
+
+export function isSaveImportDestinationEligible(status: SaveSlotStatus): boolean {
+  return status === 'empty' || status === 'ready' || status === 'recovered';
 }
 
 export interface HudSnapshot {
@@ -45,6 +94,10 @@ export interface GameUICallbacks {
   onStartNewGame(slot: 1 | 2 | 3, preset: AlexPreset): void;
   onContinueGame(slot: 1 | 2 | 3): void;
   onDeleteSlot(slot: 1 | 2 | 3): void;
+  onExportSaveSlot(slot: 1 | 2 | 3): void;
+  onInspectSaveImport(serialized: string): void;
+  onImportSave(serialized: string, destination: 1 | 2 | 3): void;
+  onExportEmergencySave(serialized: string): void;
   onResume(): void;
   onPause(): void;
   onQuitToMenu(): void;
@@ -69,6 +122,24 @@ const formatDate = (timestamp?: number): string => {
     timeStyle: 'short',
   }).format(timestamp);
 };
+
+const SAVE_SLOT_STATUS_LABELS: Readonly<Record<SaveSlotStatus, string>> = {
+  empty: 'Empty',
+  ready: 'Ready',
+  recovered: 'Backup recovered',
+  corrupt: 'Damaged save',
+  'unsupported-version': 'Newer game version',
+  unavailable: 'Temporarily unavailable',
+};
+
+const SAVE_SLOT_ACTION_LABELS: Readonly<Record<SaveSlotAction, string>> = {
+  new: 'New game',
+  continue: 'Continue',
+  export: 'Export',
+  delete: 'Delete',
+};
+
+const MAX_SAVE_IMPORT_BYTES = 5 * 1024 * 1024;
 
 const clampPercent = (value: number): number => Math.max(0, Math.min(100, value));
 
@@ -268,7 +339,12 @@ export class GameUI {
   #streamFailureReturnFocus: HTMLElement | null = null;
   #pauseReturnFocus: HTMLElement | null = null;
   #panelReturnFocus: HTMLElement | null = null;
+  #orientationReturnFocus: HTMLElement | null = null;
   #touchVehicleMode: boolean | null = null;
+  #pendingSaveImport: string | null = null;
+  #emergencyExport: string | null = null;
+  #quitSavePending = false;
+  #saveSlotSummaries = new Map<1 | 2 | 3, Readonly<SaveSlotSummary>>();
 
   readonly #handleBindingKeyDown = (event: KeyboardEvent): void => {
     const capture = this.#bindingCapture;
@@ -294,6 +370,12 @@ export class GameUI {
 
     if (event.key === 'Tab') {
       const focusable = this.#modalFocusableElements(modal);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        modal.focus({ preventScroll: true });
+        return;
+      }
       const wrapTarget = modalFocusWrapTarget(focusable, document.activeElement, event.shiftKey);
       if (!wrapTarget) return;
       event.preventDefault();
@@ -307,7 +389,7 @@ export class GameUI {
     event.stopImmediatePropagation();
     if (modal.matches('[data-panel]')) {
       this.closePanel();
-    } else if (modal.matches('[data-pause-menu]')) {
+    } else if (modal.matches('[data-pause-menu]') && !this.#quitSavePending) {
       this.hidePause();
       this.#callbacks.onResume();
     }
@@ -341,34 +423,152 @@ export class GameUI {
 
   showSaveSlots(slots: SaveSlotSummary[]): void {
     this.#setVisibleScreen('save-slots');
+    this.#saveSlotSummaries = new Map(slots.map((slot) => [slot.slot, { ...slot }]));
+    this.resetSaveImport();
+    this.#syncSaveImportDestinations();
     const container = this.#query<HTMLElement>('[data-save-list]');
-    container.innerHTML = slots
-      .map((slot) => {
-        const slotTitle = slot.exists ? `Level ${slot.level ?? 1} · ${slot.mission ?? 'Free roam'}` : 'New story';
-        const slotMeta = slot.exists
-          ? `${slot.district ?? 'Arroyo Heights'} · ${formatPlaytime(slot.playtimeSeconds)} · ${formatDate(slot.updatedAt)}`
-          : 'Begin Alex Moreno’s story';
-        return `
-          <article class="save-card ${slot.exists ? '' : 'is-empty'}" data-slot="${slot.slot}">
-            <div>
-              <span class="save-card__number">Slot ${slot.slot}</span>
-              <h3>${slotTitle}</h3>
-              <p>${slotMeta}</p>
-            </div>
-            <div class="save-card__actions">
-              <button class="button button--primary" data-slot-action="${slot.exists ? 'continue' : 'new'}" data-slot="${slot.slot}">
-                ${slot.exists ? 'Continue' : 'New game'}
-              </button>
-              ${
-                slot.exists
-                  ? `<button class="button button--quiet" data-slot-action="delete" data-slot="${slot.slot}" aria-label="Delete save slot ${slot.slot}">Delete</button>`
-                  : ''
-              }
-            </div>
-          </article>
-        `;
-      })
-      .join('');
+    container.replaceChildren(...slots.map((slot) => this.#createSaveSlotCard(slot)));
+  }
+
+  setSaveMenuPending(pending: boolean): void {
+    const screen = this.#root.querySelector<HTMLElement>('#save-slots');
+    if (!screen) return;
+    screen.setAttribute('aria-busy', String(pending));
+    screen.querySelectorAll<HTMLButtonElement>('[data-save-list] button')
+      .forEach((button) => {
+        button.disabled = pending;
+      });
+    const input = screen.querySelector<HTMLInputElement>('[data-save-import-file]');
+    if (input) input.disabled = pending;
+    const destination = screen.querySelector<HTMLSelectElement>('[data-save-import-destination]');
+    const confirm = screen.querySelector<HTMLButtonElement>('[data-action="confirm-save-import"]');
+    if (pending) {
+      if (destination) destination.disabled = true;
+      if (confirm) confirm.disabled = true;
+      return;
+    }
+    this.#syncSaveImportDestinations();
+    const canImport = this.#pendingSaveImport !== null
+      && screen.querySelector<HTMLElement>('[data-save-import-review]')?.dataset.state === 'valid'
+      && destination !== null
+      && [...destination.options].some((option) => !option.disabled);
+    if (destination) destination.disabled = !canImport;
+    if (confirm) confirm.disabled = !canImport;
+  }
+
+  /** Shows a validation result without placing imported strings into HTML. */
+  showSaveImportReview(review: Readonly<SaveImportReview>): void {
+    const region = this.#query<HTMLElement>('[data-save-import-review]');
+    region.dataset.state = review.valid ? 'valid' : 'invalid';
+    this.#query<HTMLElement>('[data-save-import-title]').textContent = review.title;
+    this.#query<HTMLElement>('[data-save-import-detail]').textContent = review.detail;
+
+    const facts = this.#query<HTMLElement>('[data-save-import-facts]');
+    const factParts: string[] = [];
+    if (review.sourceSlot !== undefined) factParts.push(`Source slot ${review.sourceSlot}`);
+    if (review.updatedAt !== undefined) factParts.push(formatDate(review.updatedAt));
+    if (review.migratedFromVersion !== undefined && review.migratedFromVersion !== null) {
+      factParts.push(`Will migrate from save version ${review.migratedFromVersion}`);
+    }
+    facts.textContent = factParts.join(' · ');
+    facts.hidden = factParts.length === 0;
+
+    const destination = this.#query<HTMLSelectElement>('[data-save-import-destination]');
+    this.#syncSaveImportDestinations();
+    const firstEligible = [...destination.options].find((option) => !option.disabled);
+    const canImport = review.valid && this.#pendingSaveImport !== null && firstEligible !== undefined;
+    destination.disabled = !canImport;
+    if (canImport && destination.selectedOptions[0]?.disabled !== false) {
+      destination.value = firstEligible.value;
+    }
+    this.#query<HTMLButtonElement>('[data-action="confirm-save-import"]').disabled = !canImport;
+  }
+
+  showSaveImportError(message: string): void {
+    this.showSaveImportReview({
+      valid: false,
+      title: 'This file cannot be imported',
+      detail: message,
+    });
+  }
+
+  resetSaveImport(): void {
+    this.#pendingSaveImport = null;
+    const input = this.#root.querySelector<HTMLInputElement>('[data-save-import-file]');
+    if (input) input.value = '';
+    const region = this.#root.querySelector<HTMLElement>('[data-save-import-review]');
+    if (region) region.dataset.state = 'empty';
+    const title = this.#root.querySelector<HTMLElement>('[data-save-import-title]');
+    if (title) title.textContent = 'No save file selected';
+    const detail = this.#root.querySelector<HTMLElement>('[data-save-import-detail]');
+    if (detail) detail.textContent = 'Choose a HEATLINE JSON export to review it before replacing a slot.';
+    const facts = this.#root.querySelector<HTMLElement>('[data-save-import-facts]');
+    if (facts) {
+      facts.textContent = '';
+      facts.hidden = true;
+    }
+    const destination = this.#root.querySelector<HTMLSelectElement>('[data-save-import-destination]');
+    if (destination) destination.disabled = true;
+    const confirm = this.#root.querySelector<HTMLButtonElement>('[data-action="confirm-save-import"]');
+    if (confirm) confirm.disabled = true;
+  }
+
+  /** Keeps a persistence failure visible across screen and modal changes. */
+  showPersistenceWarning(warning: Readonly<PersistenceWarning>): void {
+    const alert = this.#query<HTMLElement>('[data-persistence-warning]');
+    this.#emergencyExport = warning.emergencyExport ?? null;
+    this.#query<HTMLElement>('[data-persistence-warning-message]').textContent = warning.message;
+    this.#query<HTMLButtonElement>('[data-action="export-emergency-save"]').hidden =
+      this.#emergencyExport === null;
+    this.#root.querySelectorAll<HTMLButtonElement>('[data-action="export-emergency-save"]')
+      .forEach((button) => {
+        button.hidden = this.#emergencyExport === null;
+      });
+    this.#root.querySelectorAll<HTMLElement>('[data-modal-persistence-warning]')
+      .forEach((message) => {
+        message.textContent = warning.message;
+        message.hidden = false;
+      });
+    alert.hidden = false;
+    this.#root.classList.add('has-persistence-warning');
+    this.#syncModalInertState();
+  }
+
+  clearPersistenceWarning(): void {
+    const alert = this.#query<HTMLElement>('[data-persistence-warning]');
+    alert.hidden = true;
+    this.#emergencyExport = null;
+    this.#query<HTMLButtonElement>('[data-action="export-emergency-save"]').hidden = true;
+    this.#root.querySelectorAll<HTMLButtonElement>('[data-action="export-emergency-save"]')
+      .forEach((button) => {
+        button.hidden = true;
+      });
+    this.#root.querySelectorAll<HTMLElement>('[data-modal-persistence-warning]')
+      .forEach((message) => {
+        message.textContent = '';
+        message.hidden = true;
+      });
+    if (!this.#quitSavePending) this.setQuitSavePending(false);
+    this.#root.classList.remove('has-persistence-warning');
+    this.#syncModalInertState();
+  }
+
+  /** Keeps Save and quit transactional while the pause modal remains the active lock. */
+  setQuitSavePending(pending: boolean, failureMessage?: string): void {
+    this.#quitSavePending = pending;
+    const pause = this.#root.querySelector<HTMLElement>('[data-pause-menu]');
+    if (!pause) return;
+    pause.setAttribute('aria-busy', String(pending));
+    pause.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+      button.disabled = pending;
+    });
+    const quit = pause.querySelector<HTMLButtonElement>('[data-action="quit-menu"]');
+    if (quit) quit.textContent = pending ? 'Saving…' : 'Save and quit to menu';
+    const status = pause.querySelector<HTMLElement>('[data-quit-save-status]');
+    if (status) {
+      status.hidden = !pending && failureMessage === undefined;
+      status.textContent = pending ? 'Saving progress before leaving…' : failureMessage ?? '';
+    }
   }
 
   showPresetChoice(slot: 1 | 2 | 3): void {
@@ -402,12 +602,38 @@ export class GameUI {
     this.closePanel();
   }
 
+  /** Applies a gameplay-only semantic orientation lock with focus containment. */
+  setOrientationBlocked(blocked: boolean): void {
+    const overlay = this.#query<HTMLElement>('[data-orientation-blocker]');
+    if (blocked) {
+      if (!overlay.hidden) return;
+      this.#orientationReturnFocus = this.#currentFocusWithinRoot();
+      overlay.hidden = false;
+      this.#root.classList.add('is-orientation-blocked');
+      this.#syncModalInertState();
+      overlay.focus({ preventScroll: true });
+      return;
+    }
+    this.#root.classList.remove('is-orientation-blocked');
+    if (overlay.hidden) return;
+    overlay.hidden = true;
+    this.#syncModalInertState();
+    const returnFocus = this.#orientationReturnFocus;
+    this.#orientationReturnFocus = null;
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+  }
+
   updateHud(snapshot: HudSnapshot): void {
     this.#setMeter('health', snapshot.health, snapshot.maxHealth);
     this.#setMeter('armor', snapshot.armor, 100);
     this.#setMeter('stamina', snapshot.stamina, 100);
-    this.#query<HTMLElement>('[data-hud-objective]').textContent = snapshot.objective;
-    this.#query<HTMLElement>('[data-hud-objective-detail]').textContent = snapshot.objectiveDetail ?? '';
+    const objective = this.#query<HTMLElement>('[data-hud-objective]');
+    const objectiveDetail = this.#query<HTMLElement>('[data-hud-objective-detail]');
+    if (objective.textContent !== snapshot.objective) objective.textContent = snapshot.objective;
+    const nextObjectiveDetail = snapshot.objectiveDetail ?? '';
+    if (objectiveDetail.textContent !== nextObjectiveDetail) {
+      objectiveDetail.textContent = nextObjectiveDetail;
+    }
     this.#query<HTMLElement>('[data-hud-district]').textContent = snapshot.district;
     this.#query<HTMLElement>('[data-hud-time]').textContent = snapshot.timeLabel;
     this.#query<HTMLElement>('[data-hud-money]').textContent = `$${Math.floor(snapshot.money).toLocaleString()}`;
@@ -464,6 +690,7 @@ export class GameUI {
   }
 
   hidePause(): void {
+    if (this.#quitSavePending) return;
     const overlay = this.#query<HTMLElement>('[data-pause-menu]');
     if (overlay.hidden) return;
     overlay.hidden = true;
@@ -583,6 +810,14 @@ export class GameUI {
       <div class="app-shell">
         <div class="world-mount" data-world-mount aria-label="3D game world"></div>
 
+        <section class="persistence-warning" data-persistence-warning hidden role="alert" aria-live="assertive" aria-atomic="true">
+          <div>
+            <strong>Browser storage needs attention</strong>
+            <p data-persistence-warning-message>Browser storage rejected the latest save.</p>
+          </div>
+          <button type="button" class="button button--primary" data-action="export-emergency-save" hidden>Export emergency save</button>
+        </section>
+
         <section id="splash-screen" class="screen splash-screen" data-screen>
           <div class="splash-screen__shade"></div>
           <div class="title-lockup">
@@ -615,6 +850,34 @@ export class GameUI {
               <button class="button button--quiet" data-action="back-menu">Back</button>
             </header>
             <div class="save-list" data-save-list></div>
+            <section class="save-transfer" aria-labelledby="save-import-title">
+              <div class="save-transfer__intro">
+                <div>
+                  <p class="eyebrow">Local backup</p>
+                  <h3 id="save-import-title">Import a save file</h3>
+                  <p>HEATLINE checks the format, checksum, and version before any slot is replaced.</p>
+                </div>
+                <input class="visually-hidden" id="save-import-file" data-save-import-file type="file" accept=".json,application/json">
+                <label class="button save-import-file-trigger" for="save-import-file">Choose JSON file</label>
+              </div>
+              <div class="save-import-review" data-save-import-review data-state="empty" role="status" aria-live="polite" aria-atomic="true">
+                <strong data-save-import-title>No save file selected</strong>
+                <p data-save-import-detail>Choose a HEATLINE JSON export to review it before replacing a slot.</p>
+                <small data-save-import-facts hidden></small>
+              </div>
+              <div class="save-transfer__actions">
+                <label>Destination
+                  <select data-save-import-destination disabled aria-describedby="save-import-destination-help">
+                    <option value="1" data-save-import-slot="1">Slot 1 — unavailable</option>
+                    <option value="2" data-save-import-slot="2">Slot 2 — unavailable</option>
+                    <option value="3" data-save-import-slot="3">Slot 3 — unavailable</option>
+                  </select>
+                </label>
+                <small id="save-import-destination-help">Importing replaces the selected slot only after validation.</small>
+                <button type="button" class="button button--primary" data-action="confirm-save-import" disabled>Import save</button>
+                <button type="button" class="button button--quiet" data-action="cancel-save-import">Clear</button>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -666,7 +929,7 @@ export class GameUI {
             <div class="wanted" aria-label="Wanted level"><div data-hud-stars></div><small data-hud-wanted-label></small></div>
           </div>
 
-          <div class="hud-top-center objective-card">
+          <div class="hud-top-center objective-card" role="status" aria-live="polite" aria-atomic="true">
             <small>CURRENT OBJECTIVE</small>
             <strong data-hud-objective>Explore Arroyo Heights</strong>
             <span data-hud-objective-detail></span>
@@ -736,6 +999,8 @@ export class GameUI {
             <p class="eyebrow">Game paused</p>
             <h2 id="pause-menu-title" data-pause-title tabindex="-1">Pause menu</h2>
             <p class="pause-tagline">Solara waits.</p>
+            <p class="pause-save-status" data-quit-save-status role="status" aria-live="polite" hidden></p>
+            <p class="modal-persistence-warning" data-modal-persistence-warning role="status" aria-live="assertive" aria-atomic="true" hidden></p>
             <nav class="menu-actions">
               <button class="button button--primary" data-action="resume">Resume</button>
               <button class="button" data-open-panel="map">Map</button>
@@ -745,6 +1010,7 @@ export class GameUI {
               <button class="button" data-open-panel="garage">Garage</button>
               <button class="button" data-open-panel="properties">Economy</button>
               <button class="button" data-open-panel="settings">Settings</button>
+              <button class="button button--quiet" data-action="export-emergency-save" hidden>Export emergency save</button>
               <button class="button button--danger" data-action="quit-menu">Save and quit to menu</button>
             </nav>
           </div>
@@ -757,6 +1023,7 @@ export class GameUI {
                 <div><p class="eyebrow">Alex Moreno</p><h2 id="game-panel-title" data-panel-title tabindex="-1">Map</h2></div>
                 <button class="button button--quiet" data-action="close-panel">Close</button>
               </header>
+              <p class="modal-persistence-warning" data-modal-persistence-warning role="status" aria-live="assertive" aria-atomic="true" hidden></p>
               <div class="panel-body" data-panel-body></div>
             </div>
           </div>
@@ -777,6 +1044,7 @@ export class GameUI {
             <p id="stream-failure-message" data-stream-failure-message>
               A required city area could not be loaded.
             </p>
+            <p class="modal-persistence-warning" data-modal-persistence-warning role="status" aria-live="assertive" aria-atomic="true" hidden></p>
             <div class="stream-failure-actions">
               <button class="button button--primary" data-action="retry-stream" data-stream-retry>Retry</button>
               <button class="button button--quiet" data-action="return-stream-menu">Return to menu</button>
@@ -784,13 +1052,91 @@ export class GameUI {
           </div>
         </section>
 
-        <div class="rotate-overlay" aria-live="polite">
+        <div class="rotate-overlay" data-orientation-blocker hidden role="dialog" aria-modal="true" aria-labelledby="orientation-blocker-title" aria-describedby="orientation-blocker-description" tabindex="-1">
           <div class="phone-rotate" aria-hidden="true"></div>
-          <strong>Rotate to landscape</strong>
-          <span>HEATLINE is designed for a wide screen.</span>
+          <strong id="orientation-blocker-title">Rotate to landscape</strong>
+          <span id="orientation-blocker-description">Gameplay is paused until the screen is wide again. Menus remain available in portrait.</span>
         </div>
       </div>
     `;
+  }
+
+  #createSaveSlotCard(slot: Readonly<SaveSlotSummary>): HTMLElement {
+    const card = document.createElement('article');
+    card.className = `save-card save-card--${slot.status}`;
+    card.dataset.slot = String(slot.slot);
+    card.dataset.saveStatus = slot.status;
+
+    const copy = document.createElement('div');
+    copy.className = 'save-card__copy';
+
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'save-card__heading';
+    const number = document.createElement('span');
+    number.className = 'save-card__number';
+    number.textContent = `Slot ${slot.slot}`;
+    const status = document.createElement('span');
+    status.className = 'save-card__status';
+    status.textContent = SAVE_SLOT_STATUS_LABELS[slot.status];
+    eyebrow.append(number, status);
+
+    const title = document.createElement('h3');
+    const meta = document.createElement('p');
+    if (slot.status === 'empty') {
+      title.textContent = 'New story';
+      meta.textContent = 'Begin Alex Moreno’s story';
+    } else if (slot.status === 'corrupt') {
+      title.textContent = 'Save data is damaged';
+      meta.textContent = 'This slot cannot be played. Import a backup or delete it.';
+    } else if (slot.status === 'unsupported-version') {
+      title.textContent = 'Created by a newer HEATLINE build';
+      meta.textContent = 'Keep or export this slot. This build will not overwrite it.';
+    } else if (slot.status === 'unavailable') {
+      title.textContent = 'Save state unavailable';
+      meta.textContent = 'No action is allowed until browser storage can be read safely.';
+    } else {
+      title.textContent = `Level ${slot.level ?? 1} · ${slot.mission ?? 'Free roam'}`;
+      const recovery = slot.status === 'recovered' ? 'Recovered backup · ' : '';
+      const presentation = slot.preset === undefined
+        ? ''
+        : `${slot.preset === 'feminine' ? 'Feminine Alex' : 'Masculine Alex'} · `;
+      meta.textContent = `${recovery}${presentation}${slot.district ?? 'Arroyo Heights'} · ${formatPlaytime(slot.playtimeSeconds)} · ${formatDate(slot.updatedAt)}`;
+    }
+    copy.append(eyebrow, title, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'save-card__actions';
+    for (const action of getSaveSlotActions(slot)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = action === 'new' || action === 'continue'
+        ? 'button button--primary'
+        : action === 'delete'
+          ? 'button button--quiet button--danger'
+          : 'button button--quiet';
+      button.dataset.slotAction = action;
+      button.dataset.slot = String(slot.slot);
+      button.textContent = SAVE_SLOT_ACTION_LABELS[action];
+      button.setAttribute('aria-label', `${SAVE_SLOT_ACTION_LABELS[action]} save slot ${slot.slot}`);
+      actions.append(button);
+    }
+
+    card.append(copy, actions);
+    return card;
+  }
+
+  #syncSaveImportDestinations(): void {
+    const select = this.#root.querySelector<HTMLSelectElement>('[data-save-import-destination]');
+    if (!select) return;
+    for (const option of select.options) {
+      const slotId = Number(option.dataset.saveImportSlot) as 1 | 2 | 3;
+      const summary = this.#saveSlotSummaries.get(slotId);
+      const status = summary?.status;
+      option.textContent = summary
+        ? `Slot ${slotId} — ${SAVE_SLOT_STATUS_LABELS[summary.status]}`
+        : `Slot ${slotId} — unavailable`;
+      option.disabled = status === undefined || !isSaveImportDestinationEligible(status);
+    }
   }
 
   #bindEvents(): void {
@@ -813,6 +1159,7 @@ export class GameUI {
         const action = slotButton.dataset.slotAction;
         if (action === 'new') this.showPresetChoice(slot);
         if (action === 'continue') this.#callbacks.onContinueGame(slot);
+        if (action === 'export') this.#callbacks.onExportSaveSlot(slot);
         if (action === 'delete') this.#callbacks.onDeleteSlot(slot);
       }
 
@@ -847,6 +1194,43 @@ export class GameUI {
         this.#handleSettingsInput(target);
       }
     });
+
+    this.#root.addEventListener('change', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.matches('[data-save-import-file]')) {
+        void this.#readSaveImportFile(target);
+      }
+    });
+  }
+
+  async #readSaveImportFile(input: HTMLInputElement): Promise<void> {
+    const file = input.files?.[0];
+    this.#pendingSaveImport = null;
+    if (!file) {
+      this.resetSaveImport();
+      return;
+    }
+    this.showSaveImportReview({
+      valid: false,
+      title: `Reviewing ${file.name}`,
+      detail: 'Checking the save format, checksum, and game version…',
+    });
+    if (file.size > MAX_SAVE_IMPORT_BYTES) {
+      this.showSaveImportError('The selected file is larger than the 5 MB save-file limit.');
+      return;
+    }
+    try {
+      const serialized = await file.text();
+      if (serialized.trim().length === 0) {
+        this.showSaveImportError('The selected file is empty.');
+        return;
+      }
+      this.#pendingSaveImport = serialized;
+      this.#callbacks.onInspectSaveImport(serialized);
+    } catch (error: unknown) {
+      this.#pendingSaveImport = null;
+      this.showSaveImportError(`The selected file could not be read: ${errorMessage(error)}`);
+    }
   }
 
   #setTouchLayout(vehicleMode: boolean): void {
@@ -902,7 +1286,6 @@ export class GameUI {
         this.#callbacks.onResume();
         break;
       case 'quit-menu':
-        this.hidePause();
         this.#callbacks.onQuitToMenu();
         break;
       case 'close-panel':
@@ -915,15 +1298,42 @@ export class GameUI {
         this.hideStreamFailure();
         this.#callbacks.onReturnFromStreamFailure?.();
         break;
+      case 'confirm-save-import': {
+        if (this.#pendingSaveImport === null) break;
+        const destination = Number(
+          this.#query<HTMLSelectElement>('[data-save-import-destination]').value,
+        );
+        if (destination !== 1 && destination !== 2 && destination !== 3) {
+          this.showSaveImportError('Choose save slot 1, 2, or 3 as the import destination.');
+          break;
+        }
+        this.#callbacks.onImportSave(this.#pendingSaveImport, destination);
+        break;
+      }
+      case 'cancel-save-import':
+        this.resetSaveImport();
+        break;
+      case 'export-emergency-save':
+        if (this.#emergencyExport !== null) {
+          this.#callbacks.onExportEmergencySave(this.#emergencyExport);
+        }
+        break;
       default:
         break;
     }
   }
 
   #setVisibleScreen(id: string): void {
-    this.#root.querySelectorAll<HTMLElement>('[data-screen]').forEach((screen) => {
+    const screens = [...this.#root.querySelectorAll<HTMLElement>('[data-screen]')];
+    screens.forEach((screen) => {
       screen.hidden = screen.id !== id;
     });
+    const visibleScreen = screens.find((screen) => screen.id === id);
+    const title = visibleScreen?.querySelector<HTMLElement>('h1, h2');
+    if (title) {
+      title.tabIndex = -1;
+      title.focus({ preventScroll: true });
+    }
   }
 
   #setMeter(name: string, value: number, max: number): void {
@@ -944,6 +1354,8 @@ export class GameUI {
   }
 
   #activeModal(): HTMLElement | null {
+    const orientationBlocker = this.#root.querySelector<HTMLElement>('[data-orientation-blocker]');
+    if (orientationBlocker && !orientationBlocker.hidden) return orientationBlocker;
     const streamFailure = this.#root.querySelector<HTMLElement>('[data-stream-failure]');
     if (streamFailure && !streamFailure.hidden) return streamFailure;
     const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
@@ -978,10 +1390,17 @@ export class GameUI {
           && !child.contains(activeModal);
       }
     });
-    for (const selector of ['[data-pause-menu]', '[data-panel]', '[data-stream-failure]']) {
+    for (const selector of [
+      '[data-orientation-blocker]',
+      '[data-pause-menu]',
+      '[data-panel]',
+      '[data-stream-failure]',
+    ]) {
       const overlay = this.#root.querySelector<HTMLElement>(selector);
       if (overlay) overlay.inert = activeModal !== null && overlay !== activeModal;
     }
+    const persistenceWarning = this.#root.querySelector<HTMLElement>('[data-persistence-warning]');
+    if (persistenceWarning) persistenceWarning.inert = activeModal !== null;
     this.#root.classList.toggle('has-modal', activeModal !== null);
   }
 
@@ -1215,4 +1634,8 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

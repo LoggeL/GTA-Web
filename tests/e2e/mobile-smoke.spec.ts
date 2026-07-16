@@ -1,4 +1,4 @@
-import { expectPlayableWorldShell, startNewGame } from './helpers';
+import { enterMainMenu, expectPlayableWorldShell, openApplication, startNewGame } from './helpers';
 import { expect, test } from './fixtures';
 
 interface QaApi {
@@ -15,6 +15,17 @@ type QaWindow = Window & { __HEATLINE_QA__?: QaApi };
 
 test.describe('M0 mobile landscape browser smoke', () => {
   test.skip(({ isMobile }) => !isMobile, 'Mobile-only smoke coverage');
+
+  test('portrait keeps splash and menus usable before gameplay starts', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openApplication(page);
+    await expect(page.getByRole('dialog', { name: 'Rotate to landscape' })).toBeHidden();
+    await enterMainMenu(page);
+    await expect(page.getByRole('navigation', { name: 'Main menu' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'City of second chances.' }))
+      .toBeFocused();
+    await expect(page.getByRole('dialog', { name: 'Rotate to landscape' })).toBeHidden();
+  });
 
   test('landscape gameplay exposes touch controls and portrait shows the rotate blocker', async ({ page }) => {
     test.setTimeout(90_000);
@@ -166,13 +177,16 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await interact.dispatchEvent('pointerup');
     await expect(touchControls).toHaveAttribute('data-touch-layout', 'on-foot');
 
-    const rotateMessage = page.getByText('Rotate to landscape', { exact: true });
-    await expect(rotateMessage).toBeHidden();
+    const rotateDialog = page.getByRole('dialog', { name: 'Rotate to landscape' });
+    await expect(rotateDialog).toBeHidden();
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(rotateMessage).toBeVisible();
-    await expect(page.getByText('HEATLINE is designed for a wide screen.', { exact: true })).toBeVisible();
+    await expect(rotateDialog).toBeVisible();
+    await expect(rotateDialog).toBeFocused();
+    await expect(rotateDialog).toContainText('Gameplay is paused until the screen is wide again.');
+    await expect(page.getByLabel('Game HUD')).toHaveJSProperty('inert', true);
     await page.setViewportSize({ width: 844, height: 390 });
-    await expect(rotateMessage).toBeHidden();
+    await expect(rotateDialog).toBeHidden();
+    await expect(page.getByLabel('Game HUD')).toHaveJSProperty('inert', false);
     await expect(touchControls).toBeVisible();
 
     const actionBounds = await touchControls.locator('[data-touch-action]:visible').evaluateAll((buttons) =>

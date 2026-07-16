@@ -20,6 +20,8 @@ export interface SaveValidationRegistry {
   activityIds?: ReadonlySet<string>;
   collectibleIds?: ReadonlySet<string>;
   recipeIds?: ReadonlySet<string>;
+  validateMissionRuntime?: (value: unknown) => string | null;
+  validateDialogueRuntime?: (value: unknown) => string | null;
 }
 
 export type SaveValidationResult =
@@ -54,12 +56,13 @@ export function validateSaveGame(
     }
   }
   validateVehicleArray(value.ownedVehicles, registry, errors);
-  validateMissionRuntimeBoundary(value.missionRuntime, errors);
-  validateDialogueRuntimeBoundary(value.dialogueRuntime, errors);
+  validateMissionRuntimeBoundary(value.missionRuntime, registry, errors);
+  validateDialogueRuntimeBoundary(value.dialogueRuntime, registry, errors);
   validateRecord(value.missions, 'missions', errors, (entry, path, id) => {
     validateRegistryId(id, registry.missionIds, path, errors);
     validateMission(entry, path, errors);
   });
+  validateMissionRuntimeConsistency(value.missions, value.missionRuntime, errors);
   validateNumberRecord(value.contacts, 'contacts', errors, 0, Number.MAX_SAFE_INTEGER);
   if (value.ending !== null) {
     validateOneOf(value.ending, ['rule', 'expose'], 'ending', errors);
@@ -87,7 +90,11 @@ export function validateSaveGame(
   return { valid: true, save: value as unknown as SaveGameV1, errors: [] };
 }
 
-function validateMissionRuntimeBoundary(value: unknown, errors: string[]): void {
+function validateMissionRuntimeBoundary(
+  value: unknown,
+  registry: SaveValidationRegistry,
+  errors: string[],
+): void {
   if (value === null) return;
   if (!isRecord(value)) {
     errors.push('missionRuntime must be an object or null');
@@ -96,13 +103,63 @@ function validateMissionRuntimeBoundary(value: unknown, errors: string[]): void 
   validateLiteral(value.snapshotVersion, 1, 'missionRuntime.snapshotVersion', errors);
   if (!isRecord(value.campaign)) {
     errors.push('missionRuntime.campaign must be an object');
+  } else if (
+    value.campaign.activeMissionId !== null
+    && (typeof value.campaign.activeMissionId !== 'string'
+      || value.campaign.activeMissionId.length === 0)
+  ) {
+    errors.push('missionRuntime.campaign.activeMissionId must be a non-empty string or null');
   }
   if (value.active !== null && !isRecord(value.active)) {
     errors.push('missionRuntime.active must be an object or null');
   }
+  const reason = registry.validateMissionRuntime?.(value);
+  if (reason) errors.push(`missionRuntime is invalid: ${reason}`);
 }
 
-function validateDialogueRuntimeBoundary(value: unknown, errors: string[]): void {
+/**
+ * The runtime snapshot is the state MissionRuntime restores on Continue. Keep
+ * the legacy top-level mission projection aligned so save-slot previews cannot
+ * advertise a different active job from the one gameplay will restore.
+ */
+function validateMissionRuntimeConsistency(
+  missionsValue: unknown,
+  missionRuntimeValue: unknown,
+  errors: string[],
+): void {
+  if (!isRecord(missionsValue)) return;
+  const activeMissionIds = Object.entries(missionsValue).flatMap(([missionId, progress]) => (
+    isRecord(progress) && progress.state === 'active' ? [missionId] : []
+  ));
+  if (activeMissionIds.length > 1) {
+    errors.push('missions must contain at most one active mission');
+    return;
+  }
+
+  let runtimeActiveMissionId: string | null | undefined;
+  if (missionRuntimeValue === null) {
+    runtimeActiveMissionId = null;
+  } else if (isRecord(missionRuntimeValue) && isRecord(missionRuntimeValue.campaign)) {
+    const candidate = missionRuntimeValue.campaign.activeMissionId;
+    if (candidate === null || (typeof candidate === 'string' && candidate.length > 0)) {
+      runtimeActiveMissionId = candidate;
+    }
+  }
+  if (runtimeActiveMissionId === undefined) return;
+
+  const projectedActiveMissionId = activeMissionIds[0] ?? null;
+  if (projectedActiveMissionId !== runtimeActiveMissionId) {
+    errors.push(
+      `missions active mission ${JSON.stringify(projectedActiveMissionId)} must match missionRuntime.campaign.activeMissionId ${JSON.stringify(runtimeActiveMissionId)}`,
+    );
+  }
+}
+
+function validateDialogueRuntimeBoundary(
+  value: unknown,
+  registry: SaveValidationRegistry,
+  errors: string[],
+): void {
   if (value === null) return;
   if (!isRecord(value)) {
     errors.push('dialogueRuntime must be an object or null');
@@ -111,6 +168,8 @@ function validateDialogueRuntimeBoundary(value: unknown, errors: string[]): void
   if (value.snapshotVersion !== 1 && value.snapshotVersion !== 2) {
     errors.push('dialogueRuntime.snapshotVersion must equal 1 or 2');
   }
+  const reason = registry.validateDialogueRuntime?.(value);
+  if (reason) errors.push(`dialogueRuntime is invalid: ${reason}`);
 }
 
 function validateQuickLoadout(

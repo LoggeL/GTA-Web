@@ -125,6 +125,10 @@ function createCallbacks(): GameUICallbacks {
     onStartNewGame: vi.fn(),
     onContinueGame: vi.fn(),
     onDeleteSlot: vi.fn(),
+    onExportSaveSlot: vi.fn(),
+    onInspectSaveImport: vi.fn(),
+    onImportSave: vi.fn(),
+    onExportEmergencySave: vi.fn(),
     onResume: vi.fn(),
     onPause: vi.fn(),
     onQuitToMenu: vi.fn(),
@@ -155,6 +159,9 @@ function createHarness(): {
   panelRegion: FakeElement;
   closePanel: FakeElement;
   touchMenu: FakeElement;
+  persistenceWarning: FakeElement;
+  persistenceMessage: FakeElement;
+  emergencyExport: FakeElement;
   ui: GameUI;
 } {
   rootElement = new FakeElement();
@@ -198,12 +205,19 @@ function createHarness(): {
   panel.focusableElements.push(closePanel);
   const touchMenu = new FakeElement();
   touchMenu.dataset.action = 'pause';
+  const persistenceWarning = new FakeElement();
+  persistenceWarning.hidden = true;
+  const persistenceMessage = new FakeElement();
+  const emergencyExport = new FakeElement();
+  emergencyExport.hidden = true;
+  emergencyExport.dataset.action = 'export-emergency-save';
 
-  rootElement.append(splash, game, pause, panel, overlay);
+  rootElement.append(splash, game, pause, panel, overlay, persistenceWarning);
   game.append(touchMenu, binding, bindingStatus);
   pause.append(pauseTitle, resume, quit);
   panel.append(panelTitle, panelBody, panelRegion, closePanel);
   overlay.append(message, retry, returnToMenu);
+  persistenceWarning.append(persistenceMessage, emergencyExport);
 
   rootElement.listsBySelector.set('[data-screen]', [splash, game]);
   rootElement.listsBySelector.set('[data-touch-action]', []);
@@ -223,6 +237,9 @@ function createHarness(): {
   rootElement.childrenBySelector.set('[data-panel-region]', panelRegion);
   rootElement.childrenBySelector.set('[data-action="close-panel"]', closePanel);
   rootElement.childrenBySelector.set('[data-action="pause"]', touchMenu);
+  rootElement.childrenBySelector.set('[data-persistence-warning]', persistenceWarning);
+  rootElement.childrenBySelector.set('[data-persistence-warning-message]', persistenceMessage);
+  rootElement.childrenBySelector.set('[data-action="export-emergency-save"]', emergencyExport);
   overlay.focusableElements.push(retry, returnToMenu);
 
   const callbacks = createCallbacks();
@@ -245,6 +262,9 @@ function createHarness(): {
     panelRegion,
     closePanel,
     touchMenu,
+    persistenceWarning,
+    persistenceMessage,
+    emergencyExport,
     ui,
   };
 }
@@ -289,6 +309,11 @@ describe('GameUI stream failure blocker', () => {
     expect(rootElement.innerHTML).toContain('data-pause-menu hidden role="dialog" aria-modal="true"');
     expect(rootElement.innerHTML).toContain('data-panel hidden role="dialog" aria-modal="true"');
     expect(rootElement.innerHTML).toContain('data-dialogue hidden role="status" aria-live="polite"');
+    expect(rootElement.innerHTML).toContain('data-persistence-warning hidden role="alert"');
+    expect(rootElement.innerHTML).toContain('data-action="export-emergency-save"');
+    expect(rootElement.innerHTML).toContain('data-save-import-file type="file"');
+    expect(rootElement.innerHTML).toContain('data-save-import-destination disabled');
+    expect(rootElement.innerHTML).toContain('data-action="confirm-save-import" disabled');
     expect(rootElement.innerHTML.match(/data-meter="(?:health|armor|stamina)" role="progressbar"/g)).toHaveLength(3);
     expect(rootElement.innerHTML).toContain('data-hud-xp role="progressbar"');
 
@@ -354,6 +379,38 @@ describe('GameUI stream failure blocker', () => {
     returnToMenu.click();
     expect(overlay.hidden).toBe(true);
     expect(callbacks.onReturnFromStreamFailure).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a persistence warning visible, exports its emergency snapshot, and makes it inert under a modal', () => {
+    const {
+      callbacks,
+      persistenceWarning,
+      persistenceMessage,
+      emergencyExport,
+      touchMenu,
+      ui,
+    } = createHarness();
+
+    ui.showPersistenceWarning({
+      message: 'Slot 2 could not be written because browser storage is full.',
+      emergencyExport: '{"format":"heatline-solara-save"}',
+    });
+
+    expect(persistenceWarning.hidden).toBe(false);
+    expect(persistenceMessage.textContent).toContain('storage is full');
+    expect(emergencyExport.hidden).toBe(false);
+    emergencyExport.click();
+    expect(callbacks.onExportEmergencySave).toHaveBeenCalledWith('{"format":"heatline-solara-save"}');
+
+    ui.showGame();
+    touchMenu.click();
+    expect(persistenceWarning.hidden).toBe(false);
+    expect(persistenceWarning.inert).toBe(true);
+
+    ui.hidePause();
+    expect(persistenceWarning.inert).toBe(false);
+    ui.clearPersistenceWarning();
+    expect(persistenceWarning.hidden).toBe(true);
   });
 
   it('opens from the touch menu, nests the panel accessibly, and restores focus and inert state', () => {

@@ -55,6 +55,8 @@ function normalizedActorLimits(
 }
 
 export class CitySimulation {
+  private static readonly LOW_QUALITY_VISUAL_INTERVAL_SECONDS = 1 / 30;
+
   private readonly weaponRandom: SimulationRandom;
   private readonly traffic: TrafficSystem;
   private readonly pedestrians: PedestrianSystem;
@@ -68,6 +70,7 @@ export class CitySimulation {
   private crimeSequence = 0;
   private lastCrimeId: string | null = null;
   private visuals: SimulationVisualLayer | null = null;
+  private visualUpdateElapsed = 0;
   private disposed = false;
 
   public constructor(options: CitySimulationOptions = {}) {
@@ -108,6 +111,7 @@ export class CitySimulation {
     this.detach();
     this.visuals = new SimulationVisualLayer(scene);
     this.visuals.update(this.getSnapshot());
+    this.visualUpdateElapsed = 0;
   }
 
   public detach(): void {
@@ -127,6 +131,7 @@ export class CitySimulation {
     this.pedestrians.setQuality(quality);
     this.combat.setQuality(quality);
     this.visuals?.update(this.getSnapshot());
+    this.visualUpdateElapsed = 0;
   }
 
   public setActorLimits(
@@ -139,6 +144,7 @@ export class CitySimulation {
     this.combat.setActorLimit(normalized.combat);
     const effective = this.getActorLimits();
     this.visuals?.update(this.getSnapshot());
+    this.visualUpdateElapsed = 0;
     return effective;
   }
 
@@ -192,7 +198,7 @@ export class CitySimulation {
       obstacles: context.obstructions ?? [],
     });
     const snapshot = this.getSnapshot();
-    this.visuals?.update(snapshot);
+    this.updateVisuals(snapshot, dt);
     return { snapshot, weaponFire };
   }
 
@@ -424,5 +430,19 @@ export class CitySimulation {
       radius: target.radiusMeters,
       active: target.active && target.hostile && target.visible,
     }));
+  }
+
+  private updateVisuals(snapshot: Readonly<CitySimulationSnapshot>, deltaSeconds: number): void {
+    if (!this.visuals) return;
+    if (this.quality === 'high') {
+      this.visuals.update(snapshot);
+      return;
+    }
+
+    this.visualUpdateElapsed += deltaSeconds;
+    const interval = CitySimulation.LOW_QUALITY_VISUAL_INTERVAL_SECONDS;
+    if (this.visualUpdateElapsed + Number.EPSILON < interval) return;
+    this.visualUpdateElapsed %= interval;
+    this.visuals.update(snapshot);
   }
 }

@@ -25,7 +25,7 @@ test.describe('M0 desktop browser smoke', () => {
     await page.getByRole('navigation', { name: 'Main menu' }).getByRole('button', { name: 'Play' }).click();
     const slot = page.locator('[data-save-list] article[data-slot="2"]');
     await expect(slot.getByText('Slot 2', { exact: true })).toBeVisible();
-    await expect(slot.getByText(/Level 1 · Solara free roam/)).toBeVisible();
+    await expect(slot.getByText(/Level 1 · Past Due/)).toBeVisible();
     await slot.getByRole('button', { name: 'Continue' }).click();
 
     await expect(page.getByLabel('Game HUD')).toBeVisible({ timeout: 15_000 });

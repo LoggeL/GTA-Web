@@ -176,6 +176,11 @@ describe('save validation and format', () => {
 
   it('migrates Preview 2.1 saves and validates the M6 runtime snapshot boundaries', () => {
     const current = createInitialSaveGame(1, 'masculine');
+    current.missions['past-due'] = {
+      state: 'active',
+      checkpointId: 'past-due:garage-defense',
+      completedObjectives: [],
+    };
     const legacy: Record<string, unknown> = { ...current, schemaVersion: 3 };
     delete legacy.missionRuntime;
     delete legacy.dialogueRuntime;
@@ -187,6 +192,8 @@ describe('save validation and format', () => {
       expect(migrated.save.schemaVersion).toBe(4);
       expect(migrated.save.missionRuntime).toBeNull();
       expect(migrated.save.dialogueRuntime).toBeNull();
+      expect(migrated.save.missions['past-due']?.state).toBe('available');
+      expect(current.missions['past-due']?.state).toBe('active');
     }
 
     const malformed = createInitialSaveGame(1, 'masculine');
@@ -214,6 +221,54 @@ describe('save validation and format', () => {
         'dialogueRuntime.snapshotVersion must equal 1 or 2',
       );
     }
+  });
+
+  it('rejects mission projections that disagree with the runtime restored on Continue', () => {
+    const missingRuntime = createInitialSaveGame(1, 'masculine');
+    missingRuntime.missions['past-due'] = {
+      state: 'active',
+      checkpointId: null,
+      completedObjectives: [],
+    };
+    const missingRuntimeValidation = validateSaveGame(missingRuntime);
+    expect(missingRuntimeValidation.valid).toBe(false);
+    if (!missingRuntimeValidation.valid) {
+      expect(missingRuntimeValidation.errors.join(' ')).toContain(
+        'must match missionRuntime.campaign.activeMissionId null',
+      );
+    }
+
+    const multipleActive = createInitialSaveGame(1, 'masculine');
+    multipleActive.missions.first = {
+      state: 'active',
+      checkpointId: null,
+      completedObjectives: [],
+    };
+    multipleActive.missions.second = {
+      state: 'active',
+      checkpointId: null,
+      completedObjectives: [],
+    };
+    const multipleActiveValidation = validateSaveGame(multipleActive);
+    expect(multipleActiveValidation.valid).toBe(false);
+    if (!multipleActiveValidation.valid) {
+      expect(multipleActiveValidation.errors).toContain(
+        'missions must contain at most one active mission',
+      );
+    }
+
+    const matched = createInitialSaveGame(1, 'masculine');
+    matched.missions['past-due'] = {
+      state: 'active',
+      checkpointId: null,
+      completedObjectives: [],
+    };
+    matched.missionRuntime = {
+      snapshotVersion: 1,
+      campaign: { activeMissionId: 'past-due' },
+      active: { missionId: 'past-due' },
+    };
+    expect(validateSaveGame(matched).valid).toBe(true);
   });
 
   it('validates quick-loadout references and unlocked recipe ids', () => {

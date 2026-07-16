@@ -2,12 +2,12 @@ import {
   InstancedMesh,
   Mesh,
 } from 'three';
-import type { BufferGeometry, Group, Material } from 'three';
+import type { BufferAttribute, BufferGeometry, Group, Material } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { generateCity } from '../../src/game/city';
 import type { CityLayout } from '../../src/game/city';
-import { createCityVisuals } from '../../src/game/visuals';
+import { RainField, createCityVisuals } from '../../src/game/visuals';
 import { cellIdAt } from '../../src/navigation/cells';
 import type { CellId } from '../../src/navigation/types';
 
@@ -18,6 +18,31 @@ const FULL_DENSITY = {
   actors: 1,
   shadows: 1,
 } as const;
+
+describe('weather visuals', () => {
+  it('skips particle mutation and GPU uploads throughout dry frames', () => {
+    const rain = new RainField(42, 'low');
+    const positions = rain.points.geometry.getAttribute('position') as BufferAttribute;
+    const initialValues = Array.from(positions.array);
+
+    rain.update(1 / 60, 0, { x: 10, y: 0, z: -20 });
+
+    expect(rain.points.visible).toBe(false);
+    expect(rain.points.geometry.drawRange).toEqual({ start: 0, count: 0 });
+    expect(positions.version).toBe(0);
+    expect(Array.from(positions.array)).toEqual(initialValues);
+
+    rain.update(1 / 60, 0.5, { x: 10, y: 0, z: -20 });
+    expect(rain.points.visible).toBe(true);
+    expect(positions.version).toBe(1);
+    expect(Array.from(positions.array)).not.toEqual(initialValues);
+
+    rain.update(1 / 60, 0, { x: 50, y: 0, z: 30 });
+    expect(positions.version).toBe(1);
+
+    rain.dispose();
+  });
+});
 
 function contentCellIds(layout: CityLayout): CellId[] {
   return [...new Set([

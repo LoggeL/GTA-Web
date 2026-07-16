@@ -170,7 +170,7 @@ const LEVEL_RESOLUTION_REDUCTION: Readonly<
 > = {
   full: 0,
   balanced: 0.1,
-  minimum: 0.25,
+  minimum: 0.3,
 };
 
 function sortedCellIds(values: Iterable<CellId>): CellId[] {
@@ -211,6 +211,21 @@ function cloneRetry(retry: Readonly<CellRetryState>): CellRetryState {
 
 function defaultResolutionScale(quality: WorldQuality): number {
   return quality === 'high' ? 1 : 0.8;
+}
+
+/**
+ * Applies the low-quality ceiling only when automatic quality selection chose
+ * the low path. Explicit quality choices keep the user's resolution slider as
+ * an absolute scale, and lower slider values remain unchanged.
+ */
+export function baseResolutionScaleForQuality(
+  configuredScale: number,
+  qualitySetting: WorldQuality | 'auto',
+  resolvedQuality: WorldQuality,
+): number {
+  return qualitySetting === 'auto' && resolvedQuality === 'low'
+    ? Math.min(configuredScale, defaultResolutionScale('low'))
+    : configuredScale;
 }
 
 /**

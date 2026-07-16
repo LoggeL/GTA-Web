@@ -236,12 +236,29 @@ function migrateVersionTwo(value: Readonly<Record<string, unknown>>): Record<str
 }
 
 function migrateVersionThree(value: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const missionRuntime = value.missionRuntime === undefined ? null : value.missionRuntime;
   return {
     ...value,
     schemaVersion: 4,
-    missionRuntime: value.missionRuntime === undefined ? null : value.missionRuntime,
+    // Pre-runtime saves cannot resume an in-flight mission: App intentionally
+    // rebuilds those top-level states as available. Persist that normalization
+    // during migration so the validated projection and slot preview stay true.
+    missions: missionRuntime === null
+      ? normalizeLegacyActiveMissions(value.missions)
+      : value.missions,
+    missionRuntime,
     dialogueRuntime: value.dialogueRuntime === undefined ? null : value.dialogueRuntime,
   };
+}
+
+function normalizeLegacyActiveMissions(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([missionId, progress]) => [
+    missionId,
+    isRecord(progress) && progress.state === 'active'
+      ? { ...progress, state: 'available' }
+      : progress,
+  ]));
 }
 
 function canonicalize(value: unknown, seen: WeakSet<object>): string {
