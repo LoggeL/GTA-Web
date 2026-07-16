@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 18:11 CEST
+Last updated: 2026-07-16 18:14 CEST
 Plan status: Active  
-Current focus: Preview 2 publication gate, then M5 implementation
+Current focus: M5 implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -330,16 +330,17 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 18:00 | M3 | Completed the vehicle, traffic, ownership, garage, and vehicle-specific touch scope and advanced the active implementation focus to M4. | `npm run check`: 48 files / 301 tests; Playwright: 16 passed / 10 intentional project-specific skips; deterministic 300-second generated-city traffic route; desktop 1280×720 visual QA; compact-mobile 844×390 touch course; 0.96 MiB artifact / 0.34 MiB compressed |
 | 2026-07-16 18:10 | Preview 1.1 | Published the complete M3 vehicle/traffic/ownership/garage build through GitHub Pages. Live smoke passed through splash, menu, existing-save load, rendered gameplay, starter-vehicle entry, engine-health HUD, and the garage panel; deployed repository-base JS/CSS hashes matched the checked production build. | Source `89fbbb2ed2d01a060df2d3c0539bfdac3e4fa794`; tag `preview-1.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29509656104); [live preview](https://loggel.github.io/GTA-Web/?preview=1.1); 0.96 MiB artifact / 0.34 MiB compressed; `npm run check` 48 files / 301 tests; Playwright 16 passed / 10 intentional skips |
 | 2026-07-16 18:11 | M4 | Completed the live combat/stealth/NPC/wanted milestone: 15 weapons, brawling and takedowns, soft cover and aim assist, five-role perception/navigation/tactics, witness-driven heat, persistent pursuit/search, physical roadblocks, tactical helicopter, armor, and death/arrest recovery. The authored combat zone was moved away from the tutorial garage after the full matrix exposed unsafe hostile proximity. | `npm run check`: 62 files / 375 tests; Playwright: 18 passed / 12 intentional project-specific skips; M4 desktop/mobile course 2 passed / 2 intentional skips; deterministic 300-second NPC soak; desktop clear/level-five visual QA; 1.03 MiB artifact / 0.36 MiB compressed |
+| 2026-07-16 18:14 | Preview 2 | Published the complete M4 vehicles/combat/wanted loop through GitHub Pages. Live desktop smoke migrated and loaded the existing Preview 1.1 save, rendered the level-five response with three planned roadblocks and a tracking helicopter, exposed the 175 m search radius and active weapon HUD, and loaded the checked JS/CSS hashes. A fresh 844×390 live-mobile run reached gameplay with all nine on-foot touch actions, level-five response telemetry, and no page errors. | Source `0b4b5a0a94efefad1e6d48681fceec7714ad13a9`; tag `preview-2`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29514132955); [live preview](https://loggel.github.io/GTA-Web/?preview=2); 1.03 MiB artifact / 0.36 MiB compressed; `npm run check` 62 files / 375 tests; Playwright 18 passed / 12 intentional skips |
 
 ## Release record
 
 - Repository: `https://github.com/LoggeL/GTA-Web`
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
-- Current preview: Preview 1.1 (`preview-1.1`)
-- Release commit: `89fbbb2ed2d01a060df2d3c0539bfdac3e4fa794`
-- Deployment workflow: [GitHub Pages run 29509656104 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29509656104)
+- Current preview: Preview 2 (`preview-2`)
+- Release commit: `0b4b5a0a94efefad1e6d48681fceec7714ad13a9`
+- Deployment workflow: [GitHub Pages run 29514132955 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29514132955)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.34 MiB at Preview 1.1 gate
-- Published artifact size: 0.96 MiB at Preview 1.1 gate
-- Final `npm run check`: pending for M8; Preview 1.1 gate passed with 48 files / 301 tests
-- Final browser smoke test: pending for M8; Preview 1.1 live smoke passed through splash/menu, existing-save gameplay, vehicle entry, engine-health HUD, and garage-panel availability with the checked repository-base assets loading
+- Current compressed shell: 0.36 MiB at Preview 2 gate
+- Published artifact size: 1.03 MiB at Preview 2 gate
+- Final `npm run check`: pending for M8; Preview 2 gate passed with 62 files / 375 tests
+- Final browser smoke test: pending for M8; Preview 2 live smoke passed existing-save migration/load, level-five response, three roadblocks, tracking helicopter, wanted-search/weapon HUD, checked repository-base JS/CSS hashes, and a fresh 844×390 mobile start with all nine on-foot touch actions and no page errors
