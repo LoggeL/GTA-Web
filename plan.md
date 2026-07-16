@@ -1,6 +1,6 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 18:00 CEST
+Last updated: 2026-07-16 18:10 CEST
 Plan status: Active  
 Current focus: M4 implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
@@ -326,16 +326,17 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 17:50 | Preview 1 | Published the complete M1/M2 four-district streaming/navigation build through GitHub Pages. Live smoke passed through splash/menu, an existing save into gameplay, vehicle entry, and the full map at desktop 1280×720 and compact 844×390; repository-base assets loaded successfully. | Source `0ba4478c7bc08a34f1f9ffbd83d7a36db119decd`; tag `preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29503687202); [live preview](https://loggel.github.io/GTA-Web/); 0.83 MiB uploaded artifact / 0.31 MiB compressed shell; `npm run check` 40 files / 244 tests; Playwright 14 passed / 8 intentional skips |
 | 2026-07-16 17:55 | M3 | Began the vehicle/traffic/ownership/garage milestone with parallel implementation of the eight-class arcade handling and integrity registry plus the pure ownership, finite-slot garage, upgrade, repair, and trunk domain. | M3 marked `IN PROGRESS`; acceptance remains open until runtime, UI, persistence, touch, and soak gates pass |
 | 2026-07-16 18:00 | M3 | Completed the vehicle, traffic, ownership, garage, and vehicle-specific touch scope and advanced the active implementation focus to M4. | `npm run check`: 48 files / 301 tests; Playwright: 16 passed / 10 intentional project-specific skips; deterministic 300-second generated-city traffic route; desktop 1280×720 visual QA; compact-mobile 844×390 touch course; 0.96 MiB artifact / 0.34 MiB compressed |
+| 2026-07-16 18:10 | Preview 1.1 | Published the complete M3 vehicle/traffic/ownership/garage build through GitHub Pages. Live smoke passed through splash, menu, existing-save load, rendered gameplay, starter-vehicle entry, engine-health HUD, and the garage panel; deployed repository-base JS/CSS hashes matched the checked production build. | Source `89fbbb2ed2d01a060df2d3c0539bfdac3e4fa794`; tag `preview-1.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29509656104); [live preview](https://loggel.github.io/GTA-Web/?preview=1.1); 0.96 MiB artifact / 0.34 MiB compressed; `npm run check` 48 files / 301 tests; Playwright 16 passed / 10 intentional skips |
 
 ## Release record
 
 - Repository: `https://github.com/LoggeL/GTA-Web`
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
-- Current preview: Preview 1 (`preview-1`)
-- Release commit: `0ba4478c7bc08a34f1f9ffbd83d7a36db119decd`
-- Deployment workflow: [GitHub Pages run 29503687202 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29503687202)
+- Current preview: Preview 1.1 (`preview-1.1`)
+- Release commit: `89fbbb2ed2d01a060df2d3c0539bfdac3e4fa794`
+- Deployment workflow: [GitHub Pages run 29509656104 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29509656104)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.31 MiB at Preview 1 gate
-- Published artifact size: 0.83 MiB at Preview 1 gate
-- Final `npm run check`: pending for M8; Preview 1 gate passed with 40 files / 244 tests
-- Final browser smoke test: pending for M8; Preview 1 live smoke passed through splash/menu, existing-save gameplay, vehicle entry, and full map at 1280×720 and 844×390 with repository-base assets loading
+- Current compressed shell: 0.34 MiB at Preview 1.1 gate
+- Published artifact size: 0.96 MiB at Preview 1.1 gate
+- Final `npm run check`: pending for M8; Preview 1.1 gate passed with 48 files / 301 tests
+- Final browser smoke test: pending for M8; Preview 1.1 live smoke passed through splash/menu, existing-save gameplay, vehicle entry, engine-health HUD, and garage-panel availability with the checked repository-base assets loading
