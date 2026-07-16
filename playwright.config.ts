@@ -1,7 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const performanceMode = process.env.HEATLINE_PERFORMANCE === '1';
+
 export default defineConfig({
-  testDir: './tests/e2e',
+  testDir: './tests',
+  testMatch: performanceMode
+    ? ['performance/**/*.spec.ts']
+    : ['e2e/**/*.spec.ts'],
   timeout: 30_000,
   use: {
     baseURL: 'http://127.0.0.1:4173',
@@ -12,16 +17,39 @@ export default defineConfig({
     port: 4173,
     reuseExistingServer: true,
   },
-  projects: [
-    { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
-    {
-      name: 'chromium-mobile-landscape',
-      use: {
-        ...devices['Pixel 7'],
-        viewport: { width: 844, height: 390 },
-        isMobile: true,
-        hasTouch: true,
+  projects: performanceMode
+    ? [
+      { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
+      {
+        name: 'chromium-mobile-landscape',
+        use: {
+          ...devices['Pixel 7'],
+          viewport: { width: 844, height: 390 },
+          isMobile: true,
+          hasTouch: true,
+        },
       },
-    },
-  ],
+    ]
+    : [
+      { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
+      {
+        name: 'chromium-mobile-landscape',
+        use: {
+          ...devices['Pixel 7'],
+          viewport: { width: 844, height: 390 },
+          isMobile: true,
+          hasTouch: true,
+        },
+      },
+      {
+        name: 'firefox-desktop',
+        testMatch: /e2e\/desktop-smoke\.spec\.ts/,
+        use: { ...devices['Desktop Firefox'] },
+      },
+      {
+        name: 'webkit-desktop',
+        testMatch: /e2e\/desktop-smoke\.spec\.ts/,
+        use: { ...devices['Desktop Safari'] },
+      },
+    ],
 });

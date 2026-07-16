@@ -1,4 +1,8 @@
 import {
+  SAVE_CHECKSUM_ALGORITHM,
+  SAVE_EXPORT_FORMAT,
+  SAVE_EXPORT_FORMAT_VERSION,
+  computeChecksum,
   createSaveEnvelope,
   parseSaveGame,
   serializeSaveGame,
@@ -12,6 +16,7 @@ import {
   type GameSettings,
 } from './settings';
 import {
+  SAVE_GAME_VERSION,
   type SaveGameV1,
   type SaveSlotId,
   type SaveSlotMetadata,
@@ -27,7 +32,8 @@ export interface StoredSaveSlotRecord {
 
 /**
  * Persistence boundary designed for IndexedDB. Implementations must write the
- * active/backup pair in one transaction (temporary record + pointer swap in IDB).
+ * active/backup pair in one transaction (temporary record + pointer swap in IDB)
+ * and leave the previously committed pair unchanged when that write rejects.
  */
 export interface SaveStorageAdapter {
   initialize(): Promise<void>;
@@ -40,6 +46,49 @@ export interface SaveStorageAdapter {
   deleteSlot(slotId: SaveSlotId): Promise<void>;
   readSettings(): Promise<unknown | null>;
   writeSettingsAtomic(settings: GameSettings): Promise<void>;
+}
+
+export type PersistenceWriteErrorCode = 'quota-exceeded' | 'storage-write-failed';
+export type PersistenceWriteOperation = 'save-slot' | 'delete-slot' | 'save-settings';
+
+/**
+ * A durable-write failure with enough context for UI to keep a persistent
+ * warning visible and offer a checksummed emergency export when game progress
+ * could not be stored.
+ */
+export class PersistenceWriteError extends Error {
+  public override readonly name = 'PersistenceWriteError';
+
+  public constructor(
+    public readonly code: PersistenceWriteErrorCode,
+    public readonly operation: PersistenceWriteOperation,
+    public readonly slotId: SaveSlotId | null,
+    public readonly emergencyExport: string | null,
+    cause: unknown,
+  ) {
+    const target = slotId === null ? 'settings' : `save slot ${slotId}`;
+    const reason = code === 'quota-exceeded'
+      ? 'browser storage quota was exceeded'
+      : 'browser storage rejected the write';
+    super(`${target} could not be persisted because ${reason}`, { cause });
+  }
+}
+
+export type SaveSlotReadErrorCode = 'corrupt' | 'unsupported-version';
+
+/** A failed load that never mutates or deletes the original stored snapshots. */
+export class SaveSlotReadError extends Error {
+  public override readonly name = 'SaveSlotReadError';
+
+  public constructor(
+    public readonly slotId: SaveSlotId,
+    public readonly code: SaveSlotReadErrorCode,
+    public readonly errors: readonly string[],
+    /** Exact valid future-version envelope, when one can be preserved for export. */
+    public readonly preservedSnapshot: string | null,
+  ) {
+    super(`save slot ${slotId} is ${code === 'corrupt' ? 'corrupt' : 'from a newer game version'}: ${errors.join('; ')}`);
+  }
 }
 
 export type SaveSlotStatus = 'empty' | 'ready' | 'recovered' | 'corrupt';
@@ -73,6 +122,8 @@ export interface SaveService {
 }
 
 export class CoreSaveService implements SaveService {
+  private readonly slotOperationTails = new Map<SaveSlotId, Promise<void>>();
+
   public constructor(
     private readonly adapter: SaveStorageAdapter,
     private readonly registry: SaveValidationRegistry = {},
@@ -83,6 +134,7 @@ export class CoreSaveService implements SaveService {
   }
 
   public async listSlots(): Promise<readonly SaveSlotSummary[]> {
+    await Promise.all(SAVE_SLOT_IDS.map((slotId) => this.waitForSlotOperations(slotId)));
     return Promise.all(SAVE_SLOT_IDS.map(async (slotId): Promise<SaveSlotSummary> => {
       const record = await this.adapter.readSlot(slotId);
       if (!record) {
@@ -91,6 +143,12 @@ export class CoreSaveService implements SaveService {
       const active = this.readEnvelopeForSlot(record.active, slotId);
       if (active.success) {
         return { slotId, status: 'ready', metadata: cloneJson(active.save.slot) };
+      }
+      // Never treat a last-generation backup as the playable source when the
+      // active snapshot is an intact save from a newer build. Doing so would
+      // let the next autosave silently overwrite the only future-version copy.
+      if (inspectUnsupportedSnapshot(record.active) !== null) {
+        return { slotId, status: 'corrupt', metadata: null };
       }
       const backup = this.readEnvelopeForSlot(record.backup, slotId);
       if (backup.success) {
@@ -101,6 +159,7 @@ export class CoreSaveService implements SaveService {
   }
 
   public async loadSlot(slotId: SaveSlotId): Promise<SaveLoadResult | null> {
+    await this.waitForSlotOperations(slotId);
     const record = await this.adapter.readSlot(slotId);
     if (!record) {
       return null;
@@ -110,13 +169,29 @@ export class CoreSaveService implements SaveService {
     if (active.success) {
       return { save: cloneJson(active.save), recoveredFromBackup: false };
     }
+    const unsupportedActive = inspectUnsupportedSnapshot(record.active);
+    if (unsupportedActive !== null) {
+      throw new SaveSlotReadError(
+        slotId,
+        'unsupported-version',
+        active.errors,
+        unsupportedActive.serialized,
+      );
+    }
 
     const backup = this.readEnvelopeForSlot(record.backup, slotId);
     if (backup.success) {
       return { save: cloneJson(backup.save), recoveredFromBackup: true };
     }
 
-    throw new Error(`save slot ${slotId} is corrupt: ${[...active.errors, ...backup.errors].join('; ')}`);
+    const errors = [...active.errors, ...backup.errors];
+    const preserved = findUnsupportedSnapshot(record);
+    throw new SaveSlotReadError(
+      slotId,
+      preserved === null ? 'corrupt' : 'unsupported-version',
+      errors,
+      preserved?.serialized ?? null,
+    );
   }
 
   public async saveSlot(save: SaveGameV1): Promise<SaveSlotMetadata> {
@@ -125,31 +200,54 @@ export class CoreSaveService implements SaveService {
       throw new Error(`cannot persist invalid save: ${validation.errors.join('; ')}`);
     }
 
-    const slotId = validation.save.slot.id;
-    const existing = await this.adapter.readSlot(slotId);
-    let backup: SaveEnvelopeV1 | null = null;
-    if (existing) {
-      const active = this.readEnvelopeForSlot(existing.active, slotId);
-      if (active.success) {
-        backup = createSaveEnvelope(active.save);
-      } else {
-        const previousBackup = this.readEnvelopeForSlot(existing.backup, slotId);
-        if (previousBackup.success) {
-          backup = createSaveEnvelope(previousBackup.save);
-        }
-      }
-    }
+    const activeEnvelope = createSaveEnvelope(validation.save);
+    const slotId = activeEnvelope.payload.slot.id;
+    const metadata = cloneJson(activeEnvelope.payload.slot);
+    const emergencyExport = JSON.stringify(activeEnvelope, null, 2);
 
-    await this.adapter.writeSlotAtomic(
-      slotId,
-      createSaveEnvelope(validation.save),
-      backup,
-    );
-    return cloneJson(validation.save.slot);
+    return this.runSlotOperation(slotId, async () => {
+      try {
+        const existing = await this.adapter.readSlot(slotId);
+        let backup: SaveEnvelopeV1 | null = null;
+        if (existing) {
+          const active = this.readEnvelopeForSlot(existing.active, slotId);
+          const previousBackup = this.readEnvelopeForSlot(existing.backup, slotId);
+          const preserved = findUnsupportedSnapshot(existing);
+          if (preserved !== null) {
+            throw new SaveSlotReadError(
+              slotId,
+              'unsupported-version',
+              [
+                ...(active.success ? [] : active.errors),
+                ...(previousBackup.success ? [] : previousBackup.errors),
+              ],
+              preserved.serialized,
+            );
+          }
+          if (active.success) {
+            backup = createSaveEnvelope(active.save);
+          } else if (previousBackup.success) {
+            backup = createSaveEnvelope(previousBackup.save);
+          }
+        }
+
+        await this.adapter.writeSlotAtomic(slotId, activeEnvelope, backup);
+        return cloneJson(metadata);
+      } catch (error: unknown) {
+        if (error instanceof PersistenceWriteError || error instanceof SaveSlotReadError) throw error;
+        throw createPersistenceWriteError('save-slot', slotId, emergencyExport, error);
+      }
+    });
   }
 
   public async deleteSlot(slotId: SaveSlotId): Promise<void> {
-    await this.adapter.deleteSlot(slotId);
+    await this.runSlotOperation(slotId, async () => {
+      try {
+        await this.adapter.deleteSlot(slotId);
+      } catch (error: unknown) {
+        throw createPersistenceWriteError('delete-slot', slotId, null, error);
+      }
+    });
   }
 
   public async loadSettings(): Promise<GameSettings> {
@@ -161,7 +259,11 @@ export class CoreSaveService implements SaveService {
     if (!validateGameSettings(settings)) {
       throw new Error('cannot persist invalid settings');
     }
-    await this.adapter.writeSettingsAtomic(cloneJson(settings));
+    try {
+      await this.adapter.writeSettingsAtomic(cloneJson(settings));
+    } catch (error: unknown) {
+      throw createPersistenceWriteError('save-settings', null, null, error);
+    }
   }
 
   public async exportSlot(slotId: SaveSlotId): Promise<string> {
@@ -210,6 +312,31 @@ export class CoreSaveService implements SaveService {
     }
     return result;
   }
+
+  /**
+   * Serializes each slot's read/rotate/write sequence. Without this queue, two
+   * overlapping autosaves can both rotate the same stale active snapshot and
+   * silently skip the newer last-known-good backup.
+   */
+  private runSlotOperation<Value>(
+    slotId: SaveSlotId,
+    operation: () => Promise<Value>,
+  ): Promise<Value> {
+    const previous = this.slotOperationTails.get(slotId) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const tail = result.then(() => undefined, () => undefined);
+    this.slotOperationTails.set(slotId, tail);
+    void tail.then(() => {
+      if (this.slotOperationTails.get(slotId) === tail) {
+        this.slotOperationTails.delete(slotId);
+      }
+    });
+    return result;
+  }
+
+  private async waitForSlotOperations(slotId: SaveSlotId): Promise<void> {
+    await this.slotOperationTails.get(slotId);
+  }
 }
 
 /** Deterministic test/development adapter with the same atomic commit semantics as IDB. */
@@ -257,4 +384,71 @@ export class InMemorySaveAdapter implements SaveStorageAdapter {
 
 function cloneJson<Value>(value: Value): Value {
   return JSON.parse(JSON.stringify(value)) as Value;
+}
+
+interface UnsupportedSnapshot {
+  schemaVersion: number;
+  serialized: string;
+}
+
+function findUnsupportedSnapshot(record: StoredSaveSlotRecord): UnsupportedSnapshot | null {
+  return inspectUnsupportedSnapshot(record.active) ?? inspectUnsupportedSnapshot(record.backup);
+}
+
+/**
+ * Recognizes only an intact, checksummed envelope. A tampered payload that
+ * merely claims a future schema remains corruption and is never presented as a
+ * trustworthy preserved export.
+ */
+function inspectUnsupportedSnapshot(value: unknown): UnsupportedSnapshot | null {
+  if (!isRecord(value)
+    || value.format !== SAVE_EXPORT_FORMAT
+    || value.formatVersion !== SAVE_EXPORT_FORMAT_VERSION
+    || !isRecord(value.checksum)
+    || value.checksum.algorithm !== SAVE_CHECKSUM_ALGORITHM
+    || typeof value.checksum.value !== 'string'
+    || !isRecord(value.payload)) {
+    return null;
+  }
+  const schemaVersion = value.payload.schemaVersion;
+  if (!Number.isSafeInteger(schemaVersion) || (schemaVersion as number) <= SAVE_GAME_VERSION) {
+    return null;
+  }
+  try {
+    if (computeChecksum(value.payload) !== value.checksum.value) return null;
+    return {
+      schemaVersion: schemaVersion as number,
+      serialized: JSON.stringify(value, null, 2),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function createPersistenceWriteError(
+  operation: PersistenceWriteOperation,
+  slotId: SaveSlotId | null,
+  emergencyExport: string | null,
+  cause: unknown,
+): PersistenceWriteError {
+  return new PersistenceWriteError(
+    isQuotaExceededError(cause) ? 'quota-exceeded' : 'storage-write-failed',
+    operation,
+    slotId,
+    emergencyExport,
+    cause,
+  );
+}
+
+function isQuotaExceededError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const name = typeof error.name === 'string' ? error.name : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+  return name === 'QuotaExceededError'
+    || name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || /\bquota\b/i.test(message);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -169,7 +169,7 @@ const VEHICLE_TOUCH_CONTROL_LAYOUT: TouchControlLayout = {
   fire: ['Vehicle action or siren', 'ACTION', false],
   melee: ['Charge heavy attack', 'HEAVY', true],
   reload: ['Vehicle reset', 'RESET', false],
-  weaponRadial: ['Cycle weapon', 'SWAP', true],
+  weaponRadial: ['Cycle radio station', 'RADIO', false],
 };
 
 /** Returns the complete touch action contract for the active player mode. */
@@ -234,6 +234,29 @@ interface BindingCapture {
   bindingIndex: number;
 }
 
+const MODAL_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+/** Returns a wrap target only when focus would otherwise leave a modal. */
+export function modalFocusWrapTarget<T extends Element>(
+  focusable: readonly T[],
+  activeElement: Element | null,
+  shiftKey: boolean,
+): T | null {
+  if (focusable.length === 0) return null;
+  const activeIndex = focusable.indexOf(activeElement as T);
+  if (activeIndex < 0) return shiftKey ? focusable.at(-1) ?? null : focusable[0] ?? null;
+  if (shiftKey && activeIndex === 0) return focusable.at(-1) ?? null;
+  if (!shiftKey && activeIndex === focusable.length - 1) return focusable[0] ?? null;
+  return null;
+}
+
 export class GameUI {
   readonly #root: HTMLElement;
   readonly #callbacks: GameUICallbacks;
@@ -243,6 +266,8 @@ export class GameUI {
   #dialogueTimer = 0;
   #bindingCapture: BindingCapture | null = null;
   #streamFailureReturnFocus: HTMLElement | null = null;
+  #pauseReturnFocus: HTMLElement | null = null;
+  #panelReturnFocus: HTMLElement | null = null;
   #touchVehicleMode: boolean | null = null;
 
   readonly #handleBindingKeyDown = (event: KeyboardEvent): void => {
@@ -260,6 +285,39 @@ export class GameUI {
       return;
     }
     this.#applyKeyboardBinding(capture, event.code);
+  };
+
+  readonly #handleModalKeyDown = (event: KeyboardEvent): void => {
+    if (this.#bindingCapture) return;
+    const modal = this.#activeModal();
+    if (!modal) return;
+
+    if (event.key === 'Tab') {
+      const focusable = this.#modalFocusableElements(modal);
+      const wrapTarget = modalFocusWrapTarget(focusable, document.activeElement, event.shiftKey);
+      if (!wrapTarget) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      wrapTarget.focus({ preventScroll: true });
+      return;
+    }
+
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (modal.matches('[data-panel]')) {
+      this.closePanel();
+    } else if (modal.matches('[data-pause-menu]')) {
+      this.hidePause();
+      this.#callbacks.onResume();
+    }
+  };
+
+  readonly #handleModalFocusIn = (event: FocusEvent): void => {
+    const modal = this.#activeModal();
+    const target = event.target;
+    if (!modal || !(target instanceof Element) || modal.contains(target)) return;
+    this.#focusModal(modal);
   };
 
   constructor(root: HTMLElement, callbacks: GameUICallbacks, settings: GameSettings) {
@@ -354,7 +412,10 @@ export class GameUI {
     this.#query<HTMLElement>('[data-hud-time]').textContent = snapshot.timeLabel;
     this.#query<HTMLElement>('[data-hud-money]').textContent = `$${Math.floor(snapshot.money).toLocaleString()}`;
     this.#query<HTMLElement>('[data-hud-level]').textContent = `LV ${snapshot.level}`;
-    this.#query<HTMLElement>('[data-hud-xp] span').style.width = `${clampPercent(snapshot.xpProgress)}%`;
+    const xpProgress = clampPercent(snapshot.xpProgress);
+    const xpMeter = this.#query<HTMLElement>('[data-hud-xp]');
+    xpMeter.querySelector<HTMLElement>('span')!.style.width = `${xpProgress}%`;
+    xpMeter.setAttribute('aria-valuenow', String(Math.round(xpProgress)));
     this.#query<HTMLElement>('[data-hud-weapon]').textContent = snapshot.weapon;
     this.#query<HTMLElement>('[data-hud-ammo]').textContent = `${snapshot.ammo} / ${snapshot.ammoReserve}`;
     this.#query<HTMLElement>('[data-hud-stars]').innerHTML = Array.from({ length: 5 }, (_, index) => {
@@ -394,13 +455,23 @@ export class GameUI {
   }
 
   showPause(): void {
-    this.#query<HTMLElement>('[data-pause-menu]').hidden = false;
+    const overlay = this.#query<HTMLElement>('[data-pause-menu]');
+    if (overlay.hidden) this.#pauseReturnFocus = this.#currentFocusWithinRoot();
+    overlay.hidden = false;
     this.#root.classList.add('is-paused');
+    this.#syncModalInertState();
+    this.#focusModal(overlay, '[data-pause-title]');
   }
 
   hidePause(): void {
-    this.#query<HTMLElement>('[data-pause-menu]').hidden = true;
+    const overlay = this.#query<HTMLElement>('[data-pause-menu]');
+    if (overlay.hidden) return;
+    overlay.hidden = true;
     this.#root.classList.remove('is-paused');
+    this.#syncModalInertState();
+    const returnFocus = this.#pauseReturnFocus;
+    this.#pauseReturnFocus = null;
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   }
 
   /** Blocks the in-game UI until world streaming recovers or the player leaves. */
@@ -416,6 +487,7 @@ export class GameUI {
     this.#query<HTMLElement>('[data-stream-failure-message]').textContent = message;
     overlay.hidden = false;
     this.#root.classList.add('has-stream-failure');
+    this.#syncModalInertState();
     this.#query<HTMLButtonElement>('[data-stream-retry]').focus({ preventScroll: true });
   }
 
@@ -425,6 +497,7 @@ export class GameUI {
     if (overlay.hidden) return;
     overlay.hidden = true;
     this.#root.classList.remove('has-stream-failure');
+    this.#syncModalInertState();
     const returnFocus = this.#streamFailureReturnFocus;
     this.#streamFailureReturnFocus = null;
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
@@ -433,18 +506,31 @@ export class GameUI {
   openPanel(panel: OverlayPanel, title?: string, body?: string): void {
     this.#cancelBindingCapture();
     const overlay = this.#query<HTMLElement>('[data-panel]');
+    if (overlay.hidden) this.#panelReturnFocus = this.#currentFocusWithinRoot();
     overlay.hidden = false;
     overlay.dataset.panel = panel;
+    const region = this.#root.querySelector<HTMLElement>('[data-panel-region]');
+    if (region) region.dataset.panel = panel;
     this.#query<HTMLElement>('[data-panel-title]').textContent = title ?? panel[0]!.toUpperCase() + panel.slice(1);
     this.#query<HTMLElement>('[data-panel-body]').innerHTML = body ?? this.#defaultPanelContent(panel);
     this.#callbacks.onOpenPanel(panel);
+    this.#syncModalInertState();
+    this.#focusModal(overlay, '[data-panel-title]');
   }
 
   closePanel(): void {
     this.#cancelBindingCapture();
     const overlay = this.#query<HTMLElement>('[data-panel]');
+    if (overlay.hidden) {
+      this.#callbacks.onClosePanel();
+      return;
+    }
     overlay.hidden = true;
     this.#callbacks.onClosePanel();
+    this.#syncModalInertState();
+    const returnFocus = this.#panelReturnFocus;
+    this.#panelReturnFocus = null;
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   }
 
   showDialogue(speaker: string, text: string, durationMs = 5200): void {
@@ -485,6 +571,8 @@ export class GameUI {
   destroy(): void {
     this.#cancelBindingCapture();
     window.removeEventListener('keydown', this.#handleBindingKeyDown, true);
+    window.removeEventListener('keydown', this.#handleModalKeyDown, true);
+    window.removeEventListener('focusin', this.#handleModalFocusIn, true);
     window.clearTimeout(this.#toastTimer);
     window.clearTimeout(this.#dialogueTimer);
     this.#root.replaceChildren();
@@ -553,7 +641,7 @@ export class GameUI {
           <div class="loading-card">
             <p class="eyebrow">Solara municipal grid</p>
             <h2 data-loading-label>Building Arroyo Heights…</h2>
-            <div class="loading-bar" data-loading-bar role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+            <div class="loading-bar" data-loading-bar role="progressbar" aria-label="Loading Solara" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
             <p>Tip: lose police sight, then leave the search radius without being spotted.</p>
           </div>
         </section>
@@ -571,9 +659,9 @@ export class GameUI {
         <section id="game-hud" class="screen game-hud" data-screen hidden aria-label="Game HUD">
           <div class="hud-top-left">
             <div class="status-bars">
-              <div class="meter meter--health" data-meter="health"><span></span><b>HEALTH</b></div>
-              <div class="meter meter--armor" data-meter="armor"><span></span><b>ARMOR</b></div>
-              <div class="meter meter--stamina" data-meter="stamina"><span></span><b>STAMINA</b></div>
+              <div class="meter meter--health" data-meter="health" role="progressbar" aria-label="health: 100 of 100" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><span></span><b>HEALTH</b></div>
+              <div class="meter meter--armor" data-meter="armor" role="progressbar" aria-label="armor: 0 of 100" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span><b>ARMOR</b></div>
+              <div class="meter meter--stamina" data-meter="stamina" role="progressbar" aria-label="stamina: 100 of 100" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><span></span><b>STAMINA</b></div>
             </div>
             <div class="wanted" aria-label="Wanted level"><div data-hud-stars></div><small data-hud-wanted-label></small></div>
           </div>
@@ -586,7 +674,7 @@ export class GameUI {
 
           <div class="hud-top-right">
             <strong data-hud-money>$0</strong>
-            <span><b data-hud-level>LV 1</b><i class="xp-track" data-hud-xp><span></span></i></span>
+            <span><b data-hud-level>LV 1</b><i class="xp-track" data-hud-xp role="progressbar" aria-label="Experience toward next level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></i></span>
             <small><span data-hud-district>Arroyo Heights</span> · <span data-hud-time>18:20</span></small>
           </div>
 
@@ -611,8 +699,10 @@ export class GameUI {
           </div>
 
           <div class="interaction-prompt" data-interaction hidden><kbd>E</kbd><span></span></div>
-          <div class="dialogue-box" data-dialogue hidden><strong data-dialogue-speaker>Alex</strong><p data-dialogue-text></p></div>
+          <div class="dialogue-box" data-dialogue hidden role="status" aria-live="polite" aria-atomic="true"><strong data-dialogue-speaker>Alex</strong><p data-dialogue-text></p></div>
           <div class="toast" data-toast hidden role="status"></div>
+
+          <button type="button" class="touch-menu-button" data-action="pause" aria-label="Pause game and open menu"><span aria-hidden="true">☰</span><b>Menu</b></button>
 
           <div class="touch-controls" data-touch-layout="on-foot" aria-label="On-foot touch controls">
             <div class="touch-stick" data-touch-stick role="group" aria-label="Movement stick">
@@ -641,10 +731,11 @@ export class GameUI {
           </nav>
         </section>
 
-        <section class="pause-overlay" data-pause-menu hidden aria-label="Pause menu">
+        <section class="pause-overlay" data-pause-menu hidden role="dialog" aria-modal="true" aria-labelledby="pause-menu-title">
           <div class="menu-card">
             <p class="eyebrow">Game paused</p>
-            <h2>Solara waits.</h2>
+            <h2 id="pause-menu-title" data-pause-title tabindex="-1">Pause menu</h2>
+            <p class="pause-tagline">Solara waits.</p>
             <nav class="menu-actions">
               <button class="button button--primary" data-action="resume">Resume</button>
               <button class="button" data-open-panel="map">Map</button>
@@ -659,13 +750,15 @@ export class GameUI {
           </div>
         </section>
 
-        <section class="panel-overlay" data-panel hidden aria-label="Game panel">
-          <div class="panel-card">
-            <header class="section-heading">
-              <div><p class="eyebrow">Alex Moreno</p><h2 data-panel-title>Map</h2></div>
-              <button class="button button--quiet" data-action="close-panel">Close</button>
-            </header>
-            <div class="panel-body" data-panel-body></div>
+        <section class="panel-overlay" data-panel hidden role="dialog" aria-modal="true" aria-labelledby="game-panel-title">
+          <div class="panel-region" data-panel-region role="region" aria-label="Game panel">
+            <div class="panel-card">
+              <header class="section-heading">
+                <div><p class="eyebrow">Alex Moreno</p><h2 id="game-panel-title" data-panel-title tabindex="-1">Map</h2></div>
+                <button class="button button--quiet" data-action="close-panel">Close</button>
+              </header>
+              <div class="panel-body" data-panel-body></div>
+            </div>
           </div>
         </section>
 
@@ -702,6 +795,8 @@ export class GameUI {
 
   #bindEvents(): void {
     window.addEventListener('keydown', this.#handleBindingKeyDown, true);
+    window.addEventListener('keydown', this.#handleModalKeyDown, true);
+    window.addEventListener('focusin', this.#handleModalFocusIn, true);
     this.#root.addEventListener('click', (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -833,8 +928,61 @@ export class GameUI {
 
   #setMeter(name: string, value: number, max: number): void {
     const meter = this.#query<HTMLElement>(`[data-meter="${name}"]`);
-    meter.style.setProperty('--value', `${clampPercent((value / Math.max(max, 1)) * 100)}%`);
-    meter.setAttribute('aria-label', `${name}: ${Math.round(value)} of ${Math.round(max)}`);
+    const safeMax = Math.max(max, 1);
+    const safeValue = Math.max(0, Math.min(safeMax, value));
+    meter.style.setProperty('--value', `${clampPercent((safeValue / safeMax) * 100)}%`);
+    meter.setAttribute('aria-label', `${name}: ${Math.round(safeValue)} of ${Math.round(safeMax)}`);
+    meter.setAttribute('aria-valuemax', String(Math.round(safeMax)));
+    meter.setAttribute('aria-valuenow', String(Math.round(safeValue)));
+  }
+
+  #currentFocusWithinRoot(): HTMLElement | null {
+    const activeElement = document.activeElement;
+    return activeElement instanceof HTMLElement && this.#root.contains(activeElement)
+      ? activeElement
+      : null;
+  }
+
+  #activeModal(): HTMLElement | null {
+    const streamFailure = this.#root.querySelector<HTMLElement>('[data-stream-failure]');
+    if (streamFailure && !streamFailure.hidden) return streamFailure;
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (panel && !panel.hidden) return panel;
+    const pause = this.#root.querySelector<HTMLElement>('[data-pause-menu]');
+    return pause && !pause.hidden ? pause : null;
+  }
+
+  #modalFocusableElements(modal: HTMLElement): HTMLElement[] {
+    return [...modal.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE_SELECTOR)]
+      .filter((element) => !element.hidden && !element.inert && element.getAttribute('aria-hidden') !== 'true');
+  }
+
+  #focusModal(modal: HTMLElement, preferredSelector?: string): void {
+    const preferred = preferredSelector
+      ? modal.querySelector<HTMLElement>(preferredSelector)
+      : null;
+    const target = preferred ?? this.#modalFocusableElements(modal)[0];
+    target?.focus({ preventScroll: true });
+  }
+
+  #syncModalInertState(): void {
+    const activeModal = this.#activeModal();
+    this.#root.querySelectorAll<HTMLElement>('[data-screen]').forEach((screen) => {
+      const containsModal = activeModal !== null && screen.contains(activeModal);
+      screen.inert = activeModal !== null && !containsModal;
+      for (const child of screen.children) {
+        if (!(child instanceof HTMLElement)) continue;
+        child.inert = activeModal !== null
+          && containsModal
+          && child !== activeModal
+          && !child.contains(activeModal);
+      }
+    });
+    for (const selector of ['[data-pause-menu]', '[data-panel]', '[data-stream-failure]']) {
+      const overlay = this.#root.querySelector<HTMLElement>(selector);
+      if (overlay) overlay.inert = activeModal !== null && overlay !== activeModal;
+    }
+    this.#root.classList.toggle('has-modal', activeModal !== null);
   }
 
   #defaultPanelContent(panel: OverlayPanel): string {

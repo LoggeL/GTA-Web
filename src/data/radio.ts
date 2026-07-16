@@ -111,3 +111,16 @@ export const RADIO_STATIONS: readonly RadioStationDefinition[] = [
 export const RADIO_TRACKS: readonly RadioTrackDefinition[] = (
   RADIO_STATIONS as readonly RadioStationDefinition[]
 ).flatMap((station) => station.tracks);
+
+/** Canonical station identifier union derived from the authored radio catalog. */
+export type RadioStationId = (typeof RADIO_STATIONS)[number]['id'];
+
+/** Stable authored station order used by radio-cycle controls. */
+export const RADIO_STATION_IDS: readonly RadioStationId[] = RADIO_STATIONS.map(
+  (station) => station.id,
+);
+
+/** Looks up one authored station without duplicating station metadata in consumers. */
+export function findRadioStation(stationId: RadioStationId): RadioStationDefinition | undefined {
+  return RADIO_STATIONS.find((station) => station.id === stationId);
+}

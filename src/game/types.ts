@@ -192,6 +192,8 @@ export interface WorldViewOptions {
   /** Optional app-owned input source consumed once per simulation update. */
   inputProvider?: () => Partial<WorldInputState>;
   reducedMotion?: boolean;
+  /** Normalized camera shake intensity in [0, 1]. */
+  cameraShake?: number;
   resolutionScale?: number;
   aimAssistLevel?: 'off' | 'low' | 'medium' | 'high';
   aimAssistDevice?: 'desktop' | 'mobile';

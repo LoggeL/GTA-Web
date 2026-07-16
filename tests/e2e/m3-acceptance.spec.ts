@@ -173,6 +173,7 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
     await expect(damagedCard.locator('[data-garage-action="repair-all"]')).toBeEnabled();
 
     await panel.getByRole('button', { name: 'Close' }).click();
+    await world.locator('canvas').focus();
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-interior-id', '');
     await page.keyboard.press('Escape');
@@ -203,6 +204,7 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
     await expect(repairedCard.getByLabel('Engine health 100 percent')).toBeVisible();
 
     await panel.getByRole('button', { name: 'Close' }).click();
+    await world.locator('canvas').focus();
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-interior-id', '');
     await page.keyboard.press('Escape');

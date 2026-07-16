@@ -70,7 +70,7 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await expect(touchControls.getByRole('button', { name: 'Vehicle reset' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Sprint' })).toBeHidden();
     await expect(touchControls.getByRole('button', { name: 'Charge heavy attack' })).toBeHidden();
-    await expect(touchControls.getByRole('button', { name: 'Cycle weapon' })).toBeHidden();
+    await expect(touchControls.getByRole('button', { name: 'Cycle radio station' })).toBeVisible();
 
     const cameraToggle = touchControls.getByRole('button', { name: 'Vehicle camera' });
     await cameraToggle.dispatchEvent('pointerdown');

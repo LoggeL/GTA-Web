@@ -14,12 +14,17 @@ async function walk(directory) {
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...(await walk(path)));
-    else if (!entry.name.endsWith('.map')) files.push(path);
+    else files.push(path);
   }
   return files;
 }
 
 const files = await walk(DIST);
+if (files.length === 0) throw new Error('Production artifact is empty.');
+const sourceMaps = files.filter((file) => file.endsWith('.map'));
+if (sourceMaps.length > 0) {
+  throw new Error(`Production artifact must not publish source maps: ${sourceMaps.map((file) => relative(DIST, file)).join(', ')}`);
+}
 let publishedBytes = 0;
 let compressedShellBytes = 0;
 const rows = [];

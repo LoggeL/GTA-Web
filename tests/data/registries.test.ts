@@ -16,6 +16,7 @@ import {
   OBJECTIVES,
   PROPERTIES,
   RADIO_STATIONS,
+  RADIO_STATION_IDS,
   RADIO_TRACKS,
   RECIPES,
   requireItem,
@@ -24,6 +25,7 @@ import {
   validateDataRegistries,
   VEHICLES,
   WEAPONS,
+  findRadioStation,
 } from '../../src/data';
 import { describe, expect, it } from 'vitest';
 
@@ -265,5 +267,9 @@ describe('economy, exploration, and radio content', () => {
     expect(RADIO_TRACKS).toHaveLength(9);
     expect(RADIO_STATIONS.every((station) => station.tracks.length === 3)).toBe(true);
     expect(new Set(RADIO_TRACKS.map((track) => track.seed)).size).toBe(9);
+    expect(RADIO_STATION_IDS).toEqual(RADIO_STATIONS.map((station) => station.id));
+    for (const stationId of RADIO_STATION_IDS) {
+      expect(findRadioStation(stationId)?.tracks).toHaveLength(3);
+    }
   });
 });

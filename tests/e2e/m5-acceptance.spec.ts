@@ -68,6 +68,7 @@ async function closePanel(panel: Locator, touch = false): Promise<void> {
 
 async function enterMorenoGarage(page: Page): Promise<void> {
   const world = page.getByLabel('3D game world');
+  await world.locator('canvas').focus();
   await page.keyboard.press('e');
   await expect(world).toHaveAttribute('data-player-mode', 'vehicle');
   await page.keyboard.press('e');
@@ -237,6 +238,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
     await closePanel(panel);
 
     await page.waitForTimeout(400);
+    await world.locator('canvas').focus();
     await page.keyboard.press('Escape');
     const pause = page.getByLabel('Pause menu');
     await expect(pause).toBeVisible();

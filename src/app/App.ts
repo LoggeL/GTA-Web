@@ -240,6 +240,9 @@ interface HeatlineQaApi {
   completeActivity(): ContentQaSnapshot;
   collectCollectible(collectibleId: string): ContentQaSnapshot;
   contentState(): ContentQaSnapshot;
+  audioState(): ReturnType<AudioEngine['snapshot']>;
+  cycleRadio(): ReturnType<AudioEngine['cycleStation']>;
+  nextRadioTrack(): ReturnType<AudioEngine['nextTrack']>;
 }
 
 interface CampaignQaSnapshot {
@@ -291,7 +294,8 @@ export class App {
   #saving = false;
   #lastSnapshotAt = 0;
   #lastAutosaveAt = 0;
-  #radioStation = 'Coastline FM';
+  #orientationBlocked = false;
+  #lastVehicleSirenActive = false;
   #settingsSaveTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   #navigation: NavigationRuntime | null = null;
   #cityStreaming: CityStreamingController | null = null;
@@ -380,7 +384,16 @@ export class App {
     return new App(root, saveService, settings);
   }
 
+  async #unlockAudio(): Promise<void> {
+    try {
+      await this.#audio.unlock();
+    } catch (error) {
+      console.warn('Browser audio is unavailable; continuing without sound.', error);
+    }
+  }
+
   async #showSaveSlots(): Promise<void> {
+    void this.#unlockAudio();
     const summaries = await this.#saveService.listSlots();
     const slots: SaveSlotSummary[] = summaries.map((summary) => {
       const metadata = summary.metadata;
@@ -398,7 +411,7 @@ export class App {
   }
 
   async #startNewGame(slot: SaveSlotId, preset: AlexPreset): Promise<void> {
-    void this.#audio.unlock();
+    void this.#unlockAudio();
     const timestamp = Date.now();
     const save = createInitialSaveGame(slot, preset, { timestamp, seed: `slot-${slot}-${timestamp}` });
     save.player.transform.position = { ...PLAYER_SPAWN };
@@ -416,7 +429,7 @@ export class App {
   }
 
   async #continueGame(slot: SaveSlotId): Promise<void> {
-    void this.#audio.unlock();
+    void this.#unlockAudio();
     try {
       const result = await this.#saveService.loadSlot(slot);
       if (!result) {
@@ -471,6 +484,7 @@ export class App {
         timeOfDay: save.clock.timeOfDayMinutes / 1_440,
         rainIntensity: save.clock.weather === 'rain' ? 0.62 : 0,
         reducedMotion: this.#settings.accessibility.reducedMotion,
+        cameraShake: this.#settings.accessibility.cameraShake,
         resolutionScale: this.#settings.video.resolutionScale,
         aimAssistLevel: this.#settings.controls.aimAssist,
         aimAssistDevice: matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
@@ -514,17 +528,17 @@ export class App {
 
     this.#ui.updateLoading('Starting traffic radio…', 82);
     this.#audio.setMix(this.#settings.audio);
-    const radio = this.#audio.playStation('coastline-fm');
-    this.#radioStation = radio.stationName;
+    this.#audio.playStation('coastline-fm');
     await nextAnimationFrame();
     this.#ui.updateLoading('Welcome to Solara', 100);
     await new Promise((resolve) => globalThis.setTimeout(resolve, 180));
     this.#ui.showGame();
     this.#ui.setTouchMode(matchMedia('(pointer: coarse)').matches);
-    this.#world.start();
-    this.#world.focus();
     this.#paused = false;
     this.#panelOpen = false;
+    this.#world.start();
+    this.#syncOrientationBlock();
+    if (!this.#orientationBlocked) this.#world.focus();
     if (isNew) {
       if (this.#missionRuntime?.activeMission === null) this.#startCampaignMission('past-due');
     } else {
@@ -572,6 +586,7 @@ export class App {
       worldMount.dataset.grounded = String(snapshot.grounded);
       worldMount.dataset.sprinting = String(snapshot.sprinting);
       worldMount.dataset.crouching = String(snapshot.crouching);
+      worldMount.dataset.cameraShake = this.#settings.accessibility.cameraShake.toFixed(2);
       worldMount.dataset.interiorId = snapshot.interiorId ?? '';
       worldMount.dataset.interiorPhase = snapshot.interiorPhase;
       worldMount.dataset.vehicleInstanceId = snapshot.vehicleInstanceId;
@@ -660,7 +675,9 @@ export class App {
     this.#updateCollectibleDiscovery(snapshot);
     this.#lastSnapshotAt = now;
 
+    this.#syncWorldAudio(snapshot);
     const campaignHud = this.#campaignHud(snapshot);
+    const radio = this.#audio.snapshot();
 
     const hud: HudSnapshot = {
       health: this.#currentSave?.player.health ?? 100,
@@ -701,7 +718,11 @@ export class App {
       vehicleName: snapshot.mode === 'vehicle' ? snapshot.vehicleName : undefined,
       vehicleHealth: snapshot.mode === 'vehicle' ? snapshot.vehicleIntegrity.engineHealth : undefined,
       radio: snapshot.mode === 'vehicle'
-        ? snapshot.vehicleSirenActive ? 'SIREN ACTIVE' : this.#radioStation
+        ? snapshot.vehicleSirenActive
+          ? 'SIREN ACTIVE'
+          : radio.enabled
+            ? `${radio.stationName} · ${radio.trackTitle}`
+            : radio.stationName
         : undefined,
       interaction: campaignHud.interaction ?? snapshot.prompt?.replace('Press E to ', ''),
     };
@@ -725,6 +746,9 @@ export class App {
       if (!oldest) break;
       this.#pendingCrimes.delete(oldest);
     }
+    if (event.kind === 'weapon-fire') this.#audio.playSfx('weapon');
+    else if (event.kind === 'assault' || event.kind === 'hit-and-run') this.#audio.playSfx('impact');
+    else this.#audio.playUi('warning');
     this.#ui.toast('Crime noticed · witnesses may report Alex', 'warning');
   }
 
@@ -754,6 +778,7 @@ export class App {
     if (result.state.level === 0) {
       this.#ui.toast('Witness report logged · no active police response', 'info');
     } else {
+      this.#audio.playSfx('siren');
       this.#ui.toast(
         result.state.phase === 'pursuit'
           ? `Witness identified Alex · wanted level ${result.state.level}`
@@ -764,6 +789,7 @@ export class App {
   }
 
   #onEnemyDamage(event: EnemyDamageEvent): void {
+    this.#audio.playSfx('impact');
     if (event.defeated) {
       const missionResolved = this.#recordMissionCombatDefeat(event.targetId);
       if (missionResolved) this.#world?.despawnCombatant(event.targetId);
@@ -774,6 +800,7 @@ export class App {
   #onPlayerDamage(event: PlayerDamageEvent): void {
     const save = this.#currentSave;
     if (!save || this.#defeatResolving) return;
+    this.#audio.playSfx('impact');
     const maximumHealth = 100 + Math.max(0, save.player.attributes.grit - 1) * 10;
     const damage = resolveCombatDamage({
       health: Math.min(maximumHealth, save.player.health),
@@ -1078,6 +1105,7 @@ export class App {
     this.#syncWorldQuickLoadout();
     this.#syncCampaignSave();
     this.#refreshNavigationMarkers();
+    this.#audio.playSfx('cash');
   }
 
   #applyMissionEnvironment(state: Readonly<MissionEnvironmentState>): void {
@@ -1588,6 +1616,7 @@ export class App {
     this.#activeActivity = null;
     this.#navigation?.clearWaypoint();
     this.#syncCampaignSave();
+    this.#audio.playSfx('cash');
     this.#ui.toast(`${definition.name} complete · $${result.reward.cash.toLocaleString('en-US')}`, 'success');
     this.#renderCampaignPanelIfOpen();
     void this.#saveNow(false);
@@ -1630,6 +1659,7 @@ export class App {
     if (revealedIds.length === 0) return;
     this.#syncCampaignSave();
     this.#refreshNavigationMarkers();
+    this.#audio.playSfx('pickup');
     this.#ui.toast(
       revealedIds.length === 1 ? 'Discovery added to the map' : `${revealedIds.length} discoveries added to the map`,
       'info',
@@ -1707,6 +1737,7 @@ export class App {
     for (const flag of result.reward.unlockFlags) save.worldFlags[flag] = true;
     this.#syncCampaignSave();
     this.#refreshNavigationMarkers();
+    this.#audio.playSfx('pickup');
     this.#ui.toast(
       result.categoryCompleted
         ? `${definition.name} collected · set complete`
@@ -1735,10 +1766,58 @@ export class App {
     this.#progressCurrentMissionObjective();
   }
 
+  #syncWorldAudio(snapshot: Readonly<WorldSnapshot>): void {
+    this.#audio.setWorldAudioState({
+      active: !this.#paused && !this.#panelOpen && !this.#orientationBlocked,
+      inVehicle: snapshot.mode === 'vehicle',
+      speedKph: snapshot.speedKph,
+      engineLoad: snapshot.mode === 'vehicle' ? Math.min(1, snapshot.speedKph / 120) : 0,
+      rainIntensity: snapshot.rainIntensity,
+      sirenActive: snapshot.vehicleSirenActive,
+      interior: snapshot.interiorId !== null,
+    });
+    if (snapshot.vehicleSirenActive !== this.#lastVehicleSirenActive) {
+      this.#lastVehicleSirenActive = snapshot.vehicleSirenActive;
+      if (snapshot.vehicleSirenActive) this.#audio.playSfx('siren');
+    }
+  }
+
+  #cycleRadio(): ReturnType<AudioEngine['cycleStation']> {
+    const radio = this.#audio.cycleStation();
+    this.#audio.playUi(radio.enabled ? 'confirm' : 'cancel');
+    this.#ui.toast(
+      radio.enabled ? `${radio.stationName} · ${radio.trackTitle}` : radio.stationName,
+      'info',
+    );
+    return radio;
+  }
+
+  #syncOrientationBlock(): void {
+    const blocked = matchMedia('(pointer: coarse)').matches
+      && matchMedia('(orientation: portrait)').matches;
+    this.#orientationBlocked = blocked;
+    this.#root.classList.toggle('is-orientation-blocked', blocked);
+    if (!this.#world) return;
+    this.#inputController?.releaseAll();
+    if (blocked) {
+      this.#audio.setWorldAudioState({ active: false });
+      this.#world.pause();
+      void this.#audio.suspend();
+      return;
+    }
+    if (!this.#paused && !this.#panelOpen && !this.#failedStreamCellId) {
+      if (this.#lastWorldSnapshot) this.#syncWorldAudio(this.#lastWorldSnapshot);
+      this.#world.resume();
+      this.#world.focus();
+      void this.#audio.resume();
+    }
+  }
+
   #pause(): void {
     if (!this.#world) return;
     this.#paused = true;
     this.#inputController?.releaseAll();
+    this.#audio.setWorldAudioState({ active: false });
     this.#world.pause();
     void this.#audio.suspend();
   }
@@ -1746,7 +1825,8 @@ export class App {
   #resume(): void {
     if (!this.#world) return;
     this.#paused = false;
-    if (!this.#panelOpen) {
+    if (!this.#panelOpen && !this.#orientationBlocked && !this.#failedStreamCellId) {
+      if (this.#lastWorldSnapshot) this.#syncWorldAudio(this.#lastWorldSnapshot);
       this.#world.resume();
       this.#world.focus();
       void this.#audio.resume();
@@ -1756,6 +1836,7 @@ export class App {
   #openPanel(_panel: OverlayPanel): void {
     this.#panelOpen = true;
     this.#inputController?.releaseAll();
+    this.#audio.setWorldAudioState({ active: false });
     this.#world?.pause();
     this.#root.querySelector<HTMLElement>('[data-panel-body]')
       ?.classList.toggle('panel-body--map', _panel === 'map');
@@ -1792,7 +1873,8 @@ export class App {
     this.#inventoryPanel = null;
     this.#economyPanel = null;
     this.#campaignPanel = null;
-    if (this.#world && !this.#paused) {
+    if (this.#world && !this.#paused && !this.#orientationBlocked && !this.#failedStreamCellId) {
+      if (this.#lastWorldSnapshot) this.#syncWorldAudio(this.#lastWorldSnapshot);
       this.#world.resume();
       this.#world.focus();
     }
@@ -2768,6 +2850,7 @@ export class App {
     const adaptiveLimits = this.#cityStreaming?.setBaseResolutionScale(settings.video.resolutionScale);
     this.#world?.setPresentation({
       reducedMotion: settings.accessibility.reducedMotion,
+      cameraShake: settings.accessibility.cameraShake,
       resolutionScale: adaptiveLimits?.resolutionScale ?? settings.video.resolutionScale,
     });
     if (this.#cityStreaming) this.#applyCityStreaming();
@@ -2803,22 +2886,16 @@ export class App {
     this.#root.addEventListener('drop', this.#onInventoryDrop);
     globalThis.addEventListener('keydown', (event) => {
       if (!this.#world || event.repeat) return;
-      if (event.code === 'Escape') {
+      const pauseBinding = this.#settings.controls.bindings.pause.some(
+        (binding) => binding.device === 'keyboard' && binding.code === event.code,
+      );
+      if ((event.code === 'Escape' || pauseBinding) && (this.#panelOpen || this.#paused)) {
         event.preventDefault();
         if (this.#panelOpen) this.#ui.closePanel();
-        else if (this.#paused) {
+        else {
           this.#ui.hidePause();
           this.#resume();
-        } else {
-          this.#ui.showPause();
-          this.#pause();
         }
-      } else if (event.code === 'KeyM') {
-        event.preventDefault();
-        this.#ui.openPanel('map');
-      } else if (event.code === 'KeyI') {
-        event.preventDefault();
-        this.#ui.openPanel('inventory');
       } else if (event.code === 'KeyJ') {
         event.preventDefault();
         this.#ui.openPanel('missions');
@@ -2826,12 +2903,15 @@ export class App {
     });
 
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.#world && !this.#paused) {
+      if (document.hidden && this.#world && !this.#paused && !this.#orientationBlocked) {
         this.#ui.showPause();
         this.#pause();
         void this.#saveNow(false);
       }
     });
+
+    globalThis.addEventListener('resize', () => this.#syncOrientationBlock());
+    globalThis.addEventListener('orientationchange', () => this.#syncOrientationBlock());
 
     globalThis.addEventListener('pagehide', () => {
       void this.#saveNow(false);
@@ -2883,6 +2963,8 @@ export class App {
     this.#inventorySelection = null;
     this.#lastWorldSnapshot = null;
     this.#lastExteriorSnapshot = null;
+    this.#lastVehicleSirenActive = false;
+    this.#audio.setWorldAudioState({ active: false });
     this.#audio.stopRadio();
   }
 
@@ -2906,7 +2988,24 @@ export class App {
     const controller = this.#inputController;
     if (!controller) return createWorldInputState();
     controller.setMode(this.#inputMode);
-    const input = toWorldInputState(controller.consumeFrame());
+    const frame = controller.consumeFrame();
+    if (frame.actions.pause.justPressed) {
+      this.#ui.showPause();
+      this.#pause();
+      return createWorldInputState();
+    }
+    if (frame.actions.map.justPressed) {
+      this.#ui.openPanel('map');
+      return createWorldInputState();
+    }
+    if (frame.actions.inventory.justPressed) {
+      this.#ui.openPanel('inventory');
+      return createWorldInputState();
+    }
+    if (frame.mode === 'vehicle' && frame.commands.weaponRadial.justPressed) {
+      this.#cycleRadio();
+    }
+    const input = toWorldInputState(frame);
     if (input.interact) this.#handleCampaignWorldInteraction();
     return input;
   }
@@ -3369,6 +3468,9 @@ export class App {
         return this.#contentQaSnapshot();
       },
       contentState: () => this.#contentQaSnapshot(),
+      audioState: () => this.#audio.snapshot(),
+      cycleRadio: () => this.#cycleRadio(),
+      nextRadioTrack: () => this.#audio.nextTrack(),
     };
     (globalThis as QaGlobal).__HEATLINE_QA__ = api;
     const wantedPreview = Number(parameters.get('wanted'));
@@ -3456,6 +3558,7 @@ export class App {
     if (this.#failedStreamCellId !== blockedCellId) {
       this.#failedStreamCellId = blockedCellId;
       this.#inputController?.releaseAll();
+      this.#audio.setWorldAudioState({ active: false });
       this.#world?.pause();
       void this.#audio.suspend();
     }
@@ -3491,7 +3594,8 @@ export class App {
     this.#ui.toast('City streaming recovered.', 'success');
     const snapshot = this.#lastExteriorSnapshot ?? this.#lastWorldSnapshot;
     if (snapshot) this.#queueNavigationUpdate(snapshot);
-    if (!this.#paused && !this.#panelOpen) {
+    if (!this.#paused && !this.#panelOpen && !this.#orientationBlocked) {
+      if (this.#lastWorldSnapshot) this.#syncWorldAudio(this.#lastWorldSnapshot);
       this.#world?.resume();
       this.#world?.focus();
       void this.#audio.resume();

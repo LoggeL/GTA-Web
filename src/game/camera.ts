@@ -19,6 +19,58 @@ export interface CameraPlacement {
   fov: number;
 }
 
+export interface CameraShakeOptions {
+  /** Stable simulation time; wall-clock time would make captures nondeterministic. */
+  elapsedSeconds: number;
+  /** Normalized presentation setting in [0, 1]. */
+  intensity: number;
+  reducedMotion: boolean;
+  speedMetersPerSecond: number;
+  /** Short-lived normalized impulse in [0, 1]. */
+  impactStrength: number;
+}
+
+export function normalizeCameraShakeIntensity(value: number): number {
+  if (!Number.isFinite(value)) {
+    throw new TypeError('cameraShake must be finite');
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Produces a small deterministic camera displacement. Speed adds a gentle
+ * high-frequency vibration while impacts add a stronger, caller-decayed pulse.
+ */
+export function computeCameraShakeOffset(options: Readonly<CameraShakeOptions>): Vec3Data {
+  const intensity = normalizeCameraShakeIntensity(options.intensity);
+  if (intensity === 0 || options.reducedMotion) {
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  const elapsedSeconds = Number.isFinite(options.elapsedSeconds) ? options.elapsedSeconds : 0;
+  const speed = Number.isFinite(options.speedMetersPerSecond)
+    ? Math.abs(options.speedMetersPerSecond)
+    : 0;
+  const impact = Number.isFinite(options.impactStrength)
+    ? Math.min(1, Math.max(0, options.impactStrength))
+    : 0;
+  const speedStrength = Math.min(1, speed / 28);
+  if (speedStrength === 0 && impact === 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  const horizontalAmplitude = intensity * (speedStrength * 0.012 + impact * 0.055);
+  const verticalAmplitude = intensity * (speedStrength * 0.016 + impact * 0.042);
+  return {
+    x: Math.sin(elapsedSeconds * 19.7 + 0.65) * horizontalAmplitude,
+    y: (
+      Math.sin(elapsedSeconds * 23.3 + 1.2) * 0.72
+      + Math.sin(elapsedSeconds * 11.1 + 2.4) * 0.28
+    ) * verticalAmplitude,
+    z: Math.cos(elapsedSeconds * 17.9 + 0.35) * horizontalAmplitude * 0.68,
+  };
+}
+
 export function oppositeShoulder(side: ShoulderSide): ShoulderSide {
   return side === 'right' ? 'left' : 'right';
 }

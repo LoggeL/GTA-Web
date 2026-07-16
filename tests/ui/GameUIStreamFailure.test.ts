@@ -31,6 +31,7 @@ class FakeElement {
   readonly classList = new FakeClassList();
   readonly dataset: Record<string, string> = {};
   hidden = false;
+  inert = false;
   id = '';
   innerHTML = '';
   isConnected = true;
@@ -38,6 +39,16 @@ class FakeElement {
   readonly childrenBySelector = new Map<string, FakeElement>();
   readonly listsBySelector = new Map<string, FakeElement[]>();
   readonly listeners = new Map<string, Array<(event: { target: FakeElement }) => void>>();
+  readonly focusableElements: FakeElement[] = [];
+  readonly children: FakeElement[] = [];
+  parentElement: FakeElement | null = null;
+
+  append(...children: FakeElement[]): void {
+    for (const child of children) {
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
 
   addEventListener(type: string, listener: (event: { target: FakeElement }) => void): void {
     const listeners = this.listeners.get(type) ?? [];
@@ -50,6 +61,7 @@ class FakeElement {
   }
 
   querySelectorAll<T extends FakeElement>(selector: string): T[] {
+    if (selector.includes('button:not([disabled])')) return this.focusableElements as T[];
     return (this.listsBySelector.get(selector) ?? []) as T[];
   }
 
@@ -59,16 +71,31 @@ class FakeElement {
     return null;
   }
 
+  matches(selector: string): boolean {
+    if (selector === '[data-panel]') return Object.hasOwn(this.dataset, 'panel');
+    if (selector === '[data-pause-menu]') return Object.hasOwn(this.dataset, 'pauseMenu');
+    if (selector === '[data-stream-failure]') return Object.hasOwn(this.dataset, 'streamFailure');
+    return false;
+  }
+
   contains(element: FakeElement): boolean {
-    return element === this || [...this.childrenBySelector.values()].includes(element);
+    return element === this || this.children.some((child) => child.contains(element));
   }
 
   focus(): void {
+    if (this.hidden || this.inert) return;
+    for (let element = this.parentElement; element; element = element.parentElement) {
+      if (element.hidden || element.inert) return;
+    }
     fakeDocument.activeElement = this;
   }
 
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
   }
 
   removeAttribute(name: string): void {
@@ -86,6 +113,11 @@ class FakeElement {
 
 const fakeDocument: { activeElement: FakeElement | null } = { activeElement: null };
 let rootElement: FakeElement;
+let windowListeners: Map<string, Array<(event: Record<string, unknown>) => void>>;
+
+function dispatchWindow(type: string, event: Record<string, unknown>): void {
+  for (const listener of windowListeners.get(type) ?? []) listener(event);
+}
 
 function createCallbacks(): GameUICallbacks {
   return {
@@ -113,6 +145,16 @@ function createHarness(): {
   returnToMenu: FakeElement;
   binding: FakeElement;
   bindingStatus: FakeElement;
+  game: FakeElement;
+  pause: FakeElement;
+  pauseTitle: FakeElement;
+  resume: FakeElement;
+  quit: FakeElement;
+  panel: FakeElement;
+  panelTitle: FakeElement;
+  panelRegion: FakeElement;
+  closePanel: FakeElement;
+  touchMenu: FakeElement;
   ui: GameUI;
 } {
   rootElement = new FakeElement();
@@ -122,6 +164,7 @@ function createHarness(): {
   game.id = 'game-hud';
   const overlay = new FakeElement();
   overlay.hidden = true;
+  overlay.dataset.streamFailure = '';
   const message = new FakeElement();
   const retry = new FakeElement();
   retry.dataset.action = 'retry-stream';
@@ -131,6 +174,36 @@ function createHarness(): {
   binding.dataset.bindingAction = 'moveForward';
   binding.dataset.bindingIndex = '0';
   const bindingStatus = new FakeElement();
+  const pause = new FakeElement();
+  pause.hidden = true;
+  pause.dataset.pauseMenu = '';
+  const pauseTitle = new FakeElement();
+  const resume = new FakeElement();
+  resume.dataset.action = 'resume';
+  const quit = new FakeElement();
+  quit.dataset.action = 'quit-menu';
+  pause.childrenBySelector.set('[data-pause-title]', pauseTitle);
+  pause.childrenBySelector.set('[data-action="resume"]', resume);
+  pause.focusableElements.push(resume, quit);
+  const panel = new FakeElement();
+  panel.hidden = true;
+  panel.dataset.panel = '';
+  const panelTitle = new FakeElement();
+  const panelBody = new FakeElement();
+  const panelRegion = new FakeElement();
+  const closePanel = new FakeElement();
+  closePanel.dataset.action = 'close-panel';
+  panel.childrenBySelector.set('[data-panel-title]', panelTitle);
+  panel.childrenBySelector.set('[data-action="close-panel"]', closePanel);
+  panel.focusableElements.push(closePanel);
+  const touchMenu = new FakeElement();
+  touchMenu.dataset.action = 'pause';
+
+  rootElement.append(splash, game, pause, panel, overlay);
+  game.append(touchMenu, binding, bindingStatus);
+  pause.append(pauseTitle, resume, quit);
+  panel.append(panelTitle, panelBody, panelRegion, closePanel);
+  overlay.append(message, retry, returnToMenu);
 
   rootElement.listsBySelector.set('[data-screen]', [splash, game]);
   rootElement.listsBySelector.set('[data-touch-action]', []);
@@ -142,10 +215,38 @@ function createHarness(): {
   rootElement.childrenBySelector.set('[data-binding-action="moveForward"][data-binding-index="0"]', binding);
   rootElement.childrenBySelector.set('[data-action="retry-stream"]', retry);
   rootElement.childrenBySelector.set('[data-action="return-stream-menu"]', returnToMenu);
+  rootElement.childrenBySelector.set('[data-pause-menu]', pause);
+  rootElement.childrenBySelector.set('[data-pause-title]', pauseTitle);
+  rootElement.childrenBySelector.set('[data-panel]', panel);
+  rootElement.childrenBySelector.set('[data-panel-title]', panelTitle);
+  rootElement.childrenBySelector.set('[data-panel-body]', panelBody);
+  rootElement.childrenBySelector.set('[data-panel-region]', panelRegion);
+  rootElement.childrenBySelector.set('[data-action="close-panel"]', closePanel);
+  rootElement.childrenBySelector.set('[data-action="pause"]', touchMenu);
+  overlay.focusableElements.push(retry, returnToMenu);
 
   const callbacks = createCallbacks();
   const ui = new GameUI(rootElement as unknown as HTMLElement, callbacks, createDefaultSettings());
-  return { callbacks, overlay, message, retry, returnToMenu, binding, bindingStatus, ui };
+  return {
+    callbacks,
+    overlay,
+    message,
+    retry,
+    returnToMenu,
+    binding,
+    bindingStatus,
+    game,
+    pause,
+    pauseTitle,
+    resume,
+    quit,
+    panel,
+    panelTitle,
+    panelRegion,
+    closePanel,
+    touchMenu,
+    ui,
+  };
 }
 
 beforeEach(() => {
@@ -153,9 +254,16 @@ beforeEach(() => {
   vi.stubGlobal('HTMLElement', FakeElement);
   vi.stubGlobal('HTMLButtonElement', FakeElement);
   vi.stubGlobal('document', fakeDocument);
+  windowListeners = new Map();
   vi.stubGlobal('window', {
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
+    addEventListener: vi.fn((type: string, listener: (event: Record<string, unknown>) => void) => {
+      const listeners = windowListeners.get(type) ?? [];
+      listeners.push(listener);
+      windowListeners.set(type, listeners);
+    }),
+    removeEventListener: vi.fn((type: string, listener: (event: Record<string, unknown>) => void) => {
+      windowListeners.set(type, (windowListeners.get(type) ?? []).filter((candidate) => candidate !== listener));
+    }),
     clearTimeout: vi.fn(),
     setTimeout: vi.fn(() => 1),
   });
@@ -176,6 +284,13 @@ describe('GameUI stream failure blocker', () => {
     expect(rootElement.innerHTML).toContain('aria-describedby="stream-failure-message"');
     expect(rootElement.innerHTML).toContain('data-action="retry-stream"');
     expect(rootElement.innerHTML).toContain('data-action="return-stream-menu"');
+    expect(rootElement.innerHTML).toContain('class="touch-menu-button"');
+    expect(rootElement.innerHTML).toContain('aria-label="Pause game and open menu"');
+    expect(rootElement.innerHTML).toContain('data-pause-menu hidden role="dialog" aria-modal="true"');
+    expect(rootElement.innerHTML).toContain('data-panel hidden role="dialog" aria-modal="true"');
+    expect(rootElement.innerHTML).toContain('data-dialogue hidden role="status" aria-live="polite"');
+    expect(rootElement.innerHTML.match(/data-meter="(?:health|armor|stamina)" role="progressbar"/g)).toHaveLength(3);
+    expect(rootElement.innerHTML).toContain('data-hud-xp role="progressbar"');
 
     ui.destroy();
   });
@@ -213,6 +328,21 @@ describe('GameUI stream failure blocker', () => {
     expect(fakeDocument.activeElement).toBe(retry);
   });
 
+  it('clears stale inert state before focusing a newly revealed higher-priority blocker', () => {
+    const { overlay, pause, retry, touchMenu, ui } = createHarness();
+
+    ui.showGame();
+    touchMenu.focus();
+    touchMenu.click();
+    expect(overlay.inert).toBe(true);
+
+    ui.showStreamFailure('Neon Strand failed to stream.');
+
+    expect(overlay.inert).toBe(false);
+    expect(pause.inert).toBe(true);
+    expect(fakeDocument.activeElement).toBe(retry);
+  });
+
   it('keeps the blocker up for Retry and dismisses before returning to the menu', () => {
     const { callbacks, overlay, retry, returnToMenu, ui } = createHarness();
     ui.showStreamFailure('Alta Vista failed to stream.');
@@ -224,5 +354,88 @@ describe('GameUI stream failure blocker', () => {
     returnToMenu.click();
     expect(overlay.hidden).toBe(true);
     expect(callbacks.onReturnFromStreamFailure).toHaveBeenCalledOnce();
+  });
+
+  it('opens from the touch menu, nests the panel accessibly, and restores focus and inert state', () => {
+    const {
+      callbacks,
+      game,
+      pause,
+      pauseTitle,
+      resume,
+      panel,
+      panelTitle,
+      panelRegion,
+      touchMenu,
+      ui,
+    } = createHarness();
+
+    ui.showGame();
+    touchMenu.focus();
+    touchMenu.click();
+    expect(callbacks.onPause).toHaveBeenCalledOnce();
+    expect(pause.hidden).toBe(false);
+    expect(fakeDocument.activeElement === pauseTitle).toBe(true);
+    expect(game.inert).toBe(true);
+
+    resume.focus();
+    ui.openPanel('settings');
+    expect(panel.hidden).toBe(false);
+    expect(panelRegion.dataset.panel).toBe('settings');
+    expect(fakeDocument.activeElement === panelTitle).toBe(true);
+    expect(pause.inert).toBe(true);
+    expect(panel.inert).toBe(false);
+
+    ui.closePanel();
+    expect(panel.hidden).toBe(true);
+    expect(fakeDocument.activeElement === resume).toBe(true);
+    expect(pause.inert).toBe(false);
+    expect(game.inert).toBe(true);
+
+    ui.hidePause();
+    expect(pause.hidden).toBe(true);
+    expect(fakeDocument.activeElement === touchMenu).toBe(true);
+    expect(game.inert).toBe(false);
+  });
+
+  it('wraps modal Tab focus and handles panel then pause Escape without leaking the key', () => {
+    const { callbacks, pause, resume, quit, panel, touchMenu, ui } = createHarness();
+    const keyboardEvent = (key: string, shiftKey = false) => ({
+      key,
+      code: key,
+      shiftKey,
+      repeat: false,
+      preventDefault: vi.fn(),
+      stopImmediatePropagation: vi.fn(),
+    });
+
+    ui.showGame();
+    vi.mocked(callbacks.onClosePanel).mockClear();
+    touchMenu.focus();
+    touchMenu.click();
+    quit.focus();
+    const forwardTab = keyboardEvent('Tab');
+    dispatchWindow('keydown', forwardTab);
+    expect(fakeDocument.activeElement === resume).toBe(true);
+    expect(forwardTab.preventDefault).toHaveBeenCalledOnce();
+
+    const reverseTab = keyboardEvent('Tab', true);
+    dispatchWindow('keydown', reverseTab);
+    expect(fakeDocument.activeElement === quit).toBe(true);
+
+    resume.focus();
+    ui.openPanel('settings');
+    const closePanelEvent = keyboardEvent('Escape');
+    dispatchWindow('keydown', closePanelEvent);
+    expect(panel.hidden).toBe(true);
+    expect(pause.hidden).toBe(false);
+    expect(callbacks.onClosePanel).toHaveBeenCalledOnce();
+    expect(closePanelEvent.stopImmediatePropagation).toHaveBeenCalledOnce();
+
+    const resumeEvent = keyboardEvent('Escape');
+    dispatchWindow('keydown', resumeEvent);
+    expect(pause.hidden).toBe(true);
+    expect(callbacks.onResume).toHaveBeenCalledOnce();
+    expect(fakeDocument.activeElement === touchMenu).toBe(true);
   });
 });

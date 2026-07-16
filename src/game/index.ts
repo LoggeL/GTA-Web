@@ -10,7 +10,13 @@ export {
   generateCity,
 } from './city';
 export { createWorldInputState } from './types';
-export { computeCameraPlacement, oppositeShoulder } from './camera';
+export {
+  computeCameraPlacement,
+  computeCameraShakeOffset,
+  normalizeCameraShakeIntensity,
+  oppositeShoulder,
+} from './camera';
+export type { CameraShakeOptions } from './camera';
 export { findNearestInteractionTarget } from './interaction';
 export {
   MAX_SAFE_EXIT_SPEED,

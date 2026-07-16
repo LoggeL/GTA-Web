@@ -22,11 +22,11 @@ describe('GameUI touch control layouts', () => {
     expect(Object.values(layout).every(([, , hidden]) => !hidden)).toBe(true);
   });
 
-  it('hides on-foot-only combat actions without removing vehicle controls', () => {
+  it('hides on-foot-only combat actions while exposing vehicle radio control', () => {
     const layout = getTouchControlLayout(true);
 
     expect(layout.melee?.[2]).toBe(true);
-    expect(layout.weaponRadial?.[2]).toBe(true);
+    expect(layout.weaponRadial).toEqual(['Cycle radio station', 'RADIO', false]);
     expect(layout.sprint?.[2]).toBe(true);
     expect(layout.interact).toEqual(['Exit vehicle', 'EXIT', false]);
     expect(layout.jump).toEqual(['Handbrake', 'BRAKE', false]);

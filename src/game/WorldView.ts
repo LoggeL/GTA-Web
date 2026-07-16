@@ -27,7 +27,12 @@ import type {
 import { directionFromHeading, headingFromDirection } from '../simulation/math';
 import { SimulationRandom } from '../simulation/random';
 import type { PoliceResponseSnapshot } from '../systems/policeResponse';
-import { computeCameraPlacement, oppositeShoulder } from './camera';
+import {
+  computeCameraPlacement,
+  computeCameraShakeOffset,
+  normalizeCameraShakeIntensity,
+  oppositeShoulder,
+} from './camera';
 import { cameraSafeFraction } from './collision';
 import type { DrawDensityLimits } from './CityStreamingController';
 import { PLAYER_SPAWN, VEHICLE_SPAWN, districtAt, generateCity } from './city';
@@ -229,6 +234,7 @@ export class WorldView {
   private readonly controls: DefaultWorldControls | null;
   private readonly inputProvider: (() => Partial<WorldInputState>) | null;
   private reducedMotion: boolean;
+  private cameraShake: number;
   private resolutionScale: number;
   private readonly onSnapshot: ((snapshot: WorldSnapshot) => void) | null;
   private readonly onFrame: ((frameMilliseconds: number) => void) | null;
@@ -236,6 +242,9 @@ export class WorldView {
   private readonly cameraTarget = new Vector3();
   private readonly desiredCamera = new Vector3();
   private readonly desiredLookTarget = new Vector3();
+  private readonly cameraShakeOffset = new Vector3();
+  private cameraImpactStrength = 0;
+  private lastCameraVehicleImpact: NonNullable<VehicleSimulationState['lastImpact']> | null = null;
 
   private cameraYaw = DEFAULT_CAMERA_YAW;
   private cameraPitch = DEFAULT_CAMERA_PITCH;
@@ -272,6 +281,7 @@ export class WorldView {
     this.mount = options.mount;
     const quality = options.quality ?? 'high';
     this.reducedMotion = options.reducedMotion ?? false;
+    this.cameraShake = normalizeCameraShakeIntensity(options.cameraShake ?? 1);
     this.resolutionScale = MathUtils.clamp(options.resolutionScale ?? 1, 0.5, 1);
     this.inputProvider = options.inputProvider ?? null;
     this.onSnapshot = options.onSnapshot ?? null;
@@ -435,11 +445,20 @@ export class WorldView {
 
   public setPresentation(options: {
     readonly reducedMotion?: boolean;
+    readonly cameraShake?: number;
     readonly resolutionScale?: number;
   }): void {
     this.assertAlive();
     if (options.reducedMotion !== undefined) {
       this.reducedMotion = options.reducedMotion;
+    }
+    if (options.cameraShake !== undefined) {
+      this.cameraShake = normalizeCameraShakeIntensity(options.cameraShake);
+    }
+    if (this.reducedMotion || this.cameraShake === 0) {
+      this.camera.position.sub(this.cameraShakeOffset);
+      this.cameraShakeOffset.set(0, 0, 0);
+      this.cameraImpactStrength = 0;
     }
     if (options.resolutionScale !== undefined) {
       if (!Number.isFinite(options.resolutionScale)) {
@@ -1505,9 +1524,34 @@ export class WorldView {
       shoulderSide: this.shoulderSide,
       collisions: this.activeCollisions(),
     });
+    // Remove the prior frame's presentation-only displacement before smoothing
+    // the authored camera, so disabling shake has no lingering offset.
+    this.camera.position.sub(this.cameraShakeOffset);
+    this.cameraShakeOffset.set(0, 0, 0);
     this.desiredCamera.set(placement.position.x, placement.position.y, placement.position.z);
     const blend = deltaSeconds >= 0.5 ? 1 : 1 - Math.exp(-(inVehicle ? 7 : 11) * deltaSeconds);
     this.camera.position.lerp(this.desiredCamera, blend);
+
+    const latestImpact = this.vehicle.lastImpact ?? null;
+    if (inVehicle && latestImpact !== null && latestImpact !== this.lastCameraVehicleImpact) {
+      this.cameraImpactStrength = Math.max(
+        this.cameraImpactStrength,
+        MathUtils.clamp(latestImpact.normalSpeedMetersPerSecond / 18, 0, 1),
+      );
+    }
+    this.lastCameraVehicleImpact = latestImpact;
+    const shake = computeCameraShakeOffset({
+      elapsedSeconds: this.elapsedSeconds,
+      intensity: this.cameraShake,
+      reducedMotion: this.reducedMotion,
+      speedMetersPerSecond: inVehicle
+        ? Math.hypot(this.vehicle.speed, this.vehicle.lateralSpeed ?? 0)
+        : Math.hypot(this.player.velocity.x, this.player.velocity.z),
+      impactStrength: inVehicle ? this.cameraImpactStrength : 0,
+    });
+    this.cameraShakeOffset.set(shake.x, shake.y, shake.z);
+    this.camera.position.add(this.cameraShakeOffset);
+    this.cameraImpactStrength *= Math.exp(-7.5 * Math.max(0, deltaSeconds));
 
     this.desiredLookTarget.set(
       placement.lookTarget.x,

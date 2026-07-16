@@ -216,6 +216,7 @@ async function saveQuitAndContinue(page: Page, slot: 1 | 2 | 3): Promise<void> {
   // Mission/content transactions autosave; let their final IndexedDB write settle before
   // invoking the explicit save-and-quit boundary exercised by this acceptance course.
   await page.waitForTimeout(500);
+  await page.getByLabel('3D game world').locator('canvas').focus();
   await page.keyboard.press('Escape');
   const pause = page.getByLabel('Pause menu');
   await expect(pause).toBeVisible();

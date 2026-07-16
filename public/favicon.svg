@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">HEATLINE: SOLARA</title>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07121b" />
+      <stop offset="1" stop-color="#172b3a" />
+    </linearGradient>
+    <linearGradient id="heat" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff3d57" />
+      <stop offset="1" stop-color="#ffbd59" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#sky)" />
+  <circle cx="46" cy="18" r="9" fill="#ffbd59" />
+  <path d="M10 46h44v6H10z" fill="#38d6c6" opacity=".85" />
+  <path d="M13 12h10v15h18V12h10v40H41V36H23v16H13z" fill="url(#heat)" />
+</svg>

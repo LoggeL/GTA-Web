@@ -1,4 +1,12 @@
-export type StationId = 'coastline-fm' | 'low-tide-radio' | 'rustwave-88';
+import {
+  RADIO_STATIONS,
+  RADIO_STATION_IDS,
+  findRadioStation,
+  type RadioStationId,
+} from '../data/radio';
+import type { RadioStationDefinition, RadioTrackDefinition } from '../data/types';
+
+export type StationId = RadioStationId;
 
 export interface AudioMix {
   master: number;
@@ -8,168 +16,207 @@ export interface AudioMix {
   ambience: number;
 }
 
-interface ProceduralTrack {
-  id: string;
-  station: StationId;
-  title: string;
-  bpm: number;
-  rootHz: number;
-  waveform: OscillatorType;
-  scale: readonly number[];
-  bass: readonly number[];
-  lead: readonly number[];
-  kick: readonly number[];
-  snare: readonly number[];
-  hat: readonly number[];
+export interface WorldAudioState {
+  /** Whether the playable world is currently active. */
+  active: boolean;
+  inVehicle: boolean;
+  speedKph: number;
+  /** Normalized accelerator/engine effort in the range 0–1. */
+  engineLoad: number;
+  rainIntensity: number;
+  sirenActive: boolean;
+  interior: boolean;
 }
+
+export type AudioRuntimeState = 'unavailable' | 'suspended' | 'running' | 'closed' | 'interrupted';
 
 export interface RadioSnapshot {
-  station: StationId | null;
-  stationName: string;
-  trackTitle: string;
-  enabled: boolean;
+  readonly station: StationId | null;
+  readonly stationName: string;
+  readonly trackId: string | null;
+  readonly trackTitle: string;
+  readonly trackIndex: number | null;
+  readonly trackCount: number;
+  readonly trackDurationSeconds: number;
+  readonly enabled: boolean;
+  readonly ready: boolean;
+  readonly contextState: AudioRuntimeState;
+  readonly mix: Readonly<AudioMix>;
+  readonly worldAudio: Readonly<WorldAudioState>;
+  /** Number of long-lived sources; frequent world updates never increase it. */
+  readonly worldVoiceCount: number;
 }
 
-const STATION_NAMES: Record<StationId, string> = {
-  'coastline-fm': 'Coastline FM',
-  'low-tide-radio': 'Low Tide Radio',
-  'rustwave-88': 'Rustwave 88',
+export interface AudioScheduler {
+  setInterval(callback: () => void, intervalMilliseconds: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+export interface AudioEngineOptions {
+  readonly createContext?: () => AudioContext;
+  readonly scheduler?: AudioScheduler;
+}
+
+interface ProceduralTrack {
+  readonly definition: RadioTrackDefinition;
+  readonly station: StationId;
+  readonly rootHz: number;
+  readonly waveform: OscillatorType;
+  readonly scaleIntervals: readonly number[];
+  readonly bass: readonly number[];
+  readonly lead: readonly number[];
+  readonly kick: readonly number[];
+  readonly snare: readonly number[];
+  readonly hat: readonly number[];
+}
+
+const DEFAULT_AUDIO_MIX: Readonly<AudioMix> = Object.freeze({
+  master: 0.8,
+  music: 0.58,
+  sfx: 0.8,
+  ui: 0.7,
+  ambience: 0.6,
+});
+
+const DEFAULT_WORLD_AUDIO_STATE: Readonly<WorldAudioState> = Object.freeze({
+  active: false,
+  inVehicle: false,
+  speedKph: 0,
+  engineLoad: 0,
+  rainIntensity: 0,
+  sirenActive: false,
+  interior: false,
+});
+
+const DEFAULT_SCHEDULER: AudioScheduler = {
+  setInterval: (callback, intervalMilliseconds) => globalThis.setInterval(callback, intervalMilliseconds),
+  clearInterval: (handle) => globalThis.clearInterval(handle as ReturnType<typeof globalThis.setInterval>),
 };
 
-const TRACKS: readonly ProceduralTrack[] = [
-  {
-    id: 'sunset-circuit',
-    station: 'coastline-fm',
-    title: 'Sunset Circuit',
-    bpm: 112,
-    rootHz: 110,
-    waveform: 'sine',
-    scale: [0, 2, 4, 7, 9],
-    bass: [0, -1, 0, 2, 0, -1, 4, 2, 0, -1, 0, 2, 4, 2, -1, 2],
-    lead: [7, -1, 9, -1, 11, 9, 7, -1, 4, -1, 7, 9, 11, -1, 9, 7],
-    kick: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1],
-  },
-  {
-    id: 'glass-highway',
-    station: 'coastline-fm',
-    title: 'Glass Highway',
-    bpm: 124,
-    rootHz: 98,
-    waveform: 'triangle',
-    scale: [0, 3, 5, 7, 10],
-    bass: [0, 0, -1, 0, 3, 3, -1, 3, 5, 5, -1, 5, 3, 3, 0, -1],
-    lead: [10, -1, 7, 5, 7, -1, 10, 12, 15, -1, 12, 10, 7, 5, 3, -1],
-    kick: [1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-  },
-  {
-    id: 'afterimage',
-    station: 'coastline-fm',
-    title: 'Afterimage',
-    bpm: 102,
-    rootHz: 123.47,
-    waveform: 'sine',
-    scale: [0, 2, 3, 7, 10],
-    bass: [0, -1, -1, 0, 7, -1, -1, 7, 3, -1, -1, 3, 2, -1, 0, -1],
-    lead: [-1, 10, -1, 7, -1, 12, 10, -1, -1, 7, 10, -1, 15, -1, 12, 10],
-    kick: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0],
-  },
-  {
-    id: 'backstreet-ledger',
-    station: 'low-tide-radio',
-    title: 'Backstreet Ledger',
-    bpm: 88,
-    rootHz: 82.41,
-    waveform: 'triangle',
-    scale: [0, 3, 5, 7, 10],
-    bass: [0, -1, 0, -1, 3, -1, -1, 3, 5, -1, 3, -1, 0, -1, 10, -1],
-    lead: [-1, -1, 7, -1, -1, 10, 7, -1, -1, 5, -1, 3, 5, -1, 7, -1],
-    kick: [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0],
-  },
-  {
-    id: 'concrete-tide',
-    station: 'low-tide-radio',
-    title: 'Concrete Tide',
-    bpm: 94,
-    rootHz: 92.5,
-    waveform: 'sine',
-    scale: [0, 2, 5, 7, 9],
-    bass: [0, -1, 0, 2, -1, -1, 5, -1, 7, -1, 5, -1, 2, -1, 0, -1],
-    lead: [9, -1, -1, 7, -1, 5, -1, 2, 0, -1, 2, -1, 5, 7, -1, -1],
-    kick: [1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1],
-  },
-  {
-    id: 'quiet-money',
-    station: 'low-tide-radio',
-    title: 'Quiet Money',
-    bpm: 78,
-    rootHz: 73.42,
-    waveform: 'triangle',
-    scale: [0, 3, 5, 8, 10],
-    bass: [0, -1, -1, 0, -1, -1, 5, -1, 8, -1, -1, 5, 3, -1, -1, -1],
-    lead: [-1, 10, -1, -1, 8, -1, 5, -1, -1, 3, -1, 5, -1, 8, 10, -1],
-    kick: [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0],
-  },
-  {
-    id: 'breaker-line',
-    station: 'rustwave-88',
-    title: 'Breaker Line',
-    bpm: 136,
-    rootHz: 82.41,
-    waveform: 'sawtooth',
-    scale: [0, 3, 5, 7, 10],
-    bass: [0, 0, 0, -1, 3, 3, 3, -1, 5, 5, 7, -1, 3, 3, 0, -1],
-    lead: [12, -1, 12, 10, 7, -1, 7, 5, 3, -1, 5, 7, 10, 7, 5, -1],
-    kick: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
-  },
-  {
-    id: 'salt-and-static',
-    station: 'rustwave-88',
-    title: 'Salt & Static',
-    bpm: 148,
-    rootHz: 73.42,
-    waveform: 'square',
-    scale: [0, 2, 5, 7, 9],
-    bass: [0, 0, 5, 0, 7, 7, 5, -1, 0, 0, 9, 7, 5, 2, 0, -1],
-    lead: [12, 12, -1, 9, 7, -1, 9, 12, 14, -1, 12, 9, 7, 5, 2, -1],
-    kick: [1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-  },
-  {
-    id: 'last-drawbridge',
-    station: 'rustwave-88',
-    title: 'Last Drawbridge',
-    bpm: 126,
-    rootHz: 98,
-    waveform: 'sawtooth',
-    scale: [0, 3, 5, 7, 10],
-    bass: [0, -1, 0, 3, 5, -1, 3, -1, 0, -1, 7, 5, 3, -1, 0, -1],
-    lead: [10, 7, 5, -1, 7, 10, 12, -1, 15, 12, 10, 7, 5, 3, 0, -1],
-    kick: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0],
-    snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    hat: [1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0],
-  },
-] as const;
+const MIX_KEYS = ['master', 'music', 'sfx', 'ui', 'ambience'] as const satisfies readonly (keyof AudioMix)[];
 
-const STATIONS: readonly StationId[] = ['coastline-fm', 'low-tide-radio', 'rustwave-88'];
+const NOTE_ROOT_FREQUENCIES: Readonly<Record<string, number>> = Object.freeze({
+  A: 110,
+  B: 123.47,
+  'B-flat': 116.54,
+  C: 65.41,
+  D: 73.42,
+  E: 82.41,
+  F: 87.31,
+  G: 98,
+});
+
+const KICK_PATTERNS: Readonly<Record<RadioStationDefinition['genre'], readonly number[]>> = Object.freeze({
+  electronic: Object.freeze([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0]),
+  beat: Object.freeze([1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0]),
+  'garage-rock': Object.freeze([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0]),
+});
+
+const SNARE_PATTERN = Object.freeze([0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
 
 const midiRatio = (semitones: number): number => 2 ** (semitones / 12);
 
+function clamp(value: number, minimum: number, maximum: number, fallback: number): number {
+  if (Number.isNaN(value)) return fallback;
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function clamp01(value: number, fallback = 0): number {
+  return clamp(value, 0, 1, fallback);
+}
+
+function scaleIntervalsFor(scale: string): readonly number[] {
+  const normalized = scale.toLowerCase();
+  if (normalized.includes('dorian')) return [0, 2, 3, 5, 7, 9, 10];
+  if (normalized.includes('mixolydian')) return [0, 2, 4, 5, 7, 9, 10];
+  if (normalized.includes('minor pentatonic')) return [0, 3, 5, 7, 10];
+  if (normalized.includes('minor')) return [0, 2, 3, 5, 7, 8, 10];
+  return [0, 2, 4, 5, 7, 9, 11];
+}
+
+function seededUnitRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+}
+
+function rootFrequencyFor(scale: string): number {
+  const note = scale.split(' ')[0] ?? 'A';
+  return NOTE_ROOT_FREQUENCIES[note] ?? 110;
+}
+
+function waveformFor(
+  genre: RadioStationDefinition['genre'],
+  seed: number,
+): OscillatorType {
+  if (genre === 'garage-rock') return seed % 2 === 0 ? 'sawtooth' : 'square';
+  if (genre === 'beat') return seed % 2 === 0 ? 'triangle' : 'sine';
+  return seed % 2 === 0 ? 'sine' : 'triangle';
+}
+
+function createProceduralTrack(
+  station: (typeof RADIO_STATIONS)[number],
+  definition: RadioTrackDefinition,
+): ProceduralTrack {
+  const random = seededUnitRandom(definition.seed);
+  const scaleIntervals = scaleIntervalsFor(definition.scale);
+  const bass = Array.from({ length: 16 }, (_, step) => {
+    if (step % 4 !== 0 && random() < 0.72) return -1;
+    const degree = Math.floor(random() * Math.min(4, scaleIntervals.length));
+    return scaleIntervals[degree] ?? 0;
+  });
+  const lead = Array.from({ length: 16 }, () => {
+    if (random() < (station.genre === 'garage-rock' ? 0.68 : 0.5)) return -1;
+    return Math.floor(random() * scaleIntervals.length * 2);
+  });
+  const hat = Array.from({ length: 16 }, (_, step) => {
+    if (station.genre === 'garage-rock') return step % 2 === 0 ? 1 : Number(random() > 0.35);
+    if (station.genre === 'electronic') return step % 2 === 0 ? 1 : Number(random() > 0.72);
+    return Number(random() > 0.4);
+  });
+
+  return {
+    definition,
+    station: station.id,
+    rootHz: rootFrequencyFor(definition.scale),
+    waveform: waveformFor(station.genre, definition.seed),
+    scaleIntervals,
+    bass,
+    lead,
+    kick: KICK_PATTERNS[station.genre],
+    snare: SNARE_PATTERN,
+    hat,
+  };
+}
+
+const TRACKS: readonly ProceduralTrack[] = RADIO_STATIONS.flatMap((station) =>
+  station.tracks.map((track) => createProceduralTrack(station, track)),
+);
+
+function normalizeContextState(context: AudioContext | null): AudioRuntimeState {
+  if (!context) return 'unavailable';
+  const state = String(context.state);
+  if (state === 'running' || state === 'suspended' || state === 'closed' || state === 'interrupted') {
+    return state;
+  }
+  return 'unavailable';
+}
+
+function safeStop(source: AudioScheduledSourceNode | null): void {
+  if (!source) return;
+  try {
+    source.stop();
+  } catch {
+    // A source may already be stopped by a closing AudioContext.
+  }
+  source.disconnect();
+}
+
 export class AudioEngine {
+  readonly #createContext: () => AudioContext;
+  readonly #schedulerApi: AudioScheduler;
   #context: AudioContext | null = null;
   #master: GainNode | null = null;
   #music: GainNode | null = null;
@@ -177,39 +224,87 @@ export class AudioEngine {
   #ui: GainNode | null = null;
   #ambience: GainNode | null = null;
   #noise: AudioBuffer | null = null;
+  #engineOscillator: OscillatorNode | null = null;
+  #engineGain: GainNode | null = null;
+  #rainSource: AudioBufferSourceNode | null = null;
+  #rainGain: GainNode | null = null;
+  #sirenOscillator: OscillatorNode | null = null;
+  #sirenModulator: OscillatorNode | null = null;
+  #sirenGain: GainNode | null = null;
+  #ambienceOscillator: OscillatorNode | null = null;
+  #ambienceGain: GainNode | null = null;
   #station: StationId | null = null;
   #trackIndex = 0;
   #step = 0;
+  #trackStartedAt = 0;
+  #trackEndsAt = 0;
   #nextStepAt = 0;
-  #scheduler: ReturnType<typeof setInterval> | undefined;
-  #mix: AudioMix = { master: 0.8, music: 0.58, sfx: 0.8, ui: 0.7, ambience: 0.6 };
+  #scheduler: unknown | undefined;
+  #mix: AudioMix = { ...DEFAULT_AUDIO_MIX };
+  #worldAudio: WorldAudioState = { ...DEFAULT_WORLD_AUDIO_STATE };
+
+  public constructor(options: AudioEngineOptions = {}) {
+    this.#createContext = options.createContext
+      ?? (() => new AudioContext({ latencyHint: 'interactive' }));
+    this.#schedulerApi = options.scheduler ?? DEFAULT_SCHEDULER;
+  }
 
   get ready(): boolean {
-    return this.#context !== null;
+    return this.#context !== null && this.#context.state !== 'closed';
   }
 
   async unlock(): Promise<void> {
     if (!this.#context) this.#createGraph();
-    if (this.#context?.state === 'suspended') await this.#context.resume();
+    const context = this.#context;
+    if (!context) return;
+    if (context.state !== 'running' && context.state !== 'closed') await context.resume();
+    if (this.#station) {
+      if (this.#trackEndsAt <= 0) this.#anchorCurrentTrack(context.currentTime + 0.05);
+      this.#startScheduler();
+    }
+    this.#applyWorldAudio();
   }
 
   setMix(next: Partial<AudioMix>): void {
-    this.#mix = { ...this.#mix, ...next };
+    for (const key of MIX_KEYS) {
+      const value = next[key];
+      if (value === undefined) continue;
+      this.#mix[key] = clamp01(value, this.#mix[key]);
+    }
     this.#applyMix();
   }
 
+  setWorldAudioState(next: Partial<WorldAudioState>): void {
+    this.#worldAudio = {
+      active: next.active ?? this.#worldAudio.active,
+      inVehicle: next.inVehicle ?? this.#worldAudio.inVehicle,
+      speedKph: clamp(next.speedKph ?? this.#worldAudio.speedKph, 0, 400, this.#worldAudio.speedKph),
+      engineLoad: clamp01(next.engineLoad ?? this.#worldAudio.engineLoad, this.#worldAudio.engineLoad),
+      rainIntensity: clamp01(
+        next.rainIntensity ?? this.#worldAudio.rainIntensity,
+        this.#worldAudio.rainIntensity,
+      ),
+      sirenActive: next.sirenActive ?? this.#worldAudio.sirenActive,
+      interior: next.interior ?? this.#worldAudio.interior,
+    };
+    this.#applyWorldAudio();
+  }
+
   playStation(station: StationId): RadioSnapshot {
+    if (!findRadioStation(station)) throw new RangeError(`Unknown radio station: ${station}`);
     this.#station = station;
     this.#trackIndex = 0;
     this.#step = 0;
-    this.#nextStepAt = (this.#context?.currentTime ?? 0) + 0.05;
+    const context = this.#context;
+    if (context) this.#anchorCurrentTrack(context.currentTime + 0.05);
+    else this.#clearTrackTiming();
     this.#startScheduler();
     return this.snapshot();
   }
 
   cycleStation(): RadioSnapshot {
-    const index = this.#station ? STATIONS.indexOf(this.#station) : -1;
-    const next = STATIONS[(index + 1) % (STATIONS.length + 1)];
+    const index = this.#station ? RADIO_STATION_IDS.indexOf(this.#station) : -1;
+    const next = RADIO_STATION_IDS[index + 1];
     if (!next) {
       this.stopRadio();
       return this.snapshot();
@@ -222,24 +317,40 @@ export class AudioEngine {
     if (tracks.length === 0) return this.snapshot();
     this.#trackIndex = (this.#trackIndex + 1) % tracks.length;
     this.#step = 0;
-    this.#nextStepAt = (this.#context?.currentTime ?? 0) + 0.05;
+    const context = this.#context;
+    if (context) this.#anchorCurrentTrack(context.currentTime + 0.05);
+    else this.#clearTrackTiming();
     return this.snapshot();
   }
 
   stopRadio(): void {
     this.#station = null;
-    if (this.#scheduler !== undefined) globalThis.clearInterval(this.#scheduler);
+    this.#trackIndex = 0;
+    this.#step = 0;
+    this.#clearTrackTiming();
+    if (this.#scheduler !== undefined) this.#schedulerApi.clearInterval(this.#scheduler);
     this.#scheduler = undefined;
   }
 
   snapshot(): RadioSnapshot {
+    const station = this.#station ? findRadioStation(this.#station) : undefined;
     const track = this.#currentTrack();
-    return {
+    const tracks = this.#stationTracks();
+    return Object.freeze({
       station: this.#station,
-      stationName: this.#station ? STATION_NAMES[this.#station] : 'Radio off',
-      trackTitle: track?.title ?? '',
+      stationName: station?.name ?? 'Radio off',
+      trackId: track?.definition.id ?? null,
+      trackTitle: track?.definition.title ?? '',
+      trackIndex: track ? this.#trackIndex : null,
+      trackCount: tracks.length,
+      trackDurationSeconds: track?.definition.durationSeconds ?? 0,
       enabled: this.#station !== null,
-    };
+      ready: this.ready,
+      contextState: normalizeContextState(this.#context),
+      mix: Object.freeze({ ...this.#mix }),
+      worldAudio: Object.freeze({ ...this.#worldAudio }),
+      worldVoiceCount: this.#worldVoiceCount(),
+    });
   }
 
   playUi(kind: 'confirm' | 'cancel' | 'navigate' | 'warning' = 'navigate'): void {
@@ -280,11 +391,9 @@ export class AudioEngine {
     }
   }
 
+  /** Backward-compatible rain control now updates one continuous bounded voice. */
   setRain(level: number): void {
-    const context = this.#context;
-    const output = this.#ambience;
-    if (!context || !output || level <= 0.01) return;
-    this.#noiseHit(context.currentTime, 0.8, 5200, Math.min(0.035, level * 0.035), output);
+    this.setWorldAudioState({ active: true, rainIntensity: level });
   }
 
   async suspend(): Promise<void> {
@@ -292,17 +401,27 @@ export class AudioEngine {
   }
 
   async resume(): Promise<void> {
-    if (this.#context?.state === 'suspended') await this.#context.resume();
+    if (this.#context && this.#context.state !== 'running' && this.#context.state !== 'closed') {
+      await this.#context.resume();
+    }
   }
 
   destroy(): void {
     this.stopRadio();
+    this.#destroyWorldVoices();
     void this.#context?.close();
     this.#context = null;
+    this.#master = null;
+    this.#music = null;
+    this.#sfx = null;
+    this.#ui = null;
+    this.#ambience = null;
+    this.#noise = null;
+    this.#worldAudio = { ...DEFAULT_WORLD_AUDIO_STATE };
   }
 
   #createGraph(): void {
-    const context = new AudioContext({ latencyHint: 'interactive' });
+    const context = this.#createContext();
     const master = context.createGain();
     const music = context.createGain();
     const sfx = context.createGain();
@@ -320,7 +439,75 @@ export class AudioEngine {
     this.#ui = ui;
     this.#ambience = ambience;
     this.#noise = this.#createNoiseBuffer(context);
+    this.#createWorldVoices(context);
     this.#applyMix();
+    this.#applyWorldAudio();
+  }
+
+  #createWorldVoices(context: AudioContext): void {
+    const sfx = this.#sfx;
+    const ambience = this.#ambience;
+    const noise = this.#noise;
+    if (!sfx || !ambience || !noise) return;
+    const now = context.currentTime;
+
+    const engine = context.createOscillator();
+    const engineGain = context.createGain();
+    engine.type = 'sawtooth';
+    engine.frequency.setValueAtTime(62, now);
+    engineGain.gain.setValueAtTime(0, now);
+    engine.connect(engineGain);
+    engineGain.connect(sfx);
+    engine.start(now);
+
+    const rain = context.createBufferSource();
+    const rainFilter = context.createBiquadFilter();
+    const rainGain = context.createGain();
+    rain.buffer = noise;
+    rain.loop = true;
+    rainFilter.type = 'highpass';
+    rainFilter.frequency.setValueAtTime(2400, now);
+    rainGain.gain.setValueAtTime(0, now);
+    rain.connect(rainFilter);
+    rainFilter.connect(rainGain);
+    rainGain.connect(ambience);
+    rain.start(now);
+
+    const siren = context.createOscillator();
+    const sirenModulator = context.createOscillator();
+    const sirenModulationGain = context.createGain();
+    const sirenGain = context.createGain();
+    siren.type = 'sine';
+    siren.frequency.setValueAtTime(590, now);
+    sirenModulator.type = 'sine';
+    sirenModulator.frequency.setValueAtTime(0.78, now);
+    sirenModulationGain.gain.setValueAtTime(125, now);
+    sirenGain.gain.setValueAtTime(0, now);
+    sirenModulator.connect(sirenModulationGain);
+    sirenModulationGain.connect(siren.frequency);
+    siren.connect(sirenGain);
+    sirenGain.connect(sfx);
+    siren.start(now);
+    sirenModulator.start(now);
+
+    const cityAmbience = context.createOscillator();
+    const cityAmbienceGain = context.createGain();
+    cityAmbience.type = 'sine';
+    cityAmbience.frequency.setValueAtTime(46, now);
+    cityAmbienceGain.gain.setValueAtTime(0, now);
+    cityAmbience.connect(cityAmbienceGain);
+    cityAmbienceGain.connect(ambience);
+    cityAmbience.start(now);
+
+    this.#engineOscillator = engine;
+    this.#engineGain = engineGain;
+    this.#rainSource = rain;
+    this.#rainGain = rainGain;
+    this.#sirenOscillator = siren;
+    this.#sirenModulator = sirenModulator;
+    this.#sirenGain = sirenGain;
+    this.#ambienceOscillator = cityAmbience;
+    this.#ambienceGain = cityAmbienceGain;
   }
 
   #applyMix(): void {
@@ -332,37 +519,134 @@ export class AudioEngine {
     this.#ambience?.gain.setTargetAtTime(this.#mix.ambience, now, 0.02);
   }
 
+  #applyWorldAudio(): void {
+    const context = this.#context;
+    if (!context) return;
+    const now = context.currentTime;
+    const state = this.#worldAudio;
+    const active = Number(state.active);
+    const speedRatio = Math.min(1, state.speedKph / 180);
+    const engineAudible = active * Number(state.inVehicle);
+    this.#engineOscillator?.frequency.setTargetAtTime(
+      58 + speedRatio * 92 + state.engineLoad * 54,
+      now,
+      0.055,
+    );
+    this.#engineGain?.gain.setTargetAtTime(
+      engineAudible * (0.018 + speedRatio * 0.026 + state.engineLoad * 0.022),
+      now,
+      0.08,
+    );
+    this.#rainGain?.gain.setTargetAtTime(
+      active * state.rainIntensity * (state.interior ? 0.009 : 0.042),
+      now,
+      0.12,
+    );
+    this.#sirenGain?.gain.setTargetAtTime(
+      active * Number(state.inVehicle && state.sirenActive) * 0.05,
+      now,
+      0.06,
+    );
+    this.#ambienceGain?.gain.setTargetAtTime(
+      active * (state.interior ? 0.006 : 0.014),
+      now,
+      0.18,
+    );
+  }
+
   #startScheduler(): void {
-    if (this.#scheduler || !this.#context) return;
-    this.#nextStepAt = this.#context.currentTime + 0.05;
-    this.#scheduler = globalThis.setInterval(() => this.#scheduleAhead(), 40);
+    if (this.#scheduler !== undefined || !this.#context || !this.#station) return;
+    if (this.#trackEndsAt <= 0) this.#anchorCurrentTrack(this.#context.currentTime + 0.05);
+    this.#scheduler = this.#schedulerApi.setInterval(() => this.#scheduleAhead(), 40);
   }
 
   #scheduleAhead(): void {
     const context = this.#context;
-    const track = this.#currentTrack();
-    if (!context || !track || !this.#music) return;
-    const stepDuration = 60 / track.bpm / 4;
-    while (this.#nextStepAt < context.currentTime + 0.16) {
-      this.#scheduleStep(track, this.#step, this.#nextStepAt);
-      this.#nextStepAt += stepDuration;
-      this.#step = (this.#step + 1) % 16;
-      if (this.#step === 0 && Math.floor(context.currentTime / (stepDuration * 64)) % 2 === 1) {
-        const tracks = this.#stationTracks();
-        this.#trackIndex %= Math.max(1, tracks.length);
+    if (!context || !this.#station || !this.#music) return;
+    const now = context.currentTime;
+    const horizon = now + 0.16;
+    this.#advanceExpiredTracks(now);
+    this.#resyncScheduleIfBehind(now);
+
+    while (true) {
+      const track = this.#currentTrack();
+      if (!track) return;
+      if (
+        this.#trackEndsAt > 0
+        && this.#trackEndsAt <= this.#nextStepAt
+        && this.#trackEndsAt < horizon
+      ) {
+        this.#advanceTrackAt(this.#trackEndsAt);
+        continue;
       }
+      if (this.#nextStepAt >= horizon) return;
+      this.#scheduleStep(track, this.#step, this.#nextStepAt);
+      this.#nextStepAt += 60 / track.definition.bpm / 4;
+      this.#step = (this.#step + 1) % 16;
     }
+  }
+
+  #advanceExpiredTracks(now: number): void {
+    while (this.#trackEndsAt > 0 && now >= this.#trackEndsAt) {
+      this.#advanceTrackAt(this.#trackEndsAt);
+    }
+  }
+
+  #advanceTrackAt(startAt: number): void {
+    const tracks = this.#stationTracks();
+    if (tracks.length === 0) {
+      this.#clearTrackTiming();
+      return;
+    }
+    this.#trackIndex = (this.#trackIndex + 1) % tracks.length;
+    this.#step = 0;
+    this.#anchorCurrentTrack(startAt);
+  }
+
+  #resyncScheduleIfBehind(now: number): void {
+    const track = this.#currentTrack();
+    if (!track || this.#nextStepAt >= now) return;
+    const stepDuration = 60 / track.definition.bpm / 4;
+    const elapsedSteps = Math.max(0, Math.ceil((now - this.#trackStartedAt) / stepDuration));
+    this.#step = elapsedSteps % 16;
+    this.#nextStepAt = this.#trackStartedAt + elapsedSteps * stepDuration;
+  }
+
+  #anchorCurrentTrack(startAt: number): void {
+    const track = this.#currentTrack();
+    if (!track) {
+      this.#clearTrackTiming();
+      return;
+    }
+    this.#trackStartedAt = startAt;
+    this.#trackEndsAt = startAt + track.definition.durationSeconds;
+    this.#nextStepAt = startAt;
+  }
+
+  #clearTrackTiming(): void {
+    this.#trackStartedAt = 0;
+    this.#trackEndsAt = 0;
+    this.#nextStepAt = 0;
   }
 
   #scheduleStep(track: ProceduralTrack, step: number, time: number): void {
     if (!this.#music) return;
     const bassNote = track.bass[step] ?? -1;
     const leadNote = track.lead[step] ?? -1;
-    if (bassNote >= 0) this.#tone(track.rootHz * midiRatio(bassNote), time, 0.14, 'triangle', 0.045, this.#music);
+    if (bassNote >= 0) {
+      this.#tone(track.rootHz * midiRatio(bassNote), time, 0.14, 'triangle', 0.045, this.#music);
+    }
     if (leadNote >= 0) {
-      const scaleOffset = track.scale[leadNote % track.scale.length] ?? 0;
-      const octave = Math.floor(leadNote / track.scale.length) * 12;
-      this.#tone(track.rootHz * 2 * midiRatio(scaleOffset + octave), time, 0.1, track.waveform, 0.018, this.#music);
+      const scaleOffset = track.scaleIntervals[leadNote % track.scaleIntervals.length] ?? 0;
+      const octave = Math.floor(leadNote / track.scaleIntervals.length) * 12;
+      this.#tone(
+        track.rootHz * 2 * midiRatio(scaleOffset + octave),
+        time,
+        0.1,
+        track.waveform,
+        0.018,
+        this.#music,
+      );
     }
     if (track.kick[step]) this.#kick(time, this.#music);
     if (track.snare[step]) this.#noiseHit(time, 0.075, 1800, 0.032, this.#music);
@@ -384,7 +668,9 @@ export class AudioEngine {
     const gain = context.createGain();
     oscillator.type = type;
     oscillator.frequency.setValueAtTime(frequency, time);
-    if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, endFrequency), time + duration);
+    if (endFrequency) {
+      oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, endFrequency), time + duration);
+    }
     gain.gain.setValueAtTime(0.0001, time);
     gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, volume), time + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
@@ -434,5 +720,32 @@ export class AudioEngine {
   #currentTrack(): ProceduralTrack | undefined {
     const tracks = this.#stationTracks();
     return tracks[this.#trackIndex % Math.max(1, tracks.length)];
+  }
+
+  #worldVoiceCount(): number {
+    return [
+      this.#engineOscillator,
+      this.#rainSource,
+      this.#sirenOscillator,
+      this.#sirenModulator,
+      this.#ambienceOscillator,
+    ].filter((source) => source !== null).length;
+  }
+
+  #destroyWorldVoices(): void {
+    safeStop(this.#engineOscillator);
+    safeStop(this.#rainSource);
+    safeStop(this.#sirenOscillator);
+    safeStop(this.#sirenModulator);
+    safeStop(this.#ambienceOscillator);
+    this.#engineOscillator = null;
+    this.#engineGain = null;
+    this.#rainSource = null;
+    this.#rainGain = null;
+    this.#sirenOscillator = null;
+    this.#sirenModulator = null;
+    this.#sirenGain = null;
+    this.#ambienceOscillator = null;
+    this.#ambienceGain = null;
   }
 }
