@@ -300,8 +300,9 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 | M0 | User required regular playable Pages previews; Preview 0/1/2/3, RC, and Final publication gates added. | Release and publication section |
 | 2026-07-16 | M0 | Bootstrapped pinned Vite/TypeScript/Three/Vitest/Playwright/ESLint project, responsive menu/HUD/touch shell, procedural Web Audio layer, README, and official Pages Actions workflow. Parallel core/data/world modules are in progress. | Initial build and typecheck passed before parallel integration; `src/ui`, `src/audio`, workflow |
 | 2026-07-16 | M0 / M7 | Generated, inspected, optimized, and integrated the original text-free splash art through the built-in ImageGen workflow. | `public/assets/splash/heatline-splash.webp`; 1672×941 WebP; 119 KB; generated asset ledger |
-| 2026-07-16 14:16 | M0 | Bootstrap acceptance passed. The menu launches the deterministic Three.js city shell, Alex can move and enter/exit the starter vehicle, IndexedDB Continue works, and map/pause/touch/portrait behaviors were smoke-tested. | `npm run check`: 25 files / 130 tests; `npm run test:e2e`: 4 passed / 4 project-specific skips; desktop and 844×390 visual QA; 0.68 MiB artifact / 0.26 MiB compressed shell |
-| 2026-07-16 14:16 | M2 / M4 / M5 / M6 foundations | Added verified but not yet fully UI-integrated road A*/GPS and 256 m chunk streaming, pooled traffic/pedestrian/five-role combat simulations, progression/inventory/economy/campaign/wanted systems, 12-mission/60-collectible registries, and mission/dialogue runtimes. These do not mark later milestones complete until their end-to-end acceptance checks pass. | Unit/integration suite included in the 130 passing tests; `src/navigation`, `src/simulation`, `src/systems`, `src/data`, `src/runtime` |
+| 2026-07-16 14:16 | M0 | Bootstrap acceptance passed. The menu launches the deterministic Three.js city shell, Alex can move and enter/exit the starter vehicle, IndexedDB Continue works, and map/pause/touch/portrait behaviors were smoke-tested. | `npm run check`: 25 files / 132 tests; `npm run test:e2e`: 4 passed / 4 project-specific skips; desktop and 844×390 visual QA; 0.68 MiB artifact / 0.26 MiB compressed shell |
+| 2026-07-16 14:16 | M2 / M4 / M5 / M6 foundations | Added verified but not yet fully UI-integrated road A*/GPS and 256 m chunk streaming, pooled traffic/pedestrian/five-role combat simulations, progression/inventory/economy/campaign/wanted systems, 12-mission/60-collectible registries, and mission/dialogue runtimes. These do not mark later milestones complete until their end-to-end acceptance checks pass. | Unit/integration suite included in the 132 passing tests; `src/navigation`, `src/simulation`, `src/systems`, `src/data`, `src/runtime` |
+| 2026-07-16 14:21 | M0 | The first remote gate exposed two late-arriving restore validation cases. Dialogue restore now preserves its current line when earlier content is removed, and mission restore rejects malformed numeric objective/checkpoint progress without mutation. | Focused runtime tests: 14/14; full `npm run check`: 25 files / 132 tests; corrective deployment pending |
 
 ## Release record
 
@@ -310,5 +311,5 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 - Release commit: pending
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
 - Published artifact size: 0.68 MiB at Preview 0 gate
-- Final `npm run check`: pending; Preview 0 gate passed with 130 tests
+- Final `npm run check`: pending; Preview 0 gate passed with 132 tests
 - Final browser smoke test: pending; Preview 0 local browser smoke passed on desktop and mobile landscape

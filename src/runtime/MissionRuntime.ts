@@ -791,20 +791,71 @@ function validateMissionSnapshot(
   if (!isRecord(active.objectiveProgress)) {
     return { success: false, reason: 'mission snapshot objective progress is missing' };
   }
+  const objectiveProgress = active.objectiveProgress;
   const objectiveIds = new Set(definition.objectives.map((objective) => objective.id));
-  if (Object.keys(active.objectiveProgress).some((id) => !objectiveIds.has(id))) {
-    return { success: false, reason: 'mission snapshot contains an unknown objective' };
+  const progressIds = Object.keys(objectiveProgress);
+  if (
+    progressIds.length !== objectiveIds.size
+    || progressIds.some((id) => !objectiveIds.has(id))
+    || definition.objectives.some((objective) => (
+      !isObjectiveProgressSnapshot(objectiveProgress[objective.id], objective)
+    ))
+  ) {
+    return { success: false, reason: 'mission snapshot objective progress is invalid' };
   }
   if (!isRecord(active.checkpoint)) {
     return { success: false, reason: 'mission snapshot checkpoint is missing' };
   }
-  const checkpointId = active.checkpoint.checkpointId;
+  const checkpoint = active.checkpoint;
+  const checkpointId = checkpoint.checkpointId;
   if (checkpointId !== null
     && (typeof checkpointId !== 'string'
       || !definition.checkpoints.some((checkpoint) => checkpoint.id === checkpointId))) {
     return { success: false, reason: 'mission snapshot checkpoint is invalid' };
   }
+  if (!isRecord(checkpoint.campaignProgress) || !isRecord(checkpoint.objectiveProgress)) {
+    return { success: false, reason: 'mission snapshot checkpoint progress is invalid' };
+  }
+  const checkpointObjectiveProgress = checkpoint.objectiveProgress;
+  if (definition.objectives.some((objective) => (
+    !isObjectiveProgressSnapshot(checkpointObjectiveProgress[objective.id], objective)
+  ))) {
+    return { success: false, reason: 'mission snapshot checkpoint progress is invalid' };
+  }
   return { success: true, snapshot: value as unknown as MissionRuntimeSnapshotV1 };
+}
+
+function isObjectiveProgressSnapshot(
+  value: unknown,
+  objective: Readonly<ObjectiveDefinition>,
+): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const expectedTarget = createObjectiveProgress(objective).target;
+  if (
+    typeof value.current !== 'number'
+    || !Number.isFinite(value.current)
+    || value.current < 0
+    || value.current > expectedTarget
+    || value.target !== expectedTarget
+    || typeof value.elapsedSeconds !== 'number'
+    || !Number.isFinite(value.elapsedSeconds)
+    || value.elapsedSeconds < 0
+    || typeof value.timeoutElapsedSeconds !== 'number'
+    || !Number.isFinite(value.timeoutElapsedSeconds)
+    || value.timeoutElapsedSeconds < 0
+    || typeof value.completed !== 'boolean'
+    || typeof value.skipped !== 'boolean'
+    || !Array.isArray(value.completedTargetIds)
+    || value.completedTargetIds.some((targetId) => (
+      typeof targetId !== 'string' || !objective.targetIds.includes(targetId)
+    ))
+    || new Set(value.completedTargetIds).size !== value.completedTargetIds.length
+  ) {
+    return false;
+  }
+  return !value.completed || value.current === expectedTarget;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

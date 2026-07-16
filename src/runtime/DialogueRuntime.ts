@@ -137,7 +137,13 @@ export class DialogueRuntime {
     const resolvedKeys = value.lineKeys.filter((key) => this.entries.has(key));
     const newlyMissing = value.lineKeys.filter((key) => !this.entries.has(key));
     const missingKeys = [...new Set([...value.missingKeys, ...newlyMissing])];
-    const adjustedIndex = Math.min(index, resolvedKeys.length);
+    const currentKey = value.status === 'playing' ? value.lineKeys[index] : undefined;
+    const resolvedBeforeCurrent = value.lineKeys
+      .slice(0, index)
+      .filter((key) => this.entries.has(key)).length;
+    const adjustedIndex = currentKey && this.entries.has(currentKey)
+      ? resolvedKeys.indexOf(currentKey)
+      : Math.min(resolvedBeforeCurrent, resolvedKeys.length);
     const status = value.status === 'playing' && adjustedIndex >= resolvedKeys.length
       ? 'complete'
       : value.status;
