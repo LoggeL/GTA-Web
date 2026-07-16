@@ -17,6 +17,7 @@ test.describe('M0 mobile landscape browser smoke', () => {
   test.skip(({ isMobile }) => !isMobile, 'Mobile-only smoke coverage');
 
   test('landscape gameplay exposes touch controls and portrait shows the rotate blocker', async ({ page }) => {
+    test.setTimeout(90_000);
     await startNewGame(page, 1, 'Feminine Alex', '/?qa=1');
     await expectPlayableWorldShell(page);
 

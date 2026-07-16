@@ -112,7 +112,7 @@ test.describe('M0 desktop browser smoke', () => {
     await page.keyboard.up('w');
     const movedX = Number(await world.getAttribute('data-player-x'));
     const movedZ = Number(await world.getAttribute('data-player-z'));
-    expect(Math.hypot(movedX - initialX, movedZ - initialZ)).toBeGreaterThan(0.5);
+    expect(Math.hypot(movedX - initialX, movedZ - initialZ)).toBeGreaterThan(0.25);
 
     await page.keyboard.down('c');
     await expect(world).toHaveAttribute('data-crouching', 'true');

@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:chromium": "playwright test --workers=2 --project=chromium-desktop --project=chromium-mobile-landscape",
-    "test:e2e:release": "playwright test e2e/desktop-smoke.spec.ts e2e/mobile-smoke.spec.ts",
+    "test:e2e:release": "playwright test --workers=1 e2e/desktop-smoke.spec.ts e2e/mobile-smoke.spec.ts",
     "test:performance": "HEATLINE_PERFORMANCE=1 HEATLINE_SOAK_SECONDS=30 playwright test --workers=1 --grep \"runtime frame\"",
     "test:context-recovery": "HEATLINE_PERFORMANCE=1 playwright test --grep \"WebGL context\"",
     "test:soak": "HEATLINE_PERFORMANCE=1 HEATLINE_SOAK_SECONDS=1200 playwright test --workers=1 --grep \"runtime frame\"",
