@@ -1,7 +1,7 @@
 import { SeededRandom, type RandomSeed } from './random';
 
 export const GAME_STATE_VERSION = 1 as const;
-export const SAVE_GAME_VERSION = 3 as const;
+export const SAVE_GAME_VERSION = 4 as const;
 
 export type SaveSlotId = 1 | 2 | 3;
 export type AlexPreset = 'masculine' | 'feminine';
@@ -176,6 +176,17 @@ export interface SaveGameV1 {
   quickLoadout: SavedQuickLoadout;
   unlockedRecipes: string[];
   ownedVehicles: SavedVehicle[];
+  /**
+   * Strictly restored by MissionRuntime. Core save validation owns the outer
+   * version boundary while the mission subsystem validates authored ids,
+   * graph progress, checkpoint state, and objective counters before mutation.
+  */
+  missionRuntime: Readonly<Record<string, unknown>> | null;
+  /**
+   * Strictly restored and migrated by DialogueRuntime. Core validation only
+   * owns the serializable outer object and supported snapshot-version gate.
+   */
+  dialogueRuntime: Readonly<Record<string, unknown>> | null;
   missions: Record<string, SavedMissionProgress>;
   contacts: Record<string, number>;
   ending: EndingChoice | null;
@@ -311,6 +322,8 @@ export function createInitialSaveGame(
     },
     unlockedRecipes: [],
     ownedVehicles: [],
+    missionRuntime: null,
+    dialogueRuntime: null,
     missions: {},
     contacts: {
       juno: 0,

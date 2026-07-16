@@ -310,6 +310,15 @@ export class CitySimulation {
     return this.combat.spawn(role, position);
   }
 
+  public despawnEnemy(targetId: string): boolean {
+    this.assertAlive();
+    const despawned = this.combat.despawn(targetId);
+    if (despawned) {
+      this.visuals?.update(this.getSnapshot());
+    }
+    return despawned;
+  }
+
   public damageEnemy(
     targetId: string,
     amount: number,

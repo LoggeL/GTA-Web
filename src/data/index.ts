@@ -1,4 +1,5 @@
 export * from './collectibles';
+export * from './dialogue';
 export * from './economy';
 export * from './items';
 export * from './missions';

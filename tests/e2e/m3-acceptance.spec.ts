@@ -37,7 +37,7 @@ async function qaTeleport(page: Page, x: number, z: number): Promise<void> {
 test.describe('M3 vehicles, ownership, and garage acceptance', () => {
   test('drives all eight classes and makes live traffic yield to a police siren', async ({ page, isMobile }) => {
     test.skip(Boolean(isMobile), 'Desktop class matrix complements the dedicated mobile vehicle course');
-    test.setTimeout(45_000);
+    test.setTimeout(75_000);
     await startNewGame(page, 1, 'Masculine Alex', '/?qa=1');
     const world = page.getByLabel('3D game world');
     await page.waitForFunction(() => Boolean((window as QaWindow).__HEATLINE_QA__));

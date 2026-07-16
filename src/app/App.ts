@@ -20,13 +20,23 @@ import {
   type WorldVehicleInitialization,
 } from '../game';
 import {
+  ACTIVITIES,
+  COLLECTIBLES,
+  COLLECTIBLE_SETS,
   ITEMS,
+  MISSIONS,
   PROPERTIES,
   RECIPES,
   SKILL_NODES,
   VEHICLES,
   WEAPONS,
   getVehicle,
+  type ActivityDifficulty,
+  type ActivityTypeId,
+  type DialogueEntry,
+  type MissionDefinition,
+  type MissionId,
+  type ObjectiveDefinition,
 } from '../data';
 import { CityStreamingController } from '../game/CityStreamingController';
 import {
@@ -45,7 +55,7 @@ import {
   cellIdAt,
   parseCellId,
 } from '../navigation';
-import type { CellId, NavigationFailureState, RoadGraph } from '../navigation';
+import type { CellId, MapMarker, NavigationFailureState, RoadGraph } from '../navigation';
 import { IndexedDbSaveAdapter } from '../storage/IndexedDbSaveAdapter';
 import { GameUI, type AlexPreset, type HudSnapshot, type OverlayPanel, type SaveSlotSummary } from '../ui/GameUI';
 import { MapRenderer, type MapRenderModel } from '../ui/MapRenderer';
@@ -58,7 +68,19 @@ import {
 import { SkillsPanel, parseSkillsPanelAction } from '../ui/SkillsPanel';
 import { InventoryPanel, parseInventoryPanelAction } from '../ui/InventoryPanel';
 import { EconomyPanel, parseEconomyPanelAction } from '../ui/EconomyPanel';
+import {
+  CampaignPanel,
+  parseCampaignPanelAction,
+  type CampaignPanelModel,
+  type ObjectiveCardModel,
+} from '../ui/CampaignPanel';
 import { AudioEngine } from '../audio/AudioEngine';
+import {
+  DialogueRuntime,
+  MissionRuntime,
+  type MissionEnvironmentState,
+  type MissionRuntimeEventMap,
+} from '../runtime';
 import type {
   CrimeEvent,
   EnemyDamageEvent,
@@ -98,6 +120,26 @@ import {
   upgradeProperty,
   useConsumable,
   WantedRuntime,
+  completeActivity,
+  completeCollectible,
+  createActivityProgress,
+  createActivitySaveFields,
+  createCampaignState,
+  createCollectibleProgress,
+  createCollectibleSaveFields,
+  getActivityAvailability,
+  getCollectibleCategoryProgress,
+  restoreActivityProgress,
+  restoreCollectibleSaveFields,
+  revealCollectibles,
+  startActivity,
+  visibleCollectibles,
+  type ActivityProgressState,
+  type ActivityVariant,
+  type ActivityAvailability,
+  type CampaignMissionGateStatus,
+  type CollectibleProgressState,
+  type CampaignState,
   type EconomyState,
   type GarageState,
   type GarageTransactionResult,
@@ -114,6 +156,30 @@ const DISTRICT_LABELS: Record<WorldSnapshot['district'], string> = {
   'arroyo-heights': 'Arroyo Heights',
   breakwater: 'Breakwater',
 };
+
+const DISTRICT_TARGET_CENTERS: Readonly<Record<MissionDefinition['district'], { x: number; z: number }>> = {
+  'neon-strand': { x: -230, z: 70 },
+  'alta-vista': { x: 105, z: 80 },
+  'arroyo-heights': { x: 190, z: 285 },
+  breakwater: { x: 105, z: -235 },
+};
+
+const MISSION_INTERACTION_RADIUS_METERS = 12;
+const COLLECTIBLE_INTERACTION_RADIUS_METERS = 8;
+
+interface MissionWorldTarget {
+  readonly missionId: MissionId;
+  readonly objectiveId: string;
+  readonly targetId: string;
+  readonly targetIndex: number;
+  readonly position: { readonly x: number; readonly z: number };
+}
+
+interface ActiveActivityRun {
+  readonly run: ActivityVariant;
+  readonly startedAtMs: number;
+  step: number;
+}
 
 type MapFilterKind = 'mission' | 'property' | 'activity' | 'shop' | 'safehouse' | 'custom';
 
@@ -164,6 +230,40 @@ interface HeatlineQaApi {
   advanceWanted(seconds: number, isVisible?: boolean, insideSearchArea?: boolean): SaveGameV1['wanted'];
   setPlayerCondition(health: number, armor: number): { health: number; armor: number };
   defeat(outcome: 'death' | 'arrest'): Promise<{ health: number; money: number; wantedLevel: number }>;
+  campaignState(): CampaignQaSnapshot;
+  startMission(missionId: string): CampaignQaSnapshot;
+  advanceMissionObjective(choice?: 'rule' | 'expose'): CampaignQaSnapshot;
+  failMission(reason?: string): CampaignQaSnapshot;
+  retryMission(): CampaignQaSnapshot;
+  completeMission(choice?: 'rule' | 'expose'): CampaignQaSnapshot;
+  startActivity(activityId: string, difficultyId?: string): ContentQaSnapshot;
+  completeActivity(): ContentQaSnapshot;
+  collectCollectible(collectibleId: string): ContentQaSnapshot;
+  contentState(): ContentQaSnapshot;
+}
+
+interface CampaignQaSnapshot {
+  readonly activeMissionId: string | null;
+  readonly activeMissionStatus: string | null;
+  readonly activeObjectiveIds: readonly string[];
+  readonly availableMissionIds: readonly string[];
+  readonly completedMissionIds: readonly string[];
+  readonly checkpointId: string | null;
+  readonly wantedLevel: number;
+  readonly contacts: Readonly<Record<string, number>>;
+  readonly ending: 'rule' | 'expose' | null;
+  readonly storyComplete: boolean;
+  readonly postgameFreeRoam: boolean;
+  readonly reviewedDialogueKeys: readonly string[];
+}
+
+interface ContentQaSnapshot {
+  readonly activeActivityId: string | null;
+  readonly activityStep: number;
+  readonly activities: Readonly<Record<string, number>>;
+  readonly revealedCollectibles: number;
+  readonly completedCollectibles: number;
+  readonly collectibleCategories: Readonly<Record<string, { readonly completed: number; readonly total: number }>>;
 }
 
 type QaGlobal = typeof globalThis & {
@@ -208,6 +308,17 @@ export class App {
   #skillsPanel: SkillsPanel | null = null;
   #inventoryPanel: InventoryPanel | null = null;
   #economyPanel: EconomyPanel | null = null;
+  #campaignPanel: CampaignPanel | null = null;
+  #missionRuntime: MissionRuntime | null = null;
+  #dialogueRuntime: DialogueRuntime | null = null;
+  #activityProgress: ActivityProgressState = createActivityProgress(ACTIVITIES);
+  #collectibleProgress: CollectibleProgressState = createCollectibleProgress();
+  #activeActivity: ActiveActivityRun | null = null;
+  #missionTarget: MissionWorldTarget | null = null;
+  #missionCombatantIds = new Set<string>();
+  #missionEnvironmentBaseline: { timeOfDay: number; rainIntensity: number } | null = null;
+  #missionRecoveryInProgress = false;
+  #collectibleRevealSignature = '';
   #inventorySelection: string | null = null;
   #m5TransactionSequence = 0;
   #mapModel: MapRenderModel | null = null;
@@ -386,6 +497,7 @@ export class App {
       x: 360,
       z: -320,
     });
+    this.#initializeCampaignRuntime(save);
     this.#applyProgressionRuntimeModifiers();
     this.#syncWorldQuickLoadout();
 
@@ -414,10 +526,10 @@ export class App {
     this.#paused = false;
     this.#panelOpen = false;
     if (isNew) {
-      this.#ui.showDialogue('Alex Moreno', 'One quiet morning. That was all I asked for. Then the tow truck hit the gate.');
-      this.#ui.toast('Past Due started · Reach the orange coupe', 'info');
+      if (this.#missionRuntime?.activeMission === null) this.#startCampaignMission('past-due');
     } else {
       this.#ui.toast('Welcome back to Solara', 'success');
+      this.#resumeDialoguePresentation();
     }
   }
 
@@ -430,7 +542,12 @@ export class App {
       this.#inputMode = snapshot.mode;
       this.#inputController?.setMode(snapshot.mode);
     }
-    if (snapshot.mode === 'vehicle' && !this.#navigationDriveWaypointSet) {
+    if (
+      snapshot.mode === 'vehicle'
+      && !this.#navigationDriveWaypointSet
+      && this.#missionRuntime?.activeMission === null
+      && this.#activeActivity === null
+    ) {
       this.#navigationDriveWaypointSet = true;
       this.#navigation?.setWaypoint({
         id: 'neon-strand-lookout',
@@ -483,6 +600,18 @@ export class App {
       worldMount.dataset.softCoverPeeking = String(snapshot.softCoverPeeking);
       worldMount.dataset.aimTargetId = snapshot.aimTargetId ?? '';
       worldMount.dataset.activeCombatants = String(snapshot.activeCombatants);
+      const campaignRuntime = this.#missionRuntime;
+      const campaignActive = campaignRuntime?.activeMission;
+      const campaignSummary = campaignRuntime?.completionSummary();
+      worldMount.dataset.activeMissionId = campaignActive?.missionId ?? '';
+      worldMount.dataset.activeMissionStatus = campaignActive?.status ?? '';
+      worldMount.dataset.activeObjectiveId = campaignRuntime?.activeObjectiveIds()[0] ?? '';
+      worldMount.dataset.completedMissions = String(campaignSummary?.completedMissionCount ?? 0);
+      worldMount.dataset.campaignEnding = campaignSummary?.ending ?? '';
+      worldMount.dataset.postgameFreeRoam = String(campaignSummary?.postgameFreeRoam ?? false);
+      worldMount.dataset.dialogueReviewCount = String(this.#dialogueRuntime?.reviewedKeys.length ?? 0);
+      worldMount.dataset.activeActivityId = this.#activeActivity?.run.activityId ?? '';
+      worldMount.dataset.completedCollectibles = String(this.#collectibleProgress.completedIds.length);
       if (this.#currentSave) {
         const modifiers = calculateProgressionModifiers(
           progressionStateFromSave(this.#currentSave),
@@ -507,8 +636,9 @@ export class App {
         this.#currentSave.player.transform.rotation.y = snapshot.heading;
       }
       this.#currentSave.activeDistrict = snapshot.district;
-      this.#currentSave.clock.timeOfDayMinutes = Math.round(snapshot.timeOfDay * 1_440) % 1_440;
-      this.#currentSave.clock.weather = snapshot.rainIntensity > 0.15 ? 'rain' : 'clear';
+      const persistentEnvironment = this.#missionEnvironmentBaseline ?? snapshot;
+      this.#currentSave.clock.timeOfDayMinutes = Math.round(persistentEnvironment.timeOfDay * 1_440) % 1_440;
+      this.#currentSave.clock.weather = persistentEnvironment.rainIntensity > 0.15 ? 'rain' : 'clear';
       if (snapshot.vehicleRegistered) {
         const savedVehicle = this.#currentSave.ownedVehicles.find(
           (vehicle) => vehicle.instanceId === snapshot.vehicleInstanceId,
@@ -526,7 +656,11 @@ export class App {
       }
     }
     this.#tickWantedRuntime(snapshot, deltaSeconds, now);
+    this.#tickCampaignRuntime(snapshot, deltaSeconds);
+    this.#updateCollectibleDiscovery(snapshot);
     this.#lastSnapshotAt = now;
+
+    const campaignHud = this.#campaignHud(snapshot);
 
     const hud: HudSnapshot = {
       health: this.#currentSave?.player.health ?? 100,
@@ -543,16 +677,16 @@ export class App {
       wantedLevel: this.#currentSave?.wanted.level ?? 0,
       wantedSearching: ['investigating', 'search'].includes(this.#currentSave?.wanted.phase ?? 'clear'),
       wantedSearchRadius: this.#wantedSnapshot?.searchRadius ?? 0,
-      objective: snapshot.interiorId
+      objective: campaignHud.objective ?? (snapshot.interiorId
         ? `Explore ${snapshot.interiorLabel ?? 'the interior'}`
         : snapshot.mode === 'vehicle'
-          ? 'Test the car through Arroyo Heights'
-          : 'Reach the orange coupe by the garage',
-      objectiveDetail: snapshot.interiorId
+          ? 'Explore Solara by road'
+          : 'Free roam · open Jobs to choose work'),
+      objectiveDetail: campaignHud.detail ?? (snapshot.interiorId
         ? 'Press E at the marked doorway to return outside'
         : snapshot.mode === 'vehicle'
-          ? 'Explore Solara or press E when stopped to exit'
-          : 'Press E beside the car to drive',
+          ? 'Open Jobs for story missions and repeatable work'
+          : 'Press J or use the Jobs button for the campaign board'),
       district: DISTRICT_LABELS[snapshot.district],
       timeLabel: this.#timeLabel(snapshot.timeOfDay),
       money: this.#currentSave?.player.money ?? 0,
@@ -569,7 +703,7 @@ export class App {
       radio: snapshot.mode === 'vehicle'
         ? snapshot.vehicleSirenActive ? 'SIREN ACTIVE' : this.#radioStation
         : undefined,
-      interaction: snapshot.prompt?.replace('Press E to ', ''),
+      interaction: campaignHud.interaction ?? snapshot.prompt?.replace('Press E to ', ''),
     };
     this.#ui.updateHud(hud);
     const navigationSnapshot = snapshot.interiorId
@@ -631,6 +765,8 @@ export class App {
 
   #onEnemyDamage(event: EnemyDamageEvent): void {
     if (event.defeated) {
+      const missionResolved = this.#recordMissionCombatDefeat(event.targetId);
+      if (missionResolved) this.#world?.despawnCombatant(event.targetId);
       this.#ui.toast('Hostile incapacitated · non-graphic takedown', 'success');
     }
   }
@@ -721,6 +857,12 @@ export class App {
     const runtime = this.#wantedRuntime;
     if (!save || !world || !runtime || this.#defeatResolving) return;
     this.#defeatResolving = true;
+    if (this.#missionRuntime?.activeMission?.status === 'active') {
+      this.#missionRuntime.failMission(
+        'player-defeat',
+        outcome === 'arrest' ? 'Alex was arrested' : 'Alex was incapacitated',
+      );
+    }
     const penalty = runtime.resolveDefeat({
       cash: save.player.money,
       inventory: save.inventory,
@@ -747,6 +889,850 @@ export class App {
     }
     await this.#saveNow(false);
     this.#defeatResolving = false;
+  }
+
+  #initializeCampaignRuntime(save: SaveGameV1): void {
+    this.#missionRecoveryInProgress = true;
+    const missionRuntime = new MissionRuntime({ campaign: campaignStateFromSave(save) });
+    const dialogueRuntime = new DialogueRuntime();
+    this.#missionRuntime = missionRuntime;
+    this.#dialogueRuntime = dialogueRuntime;
+    this.#activeActivity = null;
+    this.#missionTarget = null;
+    this.#clearMissionCombatants();
+    this.#missionEnvironmentBaseline = null;
+    this.#collectibleRevealSignature = '';
+
+    const activities = restoreActivityProgress(save.activities, ACTIVITIES);
+    this.#activityProgress = activities.success
+      ? activities.state
+      : createActivityProgress(ACTIVITIES);
+    if (!activities.success) console.warn('Activity progress was reset.', activities.errors);
+
+    const collectibles = restoreCollectibleSaveFields(save.collectibles, COLLECTIBLES);
+    this.#collectibleProgress = collectibles.success
+      ? collectibles.state
+      : createCollectibleProgress();
+    if (!collectibles.success) console.warn('Collectible progress was reset.', collectibles.errors);
+
+    this.#bindCampaignRuntimeEvents(missionRuntime, dialogueRuntime);
+    if (save.missionRuntime !== null) {
+      const restored = missionRuntime.restore(save.missionRuntime);
+      if (!restored.success) console.warn(`Mission snapshot was reset: ${restored.reason}`);
+    }
+    missionRuntime.setPlayerLevel(save.player.level);
+    if (save.dialogueRuntime !== null) {
+      const restored = dialogueRuntime.restore(save.dialogueRuntime);
+      if (!restored.success) console.warn(`Dialogue snapshot was reset: ${restored.reason}`);
+    }
+    this.#ensureActiveMissionItems();
+    this.#syncMissionWorldTarget();
+    this.#activateCurrentMissionWantedResponse(false);
+    this.#syncCampaignSave();
+    this.#missionRecoveryInProgress = false;
+  }
+
+  #bindCampaignRuntimeEvents(
+    missionRuntime: MissionRuntime,
+    dialogueRuntime: DialogueRuntime,
+  ): void {
+    missionRuntime.events.on('mission:started', ({ missionId }) => {
+      dialogueRuntime.startMission(missionId);
+      this.#clearMissionCombatants();
+      this.#ensureActiveMissionItems();
+      this.#syncMissionWorldTarget();
+      this.#activateCurrentMissionWantedResponse(true);
+      this.#syncCampaignSave();
+      this.#showCurrentDialogue();
+      const definition = MISSIONS.find((mission) => mission.id === missionId);
+      this.#ui.toast(`${definition?.title ?? missionId} started · GPS updated`, 'info');
+      this.#renderCampaignPanelIfOpen();
+      void this.#saveNow(false);
+    });
+    missionRuntime.events.on('objective:progressed', () => {
+      this.#syncMissionWorldTarget();
+      this.#renderCampaignPanelIfOpen();
+    });
+    missionRuntime.events.on('objective:completed', ({ objectiveId }) => {
+      const objective = missionRuntime.activeMissionDefinition?.objectives.find(
+        (entry) => entry.id === objectiveId,
+      );
+      this.#clearMissionCombatants();
+      this.#syncMissionWorldTarget();
+      this.#activateCurrentMissionWantedResponse(true);
+      this.#syncCampaignSave();
+      this.#ui.toast(`${objective?.title ?? 'Objective'} complete`, 'success');
+      this.#renderCampaignPanelIfOpen();
+    });
+    missionRuntime.events.on('checkpoint:reached', ({ checkpointId }) => {
+      this.#syncCampaignSave();
+      this.#ui.toast(`Checkpoint reached · ${checkpointId}`, 'success');
+      void this.#saveNow(false);
+    });
+    missionRuntime.events.on('mission:failed', ({ reason }) => {
+      this.#syncCampaignSave();
+      this.#ui.toast(`Mission failed · ${reason}`, 'warning');
+      this.#renderCampaignPanelIfOpen();
+      void this.#saveNow(false);
+    });
+    missionRuntime.events.on('mission:retried', () => {
+      this.#missionRecoveryInProgress = true;
+      try {
+        this.#clearMissionCombatants();
+        this.#recoverMissionCheckpoint();
+        this.#syncMissionWorldTarget(true);
+        this.#activateCurrentMissionWantedResponse(true);
+        this.#syncCampaignSave();
+      } finally {
+        this.#missionRecoveryInProgress = false;
+      }
+      this.#ui.toast('Checkpoint restored', 'info');
+      this.#renderCampaignPanelIfOpen();
+    });
+    missionRuntime.events.on('reward:granted', (payload) => this.#grantMissionReward(payload));
+    missionRuntime.events.on('mission:completed', ({ missionId }) => {
+      if (dialogueRuntime.status === 'playing') dialogueRuntime.skip();
+      this.#missionTarget = null;
+      this.#clearMissionCombatants();
+      this.#removeMissionQuestItems(missionId);
+      this.#syncCampaignSave();
+      const definition = MISSIONS.find((mission) => mission.id === missionId);
+      this.#navigation?.clearWaypoint();
+      this.#ui.toast(`${definition?.title ?? missionId} complete · rewards banked`, 'success');
+      this.#renderCampaignPanelIfOpen();
+      void this.#saveNow(false);
+    });
+    missionRuntime.events.on('mission:abandoned', ({ missionId }) => {
+      this.#missionTarget = null;
+      this.#clearMissionCombatants();
+      this.#removeMissionQuestItems(missionId);
+      dialogueRuntime.reset();
+      this.#syncCampaignSave();
+      this.#navigation?.clearWaypoint();
+      this.#renderCampaignPanelIfOpen();
+      void this.#saveNow(false);
+    });
+    missionRuntime.events.on('mission:environment', (state) => this.#applyMissionEnvironment(state));
+
+    dialogueRuntime.events.on('dialogue:line', () => {
+      this.#showCurrentDialogue();
+      this.#syncCampaignSave();
+      this.#renderCampaignPanelIfOpen();
+    });
+    dialogueRuntime.events.on('dialogue:reviewed', () => {
+      this.#syncCampaignSave();
+      this.#renderCampaignPanelIfOpen();
+    });
+    dialogueRuntime.events.on('dialogue:completed', () => {
+      this.#syncCampaignSave();
+      this.#renderCampaignPanelIfOpen();
+    });
+  }
+
+  #startCampaignMission(missionId: MissionId): boolean {
+    const runtime = this.#missionRuntime;
+    if (!runtime) return false;
+    const result = runtime.startMission(missionId);
+    if (!result.success) {
+      this.#ui.toast(result.reason, 'warning');
+      return false;
+    }
+    return true;
+  }
+
+  #grantMissionReward(payload: MissionRuntimeEventMap['reward:granted']): void {
+    const save = this.#currentSave;
+    const runtime = this.#missionRuntime;
+    if (!save || !runtime) return;
+    // MissionRuntime commits campaign state before emitting rewards. Mirror that state
+    // first so finale income, prices, wanted behavior, and other runtime modifiers use
+    // the newly chosen ending immediately instead of waiting for the next reload.
+    this.#syncCampaignSave();
+    const modifiers = calculateProgressionModifiers(progressionStateFromSave(save), runtime.campaignState.ending);
+    const propertyModifiers = resolvePropertyServiceModifiers(
+      this.#economyState(save),
+      PROPERTIES,
+      runtime.campaignState.ending,
+    );
+    const reputationMultiplier = modifiers.contactReputationRewardMultiplier
+      * propertyModifiers.contactReputationMultiplier;
+    const bonusReputationMultiplier = Math.max(0, reputationMultiplier - 1);
+    if (bonusReputationMultiplier > 0) {
+      for (const [contact, amount] of Object.entries(payload.rewards.reputation)) {
+        if ((contact === 'juno' || contact === 'malik' || contact === 'priya') && amount !== undefined) {
+          runtime.addContactReputation(contact, amount, bonusReputationMultiplier);
+        }
+      }
+    }
+    const cash = Math.floor(payload.rewards.cash * modifiers.cashRewardMultiplier);
+    save.player.money = Math.min(Number.MAX_SAFE_INTEGER, save.player.money + cash);
+    const progression = grantXp(progressionStateFromSave(save), payload.rewards.xp);
+    applyProgressionStateToSave(save, progression.state);
+    runtime.setPlayerLevel(progression.state.level);
+    for (const grant of payload.rewards.items) {
+      this.#grantItemToBackpackOrStash(grant.itemId, grant.quantity);
+    }
+    const payouts = accruePropertyPayouts(this.#economyState(save), PROPERTIES, 1);
+    this.#commitEconomy(payouts);
+    this.#applyProgressionRuntimeModifiers();
+    this.#syncWorldQuickLoadout();
+    this.#syncCampaignSave();
+    this.#refreshNavigationMarkers();
+  }
+
+  #applyMissionEnvironment(state: Readonly<MissionEnvironmentState>): void {
+    const world = this.#world;
+    if (!world) return;
+    if (state.phase === 'cleanup') {
+      const baseline = this.#missionEnvironmentBaseline;
+      world.setEnvironment({
+        ...(baseline ? { timeOfDay: baseline.timeOfDay, rainIntensity: baseline.rainIntensity } : {}),
+        clockRate: 1 / (24 * 60),
+      });
+      this.#missionEnvironmentBaseline = null;
+      return;
+    }
+    const snapshot = world.getSnapshot();
+    this.#missionEnvironmentBaseline ??= {
+      timeOfDay: snapshot.timeOfDay,
+      rainIntensity: snapshot.rainIntensity,
+    };
+    world.setEnvironment({
+      ...(state.timeOverride ? { timeOfDay: missionTimeOfDay(state.timeOverride) } : {}),
+      ...(state.weatherOverride ? { rainIntensity: state.weatherOverride === 'rain' ? 0.62 : 0 } : {}),
+      clockRate: 0,
+    });
+  }
+
+  #activateCurrentMissionWantedResponse(force: boolean): void {
+    const objective = this.#missionRuntime?.activeObjectiveIds()
+      .map((id) => this.#missionRuntime?.activeMissionDefinition?.objectives.find((entry) => entry.id === id))
+      .find((entry) => entry?.completion.kind === 'lose-wanted');
+    const level = objective?.initialWantedLevel;
+    const runtime = this.#wantedRuntime;
+    const world = this.#world;
+    const save = this.#currentSave;
+    if (!objective || level === undefined || !runtime || !world || !save) return;
+    if (!force && save.wanted.level > 0) return;
+    const position = world.getSnapshot().position;
+    this.#pendingCrimes.clear();
+    const wanted = runtime.escalate(
+      level,
+      { x: position.x, z: position.z },
+      true,
+      this.#roadblockCandidates(),
+    );
+    this.#policeVisibleSeconds = 6.5;
+    this.#applyWantedSnapshot(wanted, true);
+    this.#ui.toast(`Authored pursuit active · wanted level ${level}`, 'warning');
+  }
+
+  #showCurrentDialogue(): void {
+    const entry = this.#dialogueRuntime?.currentLine;
+    if (!entry) return;
+    this.#ui.showDialogue(dialogueSpeakerLabel(entry), entry.text, 8_000);
+  }
+
+  #resumeDialoguePresentation(): void {
+    this.#dialogueRuntime?.resume();
+  }
+
+  #syncCampaignSave(): void {
+    const save = this.#currentSave;
+    const runtime = this.#missionRuntime;
+    const dialogue = this.#dialogueRuntime;
+    if (!save || !runtime || !dialogue) return;
+    const campaign = runtime.campaignState;
+    save.missionRuntime = runtime.snapshot() as unknown as Readonly<Record<string, unknown>>;
+    save.dialogueRuntime = dialogue.snapshot() as unknown as Readonly<Record<string, unknown>>;
+    save.missions = Object.fromEntries(Object.entries(campaign.missions).flatMap(([missionId, progress]) => (
+      progress ? [[missionId, {
+        state: progress.state,
+        checkpointId: progress.checkpointId,
+        completedObjectives: [...progress.completedObjectives],
+      }]] : []
+    )));
+    save.contacts = { ...campaign.contacts };
+    save.ending = campaign.ending;
+    save.worldFlags = {
+      ...Object.fromEntries(Object.entries(save.worldFlags).filter(([, enabled]) => enabled)),
+      ...Object.fromEntries(campaign.worldFlags.map((flag) => [flag, true])),
+    };
+    save.activities = createActivitySaveFields(this.#activityProgress, ACTIVITIES);
+    save.collectibles = createCollectibleSaveFields(this.#collectibleProgress, COLLECTIBLES);
+  }
+
+  #tickCampaignRuntime(snapshot: Readonly<WorldSnapshot>, deltaSeconds: number): void {
+    if (this.#missionRecoveryInProgress) return;
+    const runtime = this.#missionRuntime;
+    const active = runtime?.activeMission;
+    const definition = runtime?.activeMissionDefinition;
+    if (!runtime || !active || active.status !== 'active' || !definition) return;
+    for (const targetId of this.#world?.getResolvedCombatantIds() ?? []) {
+      if (!this.#missionCombatantIds.has(targetId)) continue;
+      const resolved = this.#recordMissionCombatDefeat(targetId);
+      this.#world?.despawnCombatant(targetId);
+      if (resolved) this.#ui.toast('Hostile surrendered · encounter resolved', 'success');
+    }
+    const surviveObjective = runtime.activeObjectiveIds()
+      .map((id) => definition.objectives.find((entry) => entry.id === id))
+      .find((objective) => objective?.completion.kind === 'survive');
+    const surviveDistance = surviveObjective && this.#missionTarget?.objectiveId === surviveObjective.id
+      ? Math.hypot(
+        snapshot.position.x - this.#missionTarget.position.x,
+        snapshot.position.z - this.#missionTarget.position.z,
+      )
+      : 0;
+    const ticked = runtime.tick(surviveObjective && surviveDistance > 38 ? 0 : deltaSeconds);
+    if (!ticked.success || runtime.activeMission?.status !== 'active') return;
+    for (const objectiveId of runtime.activeObjectiveIds()) {
+      const objective = definition.objectives.find((entry) => entry.id === objectiveId);
+      if (!objective) continue;
+      const target = this.#missionTarget?.objectiveId === objectiveId ? this.#missionTarget : null;
+      const distance = target
+        ? Math.hypot(snapshot.position.x - target.position.x, snapshot.position.z - target.position.z)
+        : Number.POSITIVE_INFINITY;
+      if (objective.completion.kind === 'reach-destination'
+        && distance <= objective.completion.radiusMeters) {
+        runtime.updateObjective(objectiveId, { kind: 'position', distanceMeters: distance });
+      }
+      if (objective.completion.kind === 'lose-wanted') {
+        const wantedLevel = this.#currentSave?.wanted.level ?? 0;
+        if (wantedLevel <= objective.completion.maximumLevel) {
+          runtime.updateObjective(objectiveId, { kind: 'wanted', level: wantedLevel });
+        }
+      }
+      if (objective.type === 'eliminate' && distance <= 38) {
+        this.#ensureMissionCombatEncounter(target?.position ?? snapshot.position);
+      }
+    }
+    this.#syncMissionWorldTarget();
+    this.#finishMissionIfReady();
+  }
+
+  #ensureMissionCombatEncounter(position: Readonly<{ x: number; z: number }>): void {
+    if (this.#missionCombatantIds.size > 0) return;
+    for (const id of this.#world?.seedCombatEncounter(position) ?? []) this.#missionCombatantIds.add(id);
+    if (this.#missionCombatantIds.size > 0) {
+      this.#ui.toast('Hostiles arrived · non-graphic encounter active', 'warning');
+    }
+  }
+
+  #recordMissionCombatDefeat(targetId: string): boolean {
+    if (!this.#missionCombatantIds.delete(targetId)) return false;
+    const runtime = this.#missionRuntime;
+    const definition = runtime?.activeMissionDefinition;
+    const objectiveId = runtime?.activeObjectiveIds().find((id) => (
+      definition?.objectives.find((entry) => entry.id === id)?.type === 'eliminate'
+    ));
+    const objective = definition?.objectives.find((entry) => entry.id === objectiveId);
+    const progress = objectiveId ? runtime?.activeMission?.objectiveProgress[objectiveId] : undefined;
+    if (!runtime || !objective || !progress) return false;
+    if (objective.completion.kind === 'target-count') {
+      runtime.updateObjective(objective.id, { kind: 'increment', amount: 1 });
+    } else if (objective.completion.kind === 'all-targets') {
+      const nextTarget = objective.targetIds.find((id) => !progress.completedTargetIds.includes(id));
+      if (nextTarget) runtime.updateObjective(objective.id, { kind: 'target', targetId: nextTarget });
+    }
+    this.#syncMissionWorldTarget();
+    this.#finishMissionIfReady();
+    return true;
+  }
+
+  #clearMissionCombatants(): void {
+    for (const targetId of this.#missionCombatantIds) this.#world?.despawnCombatant(targetId);
+    this.#missionCombatantIds.clear();
+  }
+
+  #progressCurrentMissionObjective(force = false, choice?: 'rule' | 'expose'): boolean {
+    const runtime = this.#missionRuntime;
+    const definition = runtime?.activeMissionDefinition;
+    const active = runtime?.activeMission;
+    const objectiveId = runtime?.activeObjectiveIds()[0];
+    const objective = definition?.objectives.find((entry) => entry.id === objectiveId);
+    if (!runtime || !definition || !active || active.status !== 'active' || !objective) return false;
+    const distance = this.#missionTarget && this.#lastWorldSnapshot
+      ? Math.hypot(
+        this.#lastWorldSnapshot.position.x - this.#missionTarget.position.x,
+        this.#lastWorldSnapshot.position.z - this.#missionTarget.position.z,
+      )
+      : Number.POSITIVE_INFINITY;
+    if (!force && objective.completion.kind !== 'choice-made'
+      && distance > MISSION_INTERACTION_RADIUS_METERS) {
+      this.#syncMissionWorldTarget(true);
+      this.#ui.toast(`GPS set · ${Math.round(distance)} m to ${objective.title}`, 'info');
+      return false;
+    }
+    const progress = active.objectiveProgress[objective.id];
+    if (!progress) return false;
+    if (!force && objective.type === 'eliminate') {
+      const encounterPosition = this.#missionTarget?.position ?? this.#lastWorldSnapshot?.position;
+      if (encounterPosition) this.#ensureMissionCombatEncounter(encounterPosition);
+      this.#ui.toast('Resolve the marked encounter by surrender or non-graphic takedown', 'info');
+      return false;
+    }
+    let result: ReturnType<MissionRuntime['updateObjective']>;
+    switch (objective.completion.kind) {
+      case 'all-targets': {
+        const targetId = objective.targetIds.find((id) => !progress.completedTargetIds.includes(id));
+        result = targetId
+          ? runtime.updateObjective(objective.id, { kind: 'target', targetId })
+          : runtime.updateObjective(objective.id, { kind: 'complete' });
+        break;
+      }
+      case 'target-count':
+        result = runtime.updateObjective(objective.id, { kind: 'increment', amount: 1 });
+        break;
+      case 'reach-destination':
+        result = runtime.updateObjective(objective.id, { kind: 'position', distanceMeters: 0 });
+        break;
+      case 'survive':
+        result = force
+          ? runtime.updateObjective(objective.id, {
+            kind: 'elapsed',
+            seconds: Math.max(0, objective.completion.durationSeconds - progress.elapsedSeconds),
+          })
+          : { success: false, reason: 'Hold the marked area until the timer finishes' };
+        break;
+      case 'lose-wanted':
+        result = force
+          ? runtime.updateObjective(objective.id, { kind: 'wanted', level: 0 })
+          : runtime.updateObjective(objective.id, {
+            kind: 'wanted',
+            level: this.#currentSave?.wanted.level ?? 0,
+          });
+        break;
+      case 'choice-made':
+        if (!choice) {
+          this.#ui.toast('Choose Rule or Expose in the Jobs panel', 'info');
+          return false;
+        }
+        result = runtime.updateObjective(objective.id, { kind: 'choice', choice });
+        if (result.success) {
+          this.#dialogueRuntime?.startMission(definition.id, { branch: choice });
+          this.#showCurrentDialogue();
+        }
+        break;
+      case 'composite':
+        result = runtime.updateObjective(objective.id, { kind: 'complete' });
+        break;
+    }
+    if (!result.success) {
+      if (!force) this.#ui.toast(result.reason, 'warning');
+      return false;
+    }
+    if (force && objective.completion.kind === 'lose-wanted' && this.#wantedRuntime) {
+      this.#pendingCrimes.clear();
+      this.#policeVisibleSeconds = 0;
+      this.#applyWantedSnapshot(this.#wantedRuntime.clear(), true);
+    }
+    this.#syncMissionWorldTarget();
+    this.#syncCampaignSave();
+    this.#finishMissionIfReady();
+    return true;
+  }
+
+  #finishMissionIfReady(): boolean {
+    const runtime = this.#missionRuntime;
+    if (!runtime?.activeMission || runtime.activeMission.status !== 'active'
+      || runtime.activeObjectiveIds().length > 0) return false;
+    const result = runtime.succeedMission();
+    if (!result.success) return false;
+    return true;
+  }
+
+  #syncMissionWorldTarget(forceWaypoint = false): void {
+    const runtime = this.#missionRuntime;
+    const definition = runtime?.activeMissionDefinition;
+    const active = runtime?.activeMission;
+    const objectiveId = runtime?.activeObjectiveIds()[0];
+    const objective = definition?.objectives.find((entry) => entry.id === objectiveId);
+    if (!runtime || !definition || !active || active.status !== 'active' || !objective
+      || objective.completion.kind === 'choice-made' || objective.completion.kind === 'composite') {
+      this.#missionTarget = null;
+      return;
+    }
+    const progress = active.objectiveProgress[objective.id];
+    if (!progress) return;
+    const targetIndex = objective.completion.kind === 'all-targets'
+      ? progress.completedTargetIds.length
+      : objective.completion.kind === 'target-count' ? Math.floor(progress.current) : 0;
+    const targetId = objective.targetIds[targetIndex % Math.max(1, objective.targetIds.length)] ?? objective.id;
+    const position = missionObjectivePosition(definition, objective, targetIndex);
+    const unchanged = this.#missionTarget?.objectiveId === objective.id
+      && this.#missionTarget.targetIndex === targetIndex;
+    this.#missionTarget = {
+      missionId: definition.id,
+      objectiveId: objective.id,
+      targetId,
+      targetIndex,
+      position,
+    };
+    if (!unchanged || forceWaypoint) {
+      this.#navigation?.setWaypoint({
+        id: `mission:${objective.id}:${targetIndex}`,
+        label: objective.title,
+        position,
+        source: 'mission',
+      });
+    }
+  }
+
+  #recoverMissionCheckpoint(): void {
+    const runtime = this.#missionRuntime;
+    const definition = runtime?.activeMissionDefinition;
+    const checkpointId = runtime?.activeMission?.checkpoint.checkpointId;
+    const checkpoint = definition?.checkpoints.find((entry) => entry.id === checkpointId)
+      ?? definition?.checkpoints[0];
+    if (!checkpoint || !this.#currentSave) return;
+    this.#world?.recoverToSafePosition({ x: checkpoint.respawn.x, z: checkpoint.respawn.z });
+    const modifiers = calculateProgressionModifiers(
+      progressionStateFromSave(this.#currentSave),
+      this.#currentSave.ending,
+    );
+    this.#currentSave.player.health = modifiers.maximumHealth * checkpoint.restore.healthPercent / 100;
+    this.#currentSave.player.armor = checkpoint.restore.armorPercent;
+    if (checkpoint.restore.vehicleHealthPercent !== undefined) {
+      this.#world?.restoreActiveVehicleCondition(checkpoint.restore.vehicleHealthPercent);
+    }
+    if (checkpoint.restore.refillMissionItems) this.#ensureActiveMissionItems();
+  }
+
+  #campaignHud(snapshot: Readonly<WorldSnapshot>): {
+    objective: string | null;
+    detail: string | null;
+    interaction: string | null;
+  } {
+    if (snapshot.interiorId) {
+      return { objective: null, detail: null, interaction: null };
+    }
+    if (this.#activeActivity) {
+      const definition = ACTIVITIES.find((entry) => entry.id === this.#activeActivity?.run.activityId);
+      const target = this.#activityTarget(this.#activeActivity);
+      const distance = Math.hypot(snapshot.position.x - target.x, snapshot.position.z - target.z);
+      return {
+        objective: `${definition?.name ?? 'Activity'} · ${this.#activeActivity.step + 1}/${this.#activeActivity.run.objectiveTemplate.length}`,
+        detail: `${this.#activeActivity.run.difficultyId} variant ${this.#activeActivity.run.variantIndex + 1} · ${Math.round(distance)} m`,
+        interaction: distance <= MISSION_INTERACTION_RADIUS_METERS ? 'advance activity checkpoint' : null,
+      };
+    }
+    const runtime = this.#missionRuntime;
+    const active = runtime?.activeMission;
+    const definition = runtime?.activeMissionDefinition;
+    if (active && definition) {
+      if (active.status === 'failed') {
+        return {
+          objective: `${definition.title} failed`,
+          detail: 'Open Jobs to retry the latest checkpoint',
+          interaction: null,
+        };
+      }
+      const objectiveId = runtime?.activeObjectiveIds()[0];
+      const objective = definition.objectives.find((entry) => entry.id === objectiveId);
+      const progress = objectiveId ? active.objectiveProgress[objectiveId] : undefined;
+      if (objective && progress) {
+        const distance = this.#missionTarget
+          ? Math.hypot(
+            snapshot.position.x - this.#missionTarget.position.x,
+            snapshot.position.z - this.#missionTarget.position.z,
+          )
+          : null;
+        const progressLabel = progress.target > 1
+          ? ` · ${Math.floor(progress.current)}/${Math.floor(progress.target)}`
+          : '';
+        return {
+          objective: `${definition.title} · ${objective.title}`,
+          detail: `${objective.description}${distance === null ? '' : ` · ${Math.round(distance)} m`}${progressLabel}`,
+          interaction: distance !== null && distance <= MISSION_INTERACTION_RADIUS_METERS
+            && objective.completion.kind !== 'survive'
+            ? `advance ${objective.title.toLowerCase()}`
+            : null,
+        };
+      }
+    }
+    const nearby = this.#nearestCollectible(snapshot, COLLECTIBLE_INTERACTION_RADIUS_METERS);
+    return nearby ? {
+      objective: 'Free roam discovery',
+      detail: `${nearby.definition.name} · ${Math.round(nearby.distance)} m`,
+      interaction: `collect ${nearby.definition.name}`,
+    } : { objective: null, detail: null, interaction: null };
+  }
+
+  #activityAccess(nowMs: number) {
+    const save = this.#currentSave;
+    return {
+      level: save?.player.level ?? 1,
+      nowMs,
+      unlockedFlags: Object.entries(save?.worldFlags ?? {})
+        .filter(([, enabled]) => enabled)
+        .map(([flag]) => flag),
+    };
+  }
+
+  #activityRewardContext() {
+    const save = this.#currentSave;
+    return {
+      hustleLevel: save?.player.attributes.hustle ?? 1,
+      sideHustle: save?.player.unlockedSkills.includes('streetcraft-side-hustle') ?? false,
+      kingpin: save?.player.unlockedSkills.includes('streetcraft-kingpin') ?? false,
+    };
+  }
+
+  #startRepeatableActivity(
+    activityId: ActivityTypeId,
+    difficultyId: ActivityDifficulty['id'],
+  ): boolean {
+    const save = this.#currentSave;
+    if (!save) return false;
+    if (this.#missionRuntime?.activeMission) {
+      this.#ui.toast('Finish or abandon the active story mission first', 'warning');
+      return false;
+    }
+    if (this.#activeActivity) {
+      this.#ui.toast('Another activity is already active', 'warning');
+      return false;
+    }
+    const nowMs = Date.now();
+    const result = startActivity(this.#activityProgress, ACTIVITIES, {
+      activityId,
+      difficultyId,
+      worldSeed: save.trafficSeed,
+      access: this.#activityAccess(nowMs),
+      rewardContext: this.#activityRewardContext(),
+    });
+    if (!result.success) {
+      const reason = result.reason === 'cooldown'
+        ? `Cooldown · ${formatDuration(result.cooldownRemainingMs)}`
+        : result.reason === 'locked' ? 'Complete the linked story job first' : result.reason;
+      this.#ui.toast(reason, 'warning');
+      return false;
+    }
+    this.#activeActivity = { run: result.run, startedAtMs: nowMs, step: 0 };
+    this.#setActivityWaypoint();
+    if (this.#panelOpen) this.#ui.closePanel();
+    this.#ui.toast(`${ACTIVITIES.find((entry) => entry.id === activityId)?.name ?? activityId} started`, 'info');
+    return true;
+  }
+
+  #activityTarget(active: Readonly<ActiveActivityRun>): { x: number; z: number } {
+    const base = DISTRICT_TARGET_CENTERS[active.run.district];
+    const angle = ((active.run.seed % 360) + active.step * 97) * Math.PI / 180;
+    const radius = 34 + ((active.run.seed >>> (active.step % 12)) & 31);
+    return {
+      x: clampWorldCoordinate(base.x + Math.cos(angle) * radius),
+      z: clampWorldCoordinate(base.z + Math.sin(angle) * radius),
+    };
+  }
+
+  #setActivityWaypoint(): void {
+    const active = this.#activeActivity;
+    if (!active) return;
+    const definition = ACTIVITIES.find((entry) => entry.id === active.run.activityId);
+    this.#navigation?.setWaypoint({
+      id: `activity:${active.run.runId}:${active.step}`,
+      label: `${definition?.name ?? active.run.activityId} checkpoint ${active.step + 1}`,
+      position: this.#activityTarget(active),
+      source: 'mission',
+    });
+  }
+
+  #advanceActiveActivity(force = false): boolean {
+    const active = this.#activeActivity;
+    if (!active) return false;
+    const target = this.#activityTarget(active);
+    const snapshot = this.#lastWorldSnapshot;
+    const distance = snapshot
+      ? Math.hypot(snapshot.position.x - target.x, snapshot.position.z - target.z)
+      : Number.POSITIVE_INFINITY;
+    if (!force && distance > MISSION_INTERACTION_RADIUS_METERS) {
+      this.#setActivityWaypoint();
+      this.#ui.toast(`Activity checkpoint · ${Math.round(distance)} m`, 'info');
+      return false;
+    }
+    active.step += 1;
+    if (active.step >= active.run.objectiveTemplate.length) return this.#completeActiveActivity();
+    this.#setActivityWaypoint();
+    this.#ui.toast(`Checkpoint ${active.step}/${active.run.objectiveTemplate.length}`, 'success');
+    return true;
+  }
+
+  #completeActiveActivity(): boolean {
+    const active = this.#activeActivity;
+    const save = this.#currentSave;
+    const definition = ACTIVITIES.find((entry) => entry.id === active?.run.activityId);
+    if (!active || !save || !definition) return false;
+    const nowMs = Date.now();
+    const elapsedSeconds = Math.max(1, (nowMs - active.startedAtMs) / 1_000);
+    const result = completeActivity(this.#activityProgress, ACTIVITIES, {
+      activityId: active.run.activityId,
+      difficultyId: active.run.difficultyId,
+      worldSeed: save.trafficSeed,
+      access: this.#activityAccess(nowMs),
+      rewardContext: this.#activityRewardContext(),
+      expectedRunId: active.run.runId,
+      performance: definition.scoring === 'lowest-time'
+        ? { timeSeconds: elapsedSeconds }
+        : { score: Math.max(1, Math.round(1_000 * active.run.targetMultiplier - elapsedSeconds * 4)) },
+    });
+    if (!result.success) {
+      this.#ui.toast(result.reason, 'warning');
+      return false;
+    }
+    this.#activityProgress = result.state;
+    save.player.money = Math.min(Number.MAX_SAFE_INTEGER, save.player.money + result.reward.cash);
+    const progression = grantXp(progressionStateFromSave(save), result.reward.xp);
+    applyProgressionStateToSave(save, progression.state);
+    this.#missionRuntime?.setPlayerLevel(progression.state.level);
+    const payouts = accruePropertyPayouts(this.#economyState(save), PROPERTIES, 1);
+    this.#commitEconomy(payouts);
+    this.#activeActivity = null;
+    this.#navigation?.clearWaypoint();
+    this.#syncCampaignSave();
+    this.#ui.toast(`${definition.name} complete · $${result.reward.cash.toLocaleString('en-US')}`, 'success');
+    this.#renderCampaignPanelIfOpen();
+    void this.#saveNow(false);
+    return true;
+  }
+
+  #updateCollectibleDiscovery(snapshot: Readonly<WorldSnapshot>): void {
+    if (!this.#currentSave || snapshot.interiorId !== null) return;
+    const scannerUnlocked = this.#currentSave.worldFlags['signal-scanner'] === true;
+    const signature = [
+      snapshot.district,
+      Math.floor(snapshot.position.x / 18),
+      Math.floor(snapshot.position.z / 18),
+      scannerUnlocked,
+    ].join(':');
+    if (signature === this.#collectibleRevealSignature) return;
+    this.#collectibleRevealSignature = signature;
+    const revealedIds: string[] = [];
+    const applyReveal = (event: Parameters<typeof revealCollectibles>[2]): void => {
+      const result = revealCollectibles(this.#collectibleProgress, COLLECTIBLES, event);
+      this.#collectibleProgress = result.state;
+      revealedIds.push(...result.newlyRevealedIds);
+    };
+    applyReveal({
+      kind: 'nearby',
+      district: snapshot.district,
+      x: snapshot.position.x,
+      z: snapshot.position.z,
+    });
+    applyReveal({ kind: 'road-survey', district: snapshot.district });
+    if (scannerUnlocked) {
+      applyReveal({
+        kind: 'signal-scan',
+        district: snapshot.district,
+        x: snapshot.position.x,
+        z: snapshot.position.z,
+        scannerUnlocked: true,
+      });
+    }
+    if (revealedIds.length === 0) return;
+    this.#syncCampaignSave();
+    this.#refreshNavigationMarkers();
+    this.#ui.toast(
+      revealedIds.length === 1 ? 'Discovery added to the map' : `${revealedIds.length} discoveries added to the map`,
+      'info',
+    );
+    this.#renderCampaignPanelIfOpen();
+  }
+
+  #nearestCollectible(
+    snapshot: Readonly<WorldSnapshot>,
+    maximumDistance = Number.POSITIVE_INFINITY,
+  ): { definition: (typeof COLLECTIBLES)[number]; distance: number } | null {
+    const completed = new Set(this.#collectibleProgress.completedIds);
+    let nearest: { definition: (typeof COLLECTIBLES)[number]; distance: number } | null = null;
+    for (const definition of visibleCollectibles(this.#collectibleProgress, COLLECTIBLES)) {
+      if (completed.has(definition.id) || definition.district !== snapshot.district) continue;
+      const distance = Math.hypot(
+        snapshot.position.x - definition.position.x,
+        snapshot.position.z - definition.position.z,
+      );
+      if (distance <= maximumDistance && (!nearest || distance < nearest.distance)) {
+        nearest = { definition, distance };
+      }
+    }
+    return nearest;
+  }
+
+  #completeCollectibleById(collectibleId: string, forceReveal = false): boolean {
+    const save = this.#currentSave;
+    const definition = COLLECTIBLES.find((entry) => entry.id === collectibleId);
+    if (!save || !definition) return false;
+    if (forceReveal && !this.#collectibleProgress.revealedIds.includes(collectibleId)) {
+      const event = definition.revealRule === 'road-survey'
+        ? { kind: 'road-survey' as const, district: definition.district }
+        : definition.revealRule === 'signal-scan'
+          ? {
+            kind: 'signal-scan' as const,
+            district: definition.district,
+            x: definition.position.x,
+            z: definition.position.z,
+            scannerUnlocked: true,
+          }
+          : {
+            kind: 'nearby' as const,
+            district: definition.district,
+            x: definition.position.x,
+            z: definition.position.z,
+          };
+      this.#collectibleProgress = revealCollectibles(
+        this.#collectibleProgress,
+        COLLECTIBLES,
+        event,
+      ).state;
+    }
+    const warehouse = save.properties['breakwater-warehouse'];
+    const result = completeCollectible(
+      this.#collectibleProgress,
+      COLLECTIBLES,
+      COLLECTIBLE_SETS,
+      collectibleId,
+      {
+        additionalSalvageComponents: save.player.unlockedSkills.includes('streetcraft-salvager') ? 1 : 0,
+        salvageYieldMultiplier: warehouse?.owned ? warehouse.upgraded ? 1.5 : 1.2 : 1,
+      },
+    );
+    if (!result.success) {
+      if (!forceReveal) this.#ui.toast(result.reason, 'warning');
+      return false;
+    }
+    this.#collectibleProgress = result.state;
+    save.player.money = Math.min(Number.MAX_SAFE_INTEGER, save.player.money + result.reward.cash);
+    const progression = grantXp(progressionStateFromSave(save), result.reward.xp);
+    applyProgressionStateToSave(save, progression.state);
+    this.#missionRuntime?.setPlayerLevel(progression.state.level);
+    for (const grant of result.reward.items) this.#grantItemToBackpackOrStash(grant.itemId, grant.quantity);
+    for (const flag of result.reward.unlockFlags) save.worldFlags[flag] = true;
+    this.#syncCampaignSave();
+    this.#refreshNavigationMarkers();
+    this.#ui.toast(
+      result.categoryCompleted
+        ? `${definition.name} collected · set complete`
+        : `${definition.name} collected · ${result.categoryProgress.completed}/${result.categoryProgress.total}`,
+      'success',
+    );
+    this.#renderCampaignPanelIfOpen();
+    void this.#saveNow(false);
+    return true;
+  }
+
+  #completeNearbyCollectible(): boolean {
+    const snapshot = this.#lastWorldSnapshot;
+    const nearest = snapshot
+      ? this.#nearestCollectible(snapshot, COLLECTIBLE_INTERACTION_RADIUS_METERS)
+      : null;
+    return nearest ? this.#completeCollectibleById(nearest.definition.id) : false;
+  }
+
+  #handleCampaignWorldInteraction(): void {
+    if (this.#completeNearbyCollectible()) return;
+    if (this.#activeActivity) {
+      this.#advanceActiveActivity();
+      return;
+    }
+    this.#progressCurrentMissionObjective();
   }
 
   #pause(): void {
@@ -794,6 +1780,9 @@ export class App {
     if (_panel === 'properties') {
       this.#renderEconomyPanel();
     }
+    if (_panel === 'missions') {
+      this.#renderCampaignPanel();
+    }
   }
 
   #closePanel(): void {
@@ -802,6 +1791,7 @@ export class App {
     this.#skillsPanel = null;
     this.#inventoryPanel = null;
     this.#economyPanel = null;
+    this.#campaignPanel = null;
     if (this.#world && !this.#paused) {
       this.#world.resume();
       this.#world.focus();
@@ -835,6 +1825,206 @@ export class App {
     this.#skillsPanel = new SkillsPanel(host);
     this.#skillsPanel.draw(progressionStateFromSave(save));
   }
+
+  #renderCampaignPanelIfOpen(): void {
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (this.#panelOpen && panel?.dataset.panel === 'missions') this.#renderCampaignPanel();
+  }
+
+  #renderCampaignPanel(): void {
+    const host = this.#root.querySelector<HTMLElement>('[data-panel-body]');
+    const runtime = this.#missionRuntime;
+    const dialogue = this.#dialogueRuntime;
+    if (!host || !runtime || !dialogue) return;
+    this.#campaignPanel = new CampaignPanel(host);
+    this.#campaignPanel.draw(this.#campaignPanelModel(runtime, dialogue));
+  }
+
+  #campaignPanelModel(
+    runtime: Readonly<MissionRuntime>,
+    dialogue: Readonly<DialogueRuntime>,
+  ): CampaignPanelModel {
+    const campaign = runtime.campaignState;
+    const active = runtime.activeMission;
+    const activeDefinition = runtime.activeMissionDefinition;
+    const missionLog = runtime.missionLog();
+    const missionCards = missionLog.map((entry) => {
+      const definition = MISSIONS.find((mission) => mission.id === entry.missionId)!;
+      return {
+        id: definition.id,
+        number: definition.number,
+        title: definition.title,
+        subtitle: definition.subtitle,
+        contact: contactLabel(definition.contact),
+        district: DISTRICT_LABELS[definition.district],
+        state: entry.state,
+        gateReason: campaignGateReason(entry.gates),
+        cashReward: definition.rewards.cash,
+        xpReward: definition.rewards.xp,
+      };
+    });
+    const objectives: ObjectiveCardModel[] = active && activeDefinition
+      ? activeDefinition.objectives.map((objective) => {
+        const progress = active.objectiveProgress[objective.id];
+        const isActive = runtime.activeObjectiveIds().includes(objective.id);
+        const distance = isActive && this.#missionTarget?.objectiveId === objective.id
+          && this.#lastWorldSnapshot
+          ? Math.hypot(
+            this.#lastWorldSnapshot.position.x - this.#missionTarget.position.x,
+            this.#lastWorldSnapshot.position.z - this.#missionTarget.position.z,
+          )
+          : null;
+        return {
+          id: objective.id,
+          title: objective.title,
+          description: objective.description,
+          type: objective.type.replace('-', ' '),
+          state: progress?.skipped ? 'skipped' : progress?.completed ? 'complete' : isActive ? 'active' : 'pending',
+          current: progress?.current ?? 0,
+          target: progress?.target ?? 1,
+          distanceMeters: distance,
+          actionLabel: !isActive || objective.completion.kind === 'choice-made'
+            || objective.completion.kind === 'survive' || objective.type === 'eliminate'
+            ? null
+            : distance !== null && distance <= MISSION_INTERACTION_RADIUS_METERS
+              ? 'Advance objective'
+              : 'Track in world',
+          choices: objective.completion.kind === 'choice-made'
+            ? objective.completion.choices.filter(
+              (choice): choice is 'rule' | 'expose' => choice === 'rule' || choice === 'expose',
+            )
+            : [],
+        };
+      })
+      : [];
+    const nowMs = Date.now();
+    const activities = ACTIVITIES.map((definition) => {
+      const progress = this.#activityProgress[definition.id];
+      return {
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        completions: progress?.completions ?? 0,
+        cooldownLabel: progress && progress.cooldownUntil > nowMs
+          ? `${formatDuration(progress.cooldownUntil - nowMs)} cooldown`
+          : null,
+        bestLabel: definition.scoring === 'lowest-time'
+          ? progress?.bestTimeSeconds === null || progress?.bestTimeSeconds === undefined
+            ? null : `${progress.bestTimeSeconds.toFixed(1)} s best`
+          : progress?.bestScore === null || progress?.bestScore === undefined
+            ? null : `${progress.bestScore.toLocaleString('en-US')} best`,
+        difficulties: definition.difficulties.map((difficulty) => {
+          const availability = getActivityAvailability(
+            this.#activityProgress,
+            definition,
+            difficulty.id,
+            this.#activityAccess(nowMs),
+          );
+          return {
+            id: difficulty.id,
+            label: `${difficulty.id[0]!.toUpperCase()}${difficulty.id.slice(1)}`,
+            available: availability.available && this.#activeActivity === null && runtime.activeMission === null,
+            reason: activityAvailabilityReason(availability),
+          };
+        }),
+      };
+    });
+    const collectibles = COLLECTIBLE_SETS.map((set) => {
+      const progress = getCollectibleCategoryProgress(
+        this.#collectibleProgress,
+        COLLECTIBLES,
+        set.category,
+      );
+      return {
+        id: set.category,
+        label: collectibleCategoryLabel(set.category),
+        found: progress.completed,
+        total: progress.total,
+        completed: progress.completed === progress.total,
+      };
+    });
+    const dialogueModel = (entry: DialogueEntry) => ({
+      key: entry.key,
+      missionTitle: MISSIONS.find((mission) => mission.id === entry.missionId)?.title ?? entry.missionId,
+      speaker: dialogueSpeakerLabel(entry),
+      text: entry.text,
+    });
+    return {
+      missions: missionCards,
+      activeMission: activeDefinition
+        ? missionCards.find((mission) => mission.id === activeDefinition.id) ?? null
+        : null,
+      activeMissionStatus: active?.status ?? null,
+      objectives,
+      canFinishMission: Boolean(active?.status === 'active' && runtime.activeObjectiveIds().length === 0),
+      contacts: { ...campaign.contacts },
+      ending: campaign.ending,
+      dialogue: {
+        current: dialogue.currentLine ? dialogueModel(dialogue.currentLine) : null,
+        hasNext: dialogue.progress.status === 'playing'
+          && dialogue.progress.currentNumber < dialogue.progress.lineCount,
+        history: dialogue.reviewEntries.map(dialogueModel),
+      },
+      activities,
+      collectibles,
+    };
+  }
+
+  readonly #onCampaignPanelClick = (event: Event): void => {
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (!this.#panelOpen || panel?.dataset.panel !== 'missions') return;
+    const action = parseCampaignPanelAction(event.target);
+    if (!action) return;
+    const runtime = this.#missionRuntime;
+    const dialogue = this.#dialogueRuntime;
+    if (!runtime || !dialogue) return;
+    switch (action.type) {
+      case 'start-mission':
+        this.#startCampaignMission(action.missionId as MissionId);
+        if (runtime.activeMission) this.#ui.closePanel();
+        break;
+      case 'objective-action': {
+        const progressed = this.#progressCurrentMissionObjective();
+        if (!progressed && runtime.activeMission?.status === 'active') this.#ui.closePanel();
+        break;
+      }
+      case 'choose':
+        this.#progressCurrentMissionObjective(false, action.choice);
+        break;
+      case 'finish-mission': {
+        const result = runtime.succeedMission();
+        if (!result.success) this.#ui.toast(result.reason, 'warning');
+        break;
+      }
+      case 'retry-mission': {
+        const result = runtime.retryMission();
+        if (!result.success) this.#ui.toast(result.reason, 'warning');
+        else this.#ui.closePanel();
+        break;
+      }
+      case 'abandon-mission': {
+        const result = runtime.abandonMission();
+        if (!result.success) this.#ui.toast(result.reason, 'warning');
+        else this.#ui.toast('Mission abandoned · progress reset to mission start', 'info');
+        break;
+      }
+      case 'advance-dialogue':
+        dialogue.advance();
+        this.#showCurrentDialogue();
+        break;
+      case 'skip-dialogue':
+        dialogue.skip();
+        break;
+      case 'start-activity':
+        this.#startRepeatableActivity(
+          action.activityId as ActivityTypeId,
+          action.difficultyId as ActivityDifficulty['id'],
+        );
+        break;
+    }
+    this.#syncCampaignSave();
+    this.#renderCampaignPanelIfOpen();
+  };
 
   readonly #onSkillsPanelClick = (event: Event): void => {
     const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
@@ -1306,6 +2496,42 @@ export class App {
     appendAbstractStash(save.stash, definition, quantity, () => this.#nextM5Id(`stash-${definitionId}`));
   }
 
+  #ensureActiveMissionItems(): void {
+    const save = this.#currentSave;
+    const definition = this.#missionRuntime?.activeMissionDefinition;
+    if (!save || !definition) return;
+    for (const grant of definition.missionItems ?? []) {
+      const currentQuantity = [
+        ...save.inventory.items,
+        ...save.stash,
+        ...Object.values(save.trunks).flatMap((trunk) => trunk.items),
+      ]
+        .filter((item) => item.definitionId === grant.itemId)
+        .reduce((total, item) => total + item.quantity, 0);
+      const missing = Math.max(0, grant.quantity - currentQuantity);
+      if (missing > 0) this.#grantItemToBackpackOrStash(grant.itemId, missing);
+    }
+  }
+
+  #removeMissionQuestItems(missionId: MissionId): void {
+    const save = this.#currentSave;
+    const definition = MISSIONS.find((mission) => mission.id === missionId);
+    if (!save || !definition) return;
+    const questItemIds = new Set((definition.missionItems ?? [])
+      .filter((grant) => ITEMS.find((item) => item.id === grant.itemId)?.category === 'quest')
+      .map((grant) => grant.itemId));
+    if (questItemIds.size === 0) return;
+    save.inventory = {
+      ...save.inventory,
+      items: save.inventory.items.filter((item) => !questItemIds.has(item.definitionId)),
+    };
+    save.stash = save.stash.filter((item) => !questItemIds.has(item.definitionId));
+    save.trunks = Object.fromEntries(Object.entries(save.trunks).map(([vehicleId, trunk]) => [
+      vehicleId,
+      { ...trunk, items: trunk.items.filter((item) => !questItemIds.has(item.definitionId)) },
+    ]));
+  }
+
   #nextM5Id(prefix: string): string {
     this.#m5TransactionSequence += 1;
     return `${prefix}-${this.#activeSlot ?? 0}-${this.#m5TransactionSequence}`;
@@ -1492,6 +2718,7 @@ export class App {
     if (!this.#currentSave || this.#saving) return;
     this.#saving = true;
     try {
+      this.#syncCampaignSave();
       this.#currentSave.slot.updatedAt = Date.now();
       await this.#saveService.saveSlot(this.#currentSave);
       if (showToast) this.#ui.toast(`Saved to slot ${this.#activeSlot ?? ''}`, 'success');
@@ -1570,6 +2797,7 @@ export class App {
     this.#root.addEventListener('click', this.#onSkillsPanelClick);
     this.#root.addEventListener('click', this.#onInventoryPanelClick);
     this.#root.addEventListener('click', this.#onEconomyPanelClick);
+    this.#root.addEventListener('click', this.#onCampaignPanelClick);
     this.#root.addEventListener('dragstart', this.#onInventoryDragStart);
     this.#root.addEventListener('dragover', this.#onInventoryDragOver);
     this.#root.addEventListener('drop', this.#onInventoryDrop);
@@ -1591,6 +2819,9 @@ export class App {
       } else if (event.code === 'KeyI') {
         event.preventDefault();
         this.#ui.openPanel('inventory');
+      } else if (event.code === 'KeyJ') {
+        event.preventDefault();
+        this.#ui.openPanel('missions');
       }
     });
 
@@ -1631,6 +2862,17 @@ export class App {
     this.#pendingCrimes.clear();
     this.#wantedRuntime = null;
     this.#wantedSnapshot = null;
+    this.#missionRuntime = null;
+    this.#dialogueRuntime = null;
+    this.#campaignPanel = null;
+    this.#activityProgress = createActivityProgress(ACTIVITIES);
+    this.#collectibleProgress = createCollectibleProgress();
+    this.#activeActivity = null;
+    this.#missionTarget = null;
+    this.#missionCombatantIds.clear();
+    this.#missionEnvironmentBaseline = null;
+    this.#missionRecoveryInProgress = false;
+    this.#collectibleRevealSignature = '';
     this.#policeVisibleSeconds = 0;
     this.#defeatResolving = false;
     this.#ui.hideStreamFailure();
@@ -1664,7 +2906,9 @@ export class App {
     const controller = this.#inputController;
     if (!controller) return createWorldInputState();
     controller.setMode(this.#inputMode);
-    return toWorldInputState(controller.consumeFrame());
+    const input = toWorldInputState(controller.consumeFrame());
+    if (input.interact) this.#handleCampaignWorldInteraction();
+    return input;
   }
 
   #rebindWorldInput(): void {
@@ -1699,7 +2943,23 @@ export class App {
       },
       platform: matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
     });
-    navigation.setMarkers([
+    navigation.setMarkers(this.#buildNavigationMarkers());
+    this.#navigation = navigation;
+    if (this.#activeActivity) this.#setActivityWaypoint();
+    else if (this.#missionRuntime?.activeMission) this.#syncMissionWorldTarget(true);
+    else {
+      navigation.setWaypoint({
+        id: 'starter-car',
+        label: 'Moreno Rook',
+        position: { x: VEHICLE_SPAWN.x, z: VEHICLE_SPAWN.z },
+        source: 'mission',
+      });
+    }
+    this.#queueNavigationUpdate(world.getSnapshot());
+  }
+
+  #buildNavigationMarkers(): readonly MapMarker[] {
+    const markers: MapMarker[] = [
       {
         id: 'moreno-garage', kind: 'safehouse', label: 'Moreno Garage',
         position: { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z },
@@ -1717,15 +2977,105 @@ export class App {
         id: 'priya-shah', kind: 'mission', label: 'Priya Shah',
         position: { x: 350, z: 350 }, cellId: cellIdAt({ x: 350, z: 350 }), reveal: 'always',
       },
-    ]);
-    navigation.setWaypoint({
-      id: 'starter-car',
-      label: 'Moreno Rook',
-      position: { x: VEHICLE_SPAWN.x, z: VEHICLE_SPAWN.z },
-      source: 'mission',
+    ];
+    const unlocked = new Set(
+      Object.entries(this.#currentSave?.worldFlags ?? {})
+        .filter(([, enabled]) => enabled)
+        .map(([flag]) => flag),
+    );
+    ACTIVITIES.forEach((definition, index) => {
+      if (!unlocked.has(definition.unlockFlag)) return;
+      const center = DISTRICT_TARGET_CENTERS[definition.districts[0]!];
+      const position = { x: center.x + index * 9 - 18, z: center.z + index * 7 - 14 };
+      markers.push({
+        id: `activity:${definition.id}`,
+        kind: 'activity',
+        label: definition.name,
+        position,
+        cellId: cellIdAt(position),
+        reveal: 'always',
+      });
     });
-    this.#navigation = navigation;
-    this.#queueNavigationUpdate(world.getSnapshot());
+    for (const definition of visibleCollectibles(this.#collectibleProgress, COLLECTIBLES)) {
+      if (this.#collectibleProgress.completedIds.includes(definition.id)) continue;
+      const position = { x: definition.position.x, z: definition.position.z };
+      markers.push({
+        id: `collectible:${definition.id}`,
+        kind: 'custom',
+        label: definition.name,
+        position,
+        cellId: cellIdAt(position),
+        reveal: 'always',
+      });
+    }
+    return markers;
+  }
+
+  #refreshNavigationMarkers(): void {
+    this.#navigation?.setMarkers(this.#buildNavigationMarkers());
+  }
+
+  #campaignQaSnapshot(): CampaignQaSnapshot {
+    const runtime = this.#missionRuntime;
+    const summary = runtime?.completionSummary();
+    const active = runtime?.activeMission;
+    return {
+      activeMissionId: active?.missionId ?? null,
+      activeMissionStatus: active?.status ?? null,
+      activeObjectiveIds: runtime?.activeObjectiveIds() ?? [],
+      availableMissionIds: runtime?.availableMissionIds() ?? [],
+      completedMissionIds: summary?.completedMissionIds ?? [],
+      checkpointId: active?.checkpoint.checkpointId ?? null,
+      wantedLevel: this.#currentSave?.wanted.level ?? 0,
+      contacts: runtime?.campaignState.contacts ?? { juno: 0, malik: 0, priya: 0 },
+      ending: runtime?.campaignState.ending ?? null,
+      storyComplete: summary?.storyComplete ?? false,
+      postgameFreeRoam: summary?.postgameFreeRoam ?? false,
+      reviewedDialogueKeys: this.#dialogueRuntime?.reviewedKeys ?? [],
+    };
+  }
+
+  #contentQaSnapshot(): ContentQaSnapshot {
+    return {
+      activeActivityId: this.#activeActivity?.run.activityId ?? null,
+      activityStep: this.#activeActivity?.step ?? 0,
+      activities: Object.fromEntries(
+        ACTIVITIES.map((definition) => [
+          definition.id,
+          this.#activityProgress[definition.id]?.completions ?? 0,
+        ]),
+      ),
+      revealedCollectibles: this.#collectibleProgress.revealedIds.length,
+      completedCollectibles: this.#collectibleProgress.completedIds.length,
+      collectibleCategories: Object.fromEntries(COLLECTIBLE_SETS.map((set) => [
+        set.category,
+        getCollectibleCategoryProgress(this.#collectibleProgress, COLLECTIBLES, set.category),
+      ])),
+    };
+  }
+
+  #qaCompleteMission(choice: 'rule' | 'expose' = 'rule'): CampaignQaSnapshot {
+    const initialMissionId = this.#missionRuntime?.activeMission?.missionId;
+    if (!initialMissionId) throw new Error('QA complete mission requires an active mission');
+    for (let step = 0; step < 128; step += 1) {
+      const active = this.#missionRuntime?.activeMission;
+      if (!active || active.missionId !== initialMissionId) return this.#campaignQaSnapshot();
+      if (active.status === 'failed') {
+        const retried = this.#missionRuntime?.retryMission();
+        if (!retried?.success) throw new Error(retried?.reason ?? 'Mission retry failed');
+        continue;
+      }
+      const objectiveIds = this.#missionRuntime?.activeObjectiveIds() ?? [];
+      if (objectiveIds.length === 0) {
+        const completed = this.#missionRuntime?.succeedMission();
+        if (!completed?.success) throw new Error(completed?.reason ?? 'Mission completion failed');
+        continue;
+      }
+      if (!this.#progressCurrentMissionObjective(true, choice)) {
+        throw new Error(`QA could not advance objective ${objectiveIds[0]}`);
+      }
+    }
+    throw new Error(`QA mission ${initialMissionId} exceeded its objective step budget`);
   }
 
   #installQaApi(world: WorldView): void {
@@ -1969,6 +3319,56 @@ export class App {
           wantedLevel: save.wanted.level,
         };
       },
+      campaignState: () => this.#campaignQaSnapshot(),
+      startMission: (missionId) => {
+        const definition = MISSIONS.find((entry) => entry.id === missionId);
+        if (!definition) throw new Error(`Unknown QA mission: ${missionId}`);
+        if (!this.#startCampaignMission(definition.id)) {
+          throw new Error(`QA mission ${missionId} could not start`);
+        }
+        return this.#campaignQaSnapshot();
+      },
+      advanceMissionObjective: (choice) => {
+        if (!this.#progressCurrentMissionObjective(true, choice)) {
+          throw new Error('QA could not advance the current mission objective');
+        }
+        return this.#campaignQaSnapshot();
+      },
+      failMission: (reason = 'QA checkpoint recovery') => {
+        const result = this.#missionRuntime?.failMission('scripted', reason);
+        if (!result?.success) throw new Error(result?.reason ?? 'QA mission failure could not be applied');
+        return this.#campaignQaSnapshot();
+      },
+      retryMission: () => {
+        const result = this.#missionRuntime?.retryMission();
+        if (!result?.success) throw new Error(result?.reason ?? 'QA mission retry failed');
+        return this.#campaignQaSnapshot();
+      },
+      completeMission: (choice = 'rule') => this.#qaCompleteMission(choice),
+      startActivity: (activityId, difficultyId = 'rookie') => {
+        const definition = ACTIVITIES.find((entry) => entry.id === activityId);
+        const difficulty = definition?.difficulties.find((entry) => entry.id === difficultyId);
+        if (!definition || !difficulty) throw new Error(`Unknown QA activity: ${activityId}/${difficultyId}`);
+        if (!this.#startRepeatableActivity(definition.id, difficulty.id)) {
+          throw new Error(`QA activity ${activityId} could not start`);
+        }
+        return this.#contentQaSnapshot();
+      },
+      completeActivity: () => {
+        if (!this.#activeActivity) throw new Error('QA complete activity requires an active activity');
+        for (let step = 0; step < 16 && this.#activeActivity; step += 1) {
+          if (!this.#advanceActiveActivity(true)) throw new Error('QA activity step could not advance');
+        }
+        if (this.#activeActivity) throw new Error('QA activity exceeded its step budget');
+        return this.#contentQaSnapshot();
+      },
+      collectCollectible: (collectibleId) => {
+        if (!this.#completeCollectibleById(collectibleId, true)) {
+          throw new Error(`QA collectible ${collectibleId} could not complete`);
+        }
+        return this.#contentQaSnapshot();
+      },
+      contentState: () => this.#contentQaSnapshot(),
     };
     (globalThis as QaGlobal).__HEATLINE_QA__ = api;
     const wantedPreview = Number(parameters.get('wanted'));
@@ -2266,6 +3666,7 @@ export class App {
           <label><input type="checkbox" data-map-filter="property" ${checked('property')}> Properties</label>
           <label><input type="checkbox" data-map-filter="activity" ${checked('activity')}> Activities</label>
           <label><input type="checkbox" data-map-filter="shop" ${checked('shop')}> Shops</label>
+          <label><input type="checkbox" data-map-filter="custom" ${checked('custom')}> Discoveries</label>
         </fieldset>
       </div>
     `;
@@ -2315,6 +3716,135 @@ export class App {
     mount.dataset.activeTraffic = String(population.traffic.length);
     mount.dataset.activePedestrians = String(population.pedestrians.length);
   }
+}
+
+function campaignStateFromSave(save: Readonly<SaveGameV1>): CampaignState {
+  const campaign = createCampaignState(MISSIONS, save.player.level);
+  campaign.contacts = {
+    juno: Math.max(0, Math.floor(save.contacts.juno ?? 0)),
+    malik: Math.max(0, Math.floor(save.contacts.malik ?? 0)),
+    priya: Math.max(0, Math.floor(save.contacts.priya ?? 0)),
+  };
+  for (const definition of MISSIONS) {
+    const saved = save.missions[definition.id];
+    const progress = campaign.missions[definition.id];
+    if (!saved || !progress) continue;
+    progress.state = saved.state === 'active' ? 'available' : saved.state;
+    progress.checkpointId = saved.checkpointId;
+    progress.completedObjectives = saved.completedObjectives.filter((objectiveId) => (
+      definition.objectives.some((objective) => objective.id === objectiveId)
+    ));
+    progress.choices = {};
+  }
+  campaign.activeMissionId = null;
+  campaign.ending = save.ending;
+  campaign.worldFlags = Object.entries(save.worldFlags)
+    .filter(([, enabled]) => enabled)
+    .map(([flag]) => flag);
+  return campaign;
+}
+
+function missionTimeOfDay(value: NonNullable<MissionDefinition['timeOverride']>): number {
+  return { dawn: 0.27, day: 0.5, evening: 0.75, night: 0.88 }[value];
+}
+
+function dialogueSpeakerLabel(entry: Readonly<DialogueEntry>): string {
+  return {
+    alex: 'Alex Moreno',
+    juno: 'Juno Vale',
+    malik: 'Malik Rook',
+    priya: 'Priya Shah',
+    dispatch: 'Solara Dispatch',
+    system: 'Mission update',
+  }[entry.speaker];
+}
+
+function contactLabel(contact: MissionDefinition['contact']): string {
+  return {
+    garage: 'Moreno Garage',
+    juno: 'Juno Vale',
+    malik: 'Malik Rook',
+    priya: 'Priya Shah',
+    'all-contacts': 'All contacts',
+  }[contact];
+}
+
+function campaignGateReason(gates: Readonly<CampaignMissionGateStatus>): string | null {
+  const reasons: string[] = [];
+  if (!gates.level.met) reasons.push(`Level ${gates.level.required}`);
+  if (gates.reputation && !gates.reputation.met) {
+    reasons.push(`${contactLabel(gates.reputation.contact)} reputation ${gates.reputation.required}`);
+  }
+  if (gates.missingPrerequisiteIds.length > 0) {
+    const titles = gates.missingPrerequisiteIds.map((id) => (
+      MISSIONS.find((mission) => mission.id === id)?.title ?? id
+    ));
+    reasons.push(`Complete ${titles.join(', ')}`);
+  }
+  return reasons.length > 0 ? reasons.join(' · ') : null;
+}
+
+function activityAvailabilityReason(availability: Readonly<ActivityAvailability>): string | null {
+  switch (availability.reason) {
+    case 'available': return null;
+    case 'locked': return 'Complete the linked story job';
+    case 'level-required': return `Reach level ${availability.requiredLevel}`;
+    case 'cooldown': return `${formatDuration(availability.cooldownRemainingMs)} cooldown`;
+  }
+}
+
+function collectibleCategoryLabel(category: (typeof COLLECTIBLE_SETS)[number]['category']): string {
+  return {
+    'salvage-cache': 'Salvage caches',
+    'stunt-jump': 'Stunt jumps',
+    'signal-node': 'Signal nodes',
+  }[category];
+}
+
+function missionObjectivePosition(
+  definition: Readonly<MissionDefinition>,
+  objective: Readonly<ObjectiveDefinition>,
+  targetIndex: number,
+): { x: number; z: number } {
+  const objectiveIndex = Math.max(0, definition.objectives.findIndex((entry) => entry.id === objective.id));
+  const checkpointIndex = Math.min(
+    definition.checkpoints.length - 1,
+    Math.floor(objectiveIndex * definition.checkpoints.length / Math.max(1, definition.objectives.length)),
+  );
+  const checkpoint = definition.checkpoints[Math.max(0, checkpointIndex)];
+  const base = definition.id === 'past-due' && objectiveIndex === 0
+    ? { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z }
+    : checkpoint
+      ? { x: checkpoint.respawn.x, z: checkpoint.respawn.z }
+      : DISTRICT_TARGET_CENTERS[definition.district];
+  const hash = stableTextHash(`${definition.id}:${objective.id}`);
+  const angle = ((hash % 360) + targetIndex * 83) * Math.PI / 180;
+  const radius = definition.id === 'past-due' && objectiveIndex === 0 && targetIndex === 0
+    ? 28
+    : targetIndex === 0 ? 6 : 18 + (targetIndex % 3) * 7;
+  return {
+    x: clampWorldCoordinate(base.x + Math.cos(angle) * radius),
+    z: clampWorldCoordinate(base.z + Math.sin(angle) * radius),
+  };
+}
+
+function stableTextHash(value: string): number {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return hash >>> 0;
+}
+
+function clampWorldCoordinate(value: number): number {
+  return Math.max(-560, Math.min(560, value));
+}
+
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.ceil(milliseconds / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
 function progressionStateFromSave(save: Readonly<SaveGameV1>): ProgressionState {

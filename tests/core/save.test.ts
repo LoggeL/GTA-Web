@@ -101,19 +101,21 @@ describe('save validation and format', () => {
     }
   });
 
-  it('migrates Preview 1 schema saves through v3 with M4 and M5 defaults', () => {
+  it('migrates Preview 1 schema saves through v4 with M4, M5, and M6 defaults', () => {
     const current = createInitialSaveGame(2, 'feminine');
     const legacy: Record<string, unknown> = { ...current, schemaVersion: 1 };
     delete legacy.wanted;
     delete legacy.quickLoadout;
     delete legacy.unlockedRecipes;
+    delete legacy.missionRuntime;
+    delete legacy.dialogueRuntime;
 
     const migrated = migrateSaveGame(legacy);
 
     expect(migrated.success).toBe(true);
     if (migrated.success) {
       expect(migrated.migratedFrom).toBe(1);
-      expect(migrated.save.schemaVersion).toBe(3);
+      expect(migrated.save.schemaVersion).toBe(4);
       expect(migrated.save.wanted).toEqual({
         level: 0,
         phase: 'clear',
@@ -126,10 +128,12 @@ describe('save validation and format', () => {
         consumables: [null, null],
       });
       expect(migrated.save.unlockedRecipes).toEqual([]);
+      expect(migrated.save.missionRuntime).toBeNull();
+      expect(migrated.save.dialogueRuntime).toBeNull();
     }
   });
 
-  it('migrates Preview 2 schema saves with independent M5 defaults', () => {
+  it('migrates Preview 2 schema saves with independent M5 and M6 defaults', () => {
     const current = createInitialSaveGame(1, 'masculine');
     const legacy: Record<string, unknown> = {
       ...current,
@@ -143,13 +147,15 @@ describe('save validation and format', () => {
     };
     delete legacy.quickLoadout;
     delete legacy.unlockedRecipes;
+    delete legacy.missionRuntime;
+    delete legacy.dialogueRuntime;
 
     const migrated = migrateSaveGame(legacy);
 
     expect(migrated.success).toBe(true);
     if (migrated.success) {
       expect(migrated.migratedFrom).toBe(2);
-      expect(migrated.save.schemaVersion).toBe(3);
+      expect(migrated.save.schemaVersion).toBe(4);
       expect(migrated.save.wanted).toEqual(legacy.wanted);
       expect(migrated.save.quickLoadout).toEqual({
         firearms: [null, null],
@@ -157,10 +163,56 @@ describe('save validation and format', () => {
         consumables: [null, null],
       });
       expect(migrated.save.unlockedRecipes).toEqual([]);
+      expect(migrated.save.missionRuntime).toBeNull();
+      expect(migrated.save.dialogueRuntime).toBeNull();
       migrated.save.quickLoadout.firearms[0] = 'changed-after-migration';
       migrated.save.unlockedRecipes.push('changed-after-migration');
       expect(legacy).not.toHaveProperty('quickLoadout');
       expect(legacy).not.toHaveProperty('unlockedRecipes');
+      expect(legacy).not.toHaveProperty('missionRuntime');
+      expect(legacy).not.toHaveProperty('dialogueRuntime');
+    }
+  });
+
+  it('migrates Preview 2.1 saves and validates the M6 runtime snapshot boundaries', () => {
+    const current = createInitialSaveGame(1, 'masculine');
+    const legacy: Record<string, unknown> = { ...current, schemaVersion: 3 };
+    delete legacy.missionRuntime;
+    delete legacy.dialogueRuntime;
+
+    const migrated = migrateSaveGame(legacy);
+    expect(migrated.success).toBe(true);
+    if (migrated.success) {
+      expect(migrated.migratedFrom).toBe(3);
+      expect(migrated.save.schemaVersion).toBe(4);
+      expect(migrated.save.missionRuntime).toBeNull();
+      expect(migrated.save.dialogueRuntime).toBeNull();
+    }
+
+    const malformed = createInitialSaveGame(1, 'masculine');
+    malformed.missionRuntime = { snapshotVersion: 99, campaign: {}, active: null };
+    const validation = validateSaveGame(malformed);
+    expect(validation.valid).toBe(false);
+    if (!validation.valid) {
+      expect(validation.errors).toContain('missionRuntime.snapshotVersion must equal 1');
+    }
+
+    const legacyDialogue = createInitialSaveGame(1, 'masculine');
+    legacyDialogue.dialogueRuntime = { snapshotVersion: 1 };
+    expect(validateSaveGame(legacyDialogue).valid).toBe(true);
+
+    const currentDialogue = createInitialSaveGame(1, 'masculine');
+    currentDialogue.dialogueRuntime = { snapshotVersion: 2 };
+    expect(validateSaveGame(currentDialogue).valid).toBe(true);
+
+    const malformedDialogue = createInitialSaveGame(1, 'masculine');
+    malformedDialogue.dialogueRuntime = { snapshotVersion: 99 };
+    const dialogueValidation = validateSaveGame(malformedDialogue);
+    expect(dialogueValidation.valid).toBe(false);
+    if (!dialogueValidation.valid) {
+      expect(dialogueValidation.errors).toContain(
+        'dialogueRuntime.snapshotVersion must equal 1 or 2',
+      );
     }
   });
 

@@ -13,6 +13,8 @@ import {
   completeMission as completeCampaignMission,
   completeObjective as completeCampaignObjective,
   createCampaignState,
+  getCampaignCompletionSummary,
+  getCampaignMissionLog,
   grantContactReputation,
   isObjectiveAvailable,
   reachCheckpoint as reachCampaignCheckpoint,
@@ -20,6 +22,8 @@ import {
   setCampaignLevel,
   startMission as startCampaignMission,
   type CampaignContactId,
+  type CampaignCompletionSummary,
+  type CampaignMissionLogEntry,
   type CampaignMissionProgress,
   type CampaignState,
 } from '../systems/campaign';
@@ -77,6 +81,14 @@ export interface MissionRuntimeSnapshotV1 {
   active: ActiveMissionSnapshot | null;
 }
 
+export interface MissionEnvironmentState {
+  readonly missionId: MissionId;
+  readonly phase: 'apply' | 'cleanup';
+  readonly timeOverride: NonNullable<MissionDefinition['timeOverride']> | null;
+  readonly weatherOverride: NonNullable<MissionDefinition['weatherOverride']> | null;
+  readonly cleanupFlags: readonly string[];
+}
+
 export interface MissionRuntimeEventMap {
   'mission:started': {
     missionId: MissionId;
@@ -110,6 +122,7 @@ export interface MissionRuntimeEventMap {
     branchReward: MissionBranchReward | null;
   };
   'mission:abandoned': { missionId: MissionId };
+  'mission:environment': MissionEnvironmentState;
   'reward:granted': {
     missionId: MissionId;
     rewards: MissionReward;
@@ -160,10 +173,23 @@ export class MissionRuntime {
       : null;
   }
 
+  public environmentState(): MissionEnvironmentState | null {
+    const definition = this.activeMissionDefinition;
+    return definition ? createEnvironmentState(definition, 'apply') : null;
+  }
+
   public availableMissionIds(): readonly MissionId[] {
     return this.missions
       .filter((mission) => this.campaign.missions[mission.id]?.state === 'available')
       .map((mission) => mission.id);
+  }
+
+  public missionLog(): readonly CampaignMissionLogEntry[] {
+    return getCampaignMissionLog(this.campaign, this.missions);
+  }
+
+  public completionSummary(): CampaignCompletionSummary {
+    return getCampaignCompletionSummary(this.campaign, this.missions);
   }
 
   public activeObjectiveIds(): readonly string[] {
@@ -226,6 +252,7 @@ export class MissionRuntime {
       activeObjectiveIds: this.activeObjectiveIds(),
     };
     this.events.emit('mission:started', payload);
+    this.events.emit('mission:environment', createEnvironmentState(definition, 'apply'));
     this.gameEvents?.emit('mission:lifecycle', {
       missionId,
       state: 'started',
@@ -411,6 +438,23 @@ export class MissionRuntime {
         skippedProgress.skipped = true;
       }
     }
+    const previousCheckpointId = campaignProgress.checkpointId;
+    for (const checkpoint of definition.checkpoints) {
+      if (
+        checkpoint.afterObjectiveId !== null
+        && campaignProgress.completedObjectives.includes(checkpoint.afterObjectiveId)
+      ) {
+        const reached = reachCampaignCheckpoint(this.campaign, checkpoint.id, this.missions);
+        if (reached.success) {
+          this.campaign = reached.state;
+        }
+      }
+    }
+    const checkpointId = this.campaign.missions[definition.id]?.checkpointId ?? null;
+    if (checkpointId !== null && checkpointId !== previousCheckpointId) {
+      this.captureCheckpoint(checkpointId);
+      this.emitCheckpoint(checkpointId);
+    }
     return isObjectiveAvailable(this.campaign, definition, alternateId)
       ? { success: true }
       : this.failMission('scripted', `${reason}; alternate objective could not activate`, objectiveId);
@@ -495,6 +539,7 @@ export class MissionRuntime {
     };
     this.events.emit('reward:granted', payload);
     this.events.emit('mission:completed', payload);
+    this.events.emit('mission:environment', createEnvironmentState(definition, 'cleanup'));
     this.gameEvents?.emit('mission:lifecycle', {
       missionId,
       state: 'completed',
@@ -527,6 +572,7 @@ export class MissionRuntime {
       return { success: false, reason: 'no mission is active' };
     }
     const missionId = this.active.missionId;
+    const definition = this.activeMissionDefinition;
     const result = abandonCampaignMission(this.campaign, this.missions);
     if (!result.success) {
       return result;
@@ -534,6 +580,9 @@ export class MissionRuntime {
     this.campaign = result.state;
     this.active = null;
     this.events.emit('mission:abandoned', { missionId });
+    if (definition) {
+      this.events.emit('mission:environment', createEnvironmentState(definition, 'cleanup'));
+    }
     this.gameEvents?.emit('mission:lifecycle', {
       missionId,
       state: 'abandoned',
@@ -557,6 +606,10 @@ export class MissionRuntime {
     }
     this.campaign = cloneJson(validation.snapshot.campaign);
     this.active = validation.snapshot.active ? cloneJson(validation.snapshot.active) : null;
+    const definition = this.activeMissionDefinition;
+    if (definition) {
+      this.events.emit('mission:environment', createEnvironmentState(definition, 'apply'));
+    }
     return { success: true };
   }
 
@@ -685,6 +738,19 @@ export class MissionRuntime {
   }
 }
 
+function createEnvironmentState(
+  definition: Readonly<MissionDefinition>,
+  phase: MissionEnvironmentState['phase'],
+): MissionEnvironmentState {
+  return {
+    missionId: definition.id,
+    phase,
+    timeOverride: definition.timeOverride ?? null,
+    weatherOverride: definition.weatherOverride ?? null,
+    cleanupFlags: [...definition.cleanupFlags],
+  };
+}
+
 function createObjectiveProgress(objective: Readonly<ObjectiveDefinition>): ObjectiveProgressSnapshot {
   let target = 1;
   switch (objective.completion.kind) {
@@ -763,14 +829,11 @@ function validateMissionSnapshot(
   if (!isRecord(value.campaign)) {
     return { success: false, reason: 'mission snapshot campaign is missing' };
   }
-  const campaign = value.campaign as unknown as CampaignState;
-  if (!Number.isSafeInteger(campaign.level) || campaign.level < 1 || campaign.level > 20) {
-    return { success: false, reason: 'mission snapshot campaign level is invalid' };
+  const campaignValidation = validateCampaignSnapshot(value.campaign, missions);
+  if (!campaignValidation.success) {
+    return campaignValidation;
   }
-  const knownIds = new Set(missions.map((mission) => mission.id));
-  if (campaign.activeMissionId !== null && !knownIds.has(campaign.activeMissionId)) {
-    return { success: false, reason: 'mission snapshot references an unknown active mission' };
-  }
+  const campaign = campaignValidation.campaign;
   if (value.active === null) {
     if (campaign.activeMissionId !== null) {
       return { success: false, reason: 'mission snapshot active state is inconsistent' };
@@ -788,6 +851,12 @@ function validateMissionSnapshot(
   if (active.status !== 'active' && active.status !== 'failed') {
     return { success: false, reason: 'mission snapshot active status is invalid' };
   }
+  if (
+    (active.status === 'active' && active.failure !== null)
+    || (active.status === 'failed' && !isMissionFailureSnapshot(active.failure, definition))
+  ) {
+    return { success: false, reason: 'mission snapshot failure state is invalid' };
+  }
   if (!isRecord(active.objectiveProgress)) {
     return { success: false, reason: 'mission snapshot objective progress is missing' };
   }
@@ -803,6 +872,13 @@ function validateMissionSnapshot(
   ) {
     return { success: false, reason: 'mission snapshot objective progress is invalid' };
   }
+  const campaignProgress = campaign.missions[definition.id];
+  if (!campaignProgress || definition.objectives.some((objective) => (
+    campaignProgress.completedObjectives.includes(objective.id)
+      !== Boolean((objectiveProgress[objective.id] as ObjectiveProgressSnapshot | undefined)?.completed)
+  ))) {
+    return { success: false, reason: 'mission snapshot objective completion is inconsistent' };
+  }
   if (!isRecord(active.checkpoint)) {
     return { success: false, reason: 'mission snapshot checkpoint is missing' };
   }
@@ -817,12 +893,213 @@ function validateMissionSnapshot(
     return { success: false, reason: 'mission snapshot checkpoint progress is invalid' };
   }
   const checkpointObjectiveProgress = checkpoint.objectiveProgress;
-  if (definition.objectives.some((objective) => (
-    !isObjectiveProgressSnapshot(checkpointObjectiveProgress[objective.id], objective)
-  ))) {
+  const checkpointProgressIds = Object.keys(checkpointObjectiveProgress);
+  const checkpointCampaignProgress = checkpoint.campaignProgress;
+  if (
+    checkpointProgressIds.length !== objectiveIds.size
+    || checkpointProgressIds.some((id) => !objectiveIds.has(id))
+    || !isCampaignMissionProgress(checkpointCampaignProgress, definition, 'active')
+    || checkpointCampaignProgress.checkpointId !== checkpointId
+    || checkpointCampaignProgress.completedObjectives.some((id) => (
+      !campaignProgress.completedObjectives.includes(id)
+    ))
+    || definition.objectives.some((objective) => (
+      !isObjectiveProgressSnapshot(checkpointObjectiveProgress[objective.id], objective)
+      || checkpointCampaignProgress.completedObjectives.includes(objective.id)
+        !== Boolean((checkpointObjectiveProgress[objective.id] as ObjectiveProgressSnapshot | undefined)?.completed)
+    ))
+  ) {
     return { success: false, reason: 'mission snapshot checkpoint progress is invalid' };
   }
   return { success: true, snapshot: value as unknown as MissionRuntimeSnapshotV1 };
+}
+
+function validateCampaignSnapshot(
+  value: Record<string, unknown>,
+  missions: readonly MissionDefinition[],
+):
+  | { success: true; campaign: CampaignState }
+  | { success: false; reason: string } {
+  if (!Number.isSafeInteger(value.level) || (value.level as number) < 1 || (value.level as number) > 20) {
+    return { success: false, reason: 'mission snapshot campaign level is invalid' };
+  }
+  if (!isRecord(value.contacts) || !isRecord(value.missions)) {
+    return { success: false, reason: 'mission snapshot campaign records are invalid' };
+  }
+  for (const contact of ['juno', 'malik', 'priya'] as const) {
+    const reputation = value.contacts[contact];
+    if (!Number.isSafeInteger(reputation) || (reputation as number) < 0) {
+      return { success: false, reason: 'mission snapshot contact reputation is invalid' };
+    }
+  }
+  if (
+    Object.keys(value.contacts).some((contact) => (
+      contact !== 'juno' && contact !== 'malik' && contact !== 'priya'
+    ))
+  ) {
+    return { success: false, reason: 'mission snapshot contact reputation is invalid' };
+  }
+  const missionIds = new Set(missions.map((mission) => mission.id));
+  const progressIds = Object.keys(value.missions);
+  if (
+    progressIds.length !== missionIds.size
+    || progressIds.some((missionId) => !missionIds.has(missionId as MissionId))
+  ) {
+    return { success: false, reason: 'mission snapshot campaign mission records are invalid' };
+  }
+  if (
+    value.activeMissionId !== null
+    && (typeof value.activeMissionId !== 'string' || !missionIds.has(value.activeMissionId as MissionId))
+  ) {
+    return { success: false, reason: 'mission snapshot references an unknown active mission' };
+  }
+  if (value.ending !== null && value.ending !== 'rule' && value.ending !== 'expose') {
+    return { success: false, reason: 'mission snapshot campaign ending is invalid' };
+  }
+  if (
+    !Array.isArray(value.worldFlags)
+    || value.worldFlags.some((flag) => typeof flag !== 'string' || flag.length === 0)
+    || new Set(value.worldFlags).size !== value.worldFlags.length
+  ) {
+    return { success: false, reason: 'mission snapshot campaign world flags are invalid' };
+  }
+  for (const definition of missions) {
+    const progress = value.missions[definition.id];
+    if (!isCampaignMissionProgress(progress, definition)) {
+      return { success: false, reason: `mission snapshot progress for "${definition.id}" is invalid` };
+    }
+    if ((progress.state === 'active') !== (value.activeMissionId === definition.id)) {
+      return { success: false, reason: 'mission snapshot active campaign progress is inconsistent' };
+    }
+  }
+
+  const campaign = value as unknown as CampaignState;
+  const refreshed = refreshMissionAvailability(campaign, missions);
+  for (const definition of missions) {
+    const currentState = campaign.missions[definition.id]?.state;
+    if (
+      currentState !== 'active'
+      && currentState !== 'complete'
+      && refreshed.missions[definition.id]?.state !== currentState
+    ) {
+      return { success: false, reason: `mission snapshot availability for "${definition.id}" is inconsistent` };
+    }
+  }
+  const finale = missions.find((mission) => mission.id === 'freehold');
+  const finaleProgress = finale ? campaign.missions.freehold : undefined;
+  const finaleChoice = finaleProgress
+    ? Object.values(finaleProgress.choices).find((choice) => choice === 'rule' || choice === 'expose')
+    : undefined;
+  if (
+    (campaign.ending !== null && (finaleProgress?.state !== 'complete' || finaleChoice !== campaign.ending))
+    || (finaleProgress?.state === 'complete' && campaign.ending === null)
+  ) {
+    return { success: false, reason: 'mission snapshot finale ending is inconsistent' };
+  }
+  return { success: true, campaign };
+}
+
+function isCampaignMissionProgress(
+  value: unknown,
+  definition: Readonly<MissionDefinition>,
+  expectedState?: CampaignMissionProgress['state'],
+): value is CampaignMissionProgress {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    (value.state !== 'locked'
+      && value.state !== 'available'
+      && value.state !== 'active'
+      && value.state !== 'complete')
+    || (expectedState !== undefined && value.state !== expectedState)
+    || !Array.isArray(value.completedObjectives)
+    || value.completedObjectives.some((objectiveId) => typeof objectiveId !== 'string')
+    || new Set(value.completedObjectives).size !== value.completedObjectives.length
+    || !isRecord(value.choices)
+  ) {
+    return false;
+  }
+  const objectiveIds = new Set(definition.objectives.map((objective) => objective.id));
+  const completedObjectives = value.completedObjectives as string[];
+  if (completedObjectives.some((objectiveId) => !objectiveIds.has(objectiveId))) {
+    return false;
+  }
+  if (
+    value.checkpointId !== null
+    && (typeof value.checkpointId !== 'string'
+      || !definition.checkpoints.some((checkpoint) => checkpoint.id === value.checkpointId))
+  ) {
+    return false;
+  }
+  const checkpoint = definition.checkpoints.find((entry) => entry.id === value.checkpointId);
+  if (
+    checkpoint?.afterObjectiveId !== null
+    && checkpoint?.afterObjectiveId !== undefined
+    && !completedObjectives.includes(checkpoint.afterObjectiveId)
+  ) {
+    return false;
+  }
+  for (const [objectiveId, choice] of Object.entries(value.choices)) {
+    const objective = definition.objectives.find((entry) => entry.id === objectiveId);
+    if (
+      typeof choice !== 'string'
+      || objective?.completion.kind !== 'choice-made'
+      || !objective.completion.choices.includes(choice)
+      || !completedObjectives.includes(objectiveId)
+    ) {
+      return false;
+    }
+  }
+  const seen = new Set<string>();
+  for (const objectiveId of completedObjectives) {
+    const objective = definition.objectives.find((entry) => entry.id === objectiveId);
+    if (!objective || !objectiveActivationMatches(objective, value.choices as Record<string, string>)) {
+      return false;
+    }
+    const predecessors = definition.objectives.filter((entry) => entry.nextObjectiveIds.includes(objectiveId));
+    if (predecessors.length > 0 && !predecessors.some((entry) => seen.has(entry.id))) {
+      return false;
+    }
+    seen.add(objectiveId);
+  }
+  if (
+    (value.state === 'locked' || value.state === 'available')
+    && (value.checkpointId !== null || completedObjectives.length > 0 || Object.keys(value.choices).length > 0)
+  ) {
+    return false;
+  }
+  if (value.state === 'complete' && definition.objectives.some((objective) => (
+    !objective.optional
+    && objectiveActivationMatches(objective, value.choices as Record<string, string>)
+    && !completedObjectives.includes(objective.id)
+  ))) {
+    return false;
+  }
+  return true;
+}
+
+function objectiveActivationMatches(
+  objective: Readonly<ObjectiveDefinition>,
+  choices: Readonly<Record<string, string>>,
+): boolean {
+  return !objective.activation
+    || choices[objective.activation.choiceObjectiveId] === objective.activation.choice;
+}
+
+function isMissionFailureSnapshot(
+  value: unknown,
+  definition: Readonly<MissionDefinition>,
+): value is MissionFailureSnapshot {
+  return isRecord(value)
+    && (value.kind === 'player-defeat'
+      || value.kind === 'critical-actor-lost'
+      || value.kind === 'objective-timeout'
+      || value.kind === 'scripted')
+    && typeof value.reason === 'string'
+    && (value.objectiveId === null
+      || (typeof value.objectiveId === 'string'
+        && definition.objectives.some((objective) => objective.id === value.objectiveId)));
 }
 
 function isObjectiveProgressSnapshot(
@@ -842,6 +1119,7 @@ function isObjectiveProgressSnapshot(
     || typeof value.elapsedSeconds !== 'number'
     || !Number.isFinite(value.elapsedSeconds)
     || value.elapsedSeconds < 0
+    || value.elapsedSeconds > expectedTarget
     || typeof value.timeoutElapsedSeconds !== 'number'
     || !Number.isFinite(value.timeoutElapsedSeconds)
     || value.timeoutElapsedSeconds < 0
@@ -852,10 +1130,21 @@ function isObjectiveProgressSnapshot(
       typeof targetId !== 'string' || !objective.targetIds.includes(targetId)
     ))
     || new Set(value.completedTargetIds).size !== value.completedTargetIds.length
+    || (value.skipped && !value.completed)
   ) {
     return false;
   }
-  return !value.completed || value.current === expectedTarget;
+  if (value.completed && value.current !== expectedTarget) {
+    return false;
+  }
+  if (
+    !value.skipped
+    && objective.completion.kind === 'all-targets'
+    && value.current !== value.completedTargetIds.length
+  ) {
+    return false;
+  }
+  return objective.completion.kind !== 'survive' || value.current === value.elapsedSeconds;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -633,6 +633,7 @@ export class GameUI {
           <nav class="quick-nav" aria-label="Game panels">
             <button data-open-panel="map">Map <kbd>M</kbd></button>
             <button data-open-panel="inventory">Inventory <kbd>I</kbd></button>
+            <button data-open-panel="missions">Jobs <kbd>J</kbd></button>
             <button data-open-panel="skills">Skills</button>
             <button data-open-panel="garage">Garage</button>
             <button data-open-panel="properties">Economy</button>
@@ -648,6 +649,7 @@ export class GameUI {
               <button class="button button--primary" data-action="resume">Resume</button>
               <button class="button" data-open-panel="map">Map</button>
               <button class="button" data-open-panel="inventory">Inventory</button>
+              <button class="button" data-open-panel="missions">Jobs & mission log</button>
               <button class="button" data-open-panel="skills">Skills</button>
               <button class="button" data-open-panel="garage">Garage</button>
               <button class="button" data-open-panel="properties">Economy</button>

@@ -49,7 +49,7 @@ export async function startNewGame(
 
 export async function expectPlayableWorldShell(page: Page): Promise<void> {
   await expect(page.getByLabel('3D game world').locator('canvas')).toBeVisible();
-  await expect(page.locator('[data-hud-objective]')).toContainText('Reach the orange coupe');
+  await expect(page.locator('[data-hud-objective]')).toContainText('Past Due · Protect the garage');
   await expect(page.locator('[data-hud-district]')).toHaveText('Arroyo Heights');
   await expect(page.locator('[data-hud-money]')).toHaveText('$850');
   await expect(page.locator('[data-meter="health"]')).toHaveAttribute('aria-label', 'health: 100 of 100');

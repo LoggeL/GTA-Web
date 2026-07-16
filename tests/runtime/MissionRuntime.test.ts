@@ -60,13 +60,23 @@ describe('MissionRuntime with authored registry', () => {
     const gameEvents = createGameEventBus();
     const lifecycle = vi.fn();
     const reward = vi.fn();
+    const environment = vi.fn();
     gameEvents.on('mission:lifecycle', lifecycle);
     const runtime = new MissionRuntime({ gameEvents });
     runtime.events.on('reward:granted', reward);
+    runtime.events.on('mission:environment', environment);
 
     expect(runtime.availableMissionIds()).toContain('past-due');
     expect(runtime.startMission('coastline-burn').success).toBe(false);
     finishPastDue(runtime);
+    expect(environment).toHaveBeenNthCalledWith(1, {
+      missionId: 'past-due',
+      phase: 'apply',
+      timeOverride: 'day',
+      weatherOverride: 'clear',
+      cleanupFlags: ['remove-collector-crew', 'release-tow-route', 'restore-garage-services'],
+    });
+    expect(runtime.environmentState()).toMatchObject({ missionId: 'past-due', phase: 'apply' });
     expect(runtime.activeObjectiveIds()).toEqual([]);
     expect(runtime.succeedMission().success).toBe(true);
 
@@ -78,6 +88,10 @@ describe('MissionRuntime with authored registry', () => {
       missionId: 'past-due', state: 'completed',
     }));
     expect(runtime.campaignState.worldFlags).toContain('open-world');
+    expect(environment).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      missionId: 'past-due', phase: 'cleanup',
+    }));
+    expect(runtime.environmentState()).toBeNull();
     expect(runtime.availableMissionIds()).not.toContain('coastline-burn');
     runtime.setPlayerLevel(2);
     expect(runtime.availableMissionIds()).toContain('coastline-burn');
@@ -159,6 +173,44 @@ describe('MissionRuntime with authored registry', () => {
     expect(target.restore(malformed).success).toBe(false);
     expect(target.snapshot()).toEqual(before);
   });
+
+  it('rejects inconsistent campaign, failure, and checkpoint records atomically', () => {
+    const source = new MissionRuntime();
+    source.startMission('past-due');
+    const snapshot = source.snapshot();
+    const active = snapshot.active;
+    if (!active) throw new Error('Expected an active mission snapshot');
+    const clone = (): typeof snapshot => JSON.parse(JSON.stringify(snapshot)) as typeof snapshot;
+
+    const badReputation = clone();
+    badReputation.campaign.contacts.juno = -1;
+    const badAvailability = clone();
+    badAvailability.campaign.missions['coastline-burn']!.state = 'available';
+    const badFailure = clone();
+    badFailure.active!.status = 'failed';
+    badFailure.active!.failure = null;
+    const badCheckpoint = clone();
+    badCheckpoint.active!.checkpoint.campaignProgress.completedObjectives.push('past-due:defend-garage');
+    const extraObjective = clone() as unknown as {
+      active: { objectiveProgress: Record<string, unknown> };
+    };
+    extraObjective.active.objectiveProgress['past-due:unknown'] = {
+      ...active.objectiveProgress['past-due:defend-garage'],
+    };
+
+    for (const malformed of [
+      badReputation,
+      badAvailability,
+      badFailure,
+      badCheckpoint,
+      extraObjective,
+    ]) {
+      const target = new MissionRuntime();
+      const before = target.snapshot();
+      expect(target.restore(malformed).success).toBe(false);
+      expect(target.snapshot()).toEqual(before);
+    }
+  });
 });
 
 describe('MissionRuntime objective and fallback routing', () => {
@@ -206,7 +258,7 @@ describe('MissionRuntime objective and fallback routing', () => {
   });
 
   it('keeps continue fallbacks active and skips a graph path for alternate fallbacks', () => {
-    const mission = missionWithObjectives([
+    const baseMission = missionWithObjectives([
       {
         id: 'entry', type: 'stealth-hack', title: '', description: '', targetIds: ['door'],
         completion: { kind: 'all-targets' }, optional: false,
@@ -229,6 +281,17 @@ describe('MissionRuntime objective and fallback routing', () => {
         nextObjectiveIds: [],
       },
     ]);
+    const mission: MissionDefinition = {
+      ...baseMission,
+      checkpoints: [
+        ...baseMission.checkpoints,
+        {
+          id: 'test:escape', label: 'Escape', afterObjectiveId: 'plant',
+          respawn: { district: 'arroyo-heights', x: 1, y: 0, z: 1 },
+          restore: { healthPercent: 100, armorPercent: 0, refillMissionItems: true },
+        },
+      ],
+    };
     const runtime = new MissionRuntime({ missions: [mission] });
     runtime.startMission('past-due');
 
@@ -238,15 +301,23 @@ describe('MissionRuntime objective and fallback routing', () => {
     expect(runtime.failObjective('stealth', 'Cover blown').success).toBe(true);
     expect(runtime.activeObjectiveIds()).toEqual(['escape']);
     expect(runtime.activeMission?.objectiveProgress.plant?.skipped).toBe(true);
+    expect(runtime.activeMission?.checkpoint.checkpointId).toBe('test:escape');
+    runtime.failMission('player-defeat', 'Caught on the way out');
+    expect(runtime.retryMission().success).toBe(true);
+    expect(runtime.activeObjectiveIds()).toEqual(['escape']);
+    expect(runtime.activeMission?.objectiveProgress.plant?.skipped).toBe(true);
     runtime.updateObjective('escape', { kind: 'target', targetId: 'exit' });
     expect(runtime.succeedMission().success).toBe(true);
   });
 
   it('abandons active missions back to available state', () => {
     const runtime = new MissionRuntime();
+    const environment = vi.fn();
+    runtime.events.on('mission:environment', environment);
     runtime.startMission('past-due');
     expect(runtime.abandonMission().success).toBe(true);
     expect(runtime.activeMission).toBeNull();
     expect(runtime.availableMissionIds()).toContain('past-due');
+    expect(environment.mock.calls.map(([event]) => event.phase)).toEqual(['apply', 'cleanup']);
   });
 });

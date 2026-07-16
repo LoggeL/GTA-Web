@@ -108,6 +108,57 @@ describe('campaign content', () => {
       }
     }
   });
+
+  it('authors valid, unique checkpoint-refill item definitions only where needed', () => {
+    const authoredMissionItems = Object.fromEntries(
+      MISSIONS
+        .filter((mission) => mission.missionItems !== undefined)
+        .map((mission) => [mission.id, mission.missionItems]),
+    );
+
+    expect(authoredMissionItems).toEqual({
+      'past-due': [
+        { itemId: 'pistol-tier-1', quantity: 1 },
+        { itemId: 'medkit', quantity: 1 },
+        { itemId: 'vehicle-repair-kit', quantity: 1 },
+      ],
+      'glass-house': [{ itemId: 'quest-listening-device', quantity: 1 }],
+    });
+
+    for (const mission of MISSIONS) {
+      const missionItems = mission.missionItems ?? [];
+      expect(new Set(missionItems.map((item) => item.itemId)).size).toBe(missionItems.length);
+      for (const item of missionItems) {
+        expect(requireItem(item.itemId).id).toBe(item.itemId);
+        expect(Number.isSafeInteger(item.quantity) && item.quantity > 0).toBe(true);
+      }
+    }
+  });
+
+  it('authors bounded initial response levels exclusively for every lose-wanted objective', () => {
+    const loseWantedObjectives = OBJECTIVES.filter(
+      (objective) => objective.completion.kind === 'lose-wanted',
+    );
+
+    expect(Object.fromEntries(
+      loseWantedObjectives.map((objective) => [objective.id, objective.initialWantedLevel]),
+    )).toEqual({
+      'rolling-stock:lose-police': 2,
+      'last-call:rain-getaway': 2,
+      'container-zero:extract-malik': 2,
+      'black-grid:escape-tactical-search': 3,
+      'freehold:escape-response': 5,
+    });
+    expect(loseWantedObjectives.every(
+      (objective) => Number.isSafeInteger(objective.initialWantedLevel)
+        && (objective.initialWantedLevel ?? 0) >= 1
+        && (objective.initialWantedLevel ?? 0) <= 5,
+    )).toBe(true);
+    expect(OBJECTIVES.every(
+      (objective) => objective.completion.kind === 'lose-wanted'
+        || objective.initialWantedLevel === undefined,
+    )).toBe(true);
+  });
 });
 
 describe('progression, vehicle, and inventory content', () => {

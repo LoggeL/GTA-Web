@@ -51,7 +51,7 @@ describe('initial serializable state', () => {
       label: 'Night run',
     });
 
-    expect(save.schemaVersion).toBe(3);
+    expect(save.schemaVersion).toBe(4);
     expect(save.slot).toEqual({
       id: 2,
       label: 'Night run',
@@ -66,6 +66,8 @@ describe('initial serializable state', () => {
       consumables: [null, null],
     });
     expect(save.unlockedRecipes).toEqual([]);
+    expect(save.missionRuntime).toBeNull();
+    expect(save.dialogueRuntime).toBeNull();
     expect(save.activeDistrict).toBe('arroyo-heights');
     expect(JSON.parse(JSON.stringify(save))).toEqual(save);
   });

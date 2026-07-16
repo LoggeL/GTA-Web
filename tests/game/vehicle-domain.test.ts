@@ -9,6 +9,7 @@ import {
   applyVehicleRepairKit,
   calculateVehicleRepairQuote,
   createVehicleIntegrityState,
+  restoreVehicleIntegrityToPercent,
   vehicleIntegrityCondition,
   vehiclePerformanceModifiers,
 } from '../../src/game/vehicleIntegrity';
@@ -207,6 +208,16 @@ describe('vehicle integrity and repairs', () => {
     });
     expect(damagedModifiers.engineOutput).toBeLessThan(healthyModifiers.engineOutput);
     expect(damagedModifiers.grip).toBeLessThan(healthyModifiers.grip);
+  });
+
+  it('restores every integrity channel to an authored checkpoint percentage', () => {
+    expect(restoreVehicleIntegrityToPercent(55)).toEqual({
+      bodyHealth: 55,
+      engineHealth: 55,
+      tireHealth: [55, 55, 55, 55],
+    });
+    expect(() => restoreVehicleIntegrityToPercent(-1)).toThrow(RangeError);
+    expect(() => restoreVehicleIntegrityToPercent(101)).toThrow(RangeError);
   });
 
   it('rejects invalid damage and repair inputs', () => {

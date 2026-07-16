@@ -62,6 +62,8 @@ export interface ObjectiveDefinition {
   readonly description: string;
   readonly targetIds: readonly string[];
   readonly completion: CompletionCondition;
+  /** Authored response level applied when a lose-wanted objective becomes active. */
+  readonly initialWantedLevel?: 1 | 2 | 3 | 4 | 5;
   readonly optional: boolean;
   readonly timeoutSeconds?: number;
   readonly fallback: ObjectiveFallback;
@@ -127,6 +129,8 @@ export interface MissionDefinition {
   };
   readonly objectives: readonly ObjectiveDefinition[];
   readonly checkpoints: readonly CheckpointDefinition[];
+  /** Authored equipment restored when a mission checkpoint requests an item refill. */
+  readonly missionItems?: readonly ItemGrant[];
   readonly rewards: MissionReward;
   readonly branchRewards?: readonly MissionBranchReward[];
   readonly dialogueKeys: readonly string[];
@@ -146,6 +150,8 @@ export interface DialogueEntry {
   readonly speaker: 'alex' | 'juno' | 'malik' | 'priya' | 'dispatch' | 'system';
   readonly channel: 'conversation' | 'phone' | 'radio' | 'subtitle' | 'mission-log';
   readonly text: string;
+  /** Optional authored branch guard. Unguarded entries belong to every story path. */
+  readonly branch?: 'rule' | 'expose';
 }
 
 export type AttributeId = 'grit' | 'aim' | 'handling' | 'nerve' | 'hustle';
@@ -340,11 +346,16 @@ export interface ActivityDefinition {
   readonly id: ActivityTypeId;
   readonly name: string;
   readonly description: string;
+  /** Mission/world flag that makes this activity available in free roam. */
+  readonly unlockFlag: `activity-${ActivityTypeId}`;
   readonly scoring: 'lowest-time' | 'highest-score';
   readonly baseCash: number;
   readonly baseXp: number;
   readonly cooldownMinutes: number;
   readonly variantSeedSalt: number;
+  /** Number of deterministic layouts addressable by the activity seed. */
+  readonly variantCount: number;
+  readonly districts: readonly DistrictId[];
   readonly difficulties: readonly ActivityDifficulty[];
   readonly objectiveTemplate: readonly ObjectiveType[];
 }

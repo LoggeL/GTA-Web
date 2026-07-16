@@ -1,6 +1,6 @@
 # HEATLINE: SOLARA
 
-*HEATLINE: SOLARA* is an original single-player, third-person crime-action RPG built for modern desktop and mobile browsers. Play as Alex Moreno, explore four districts, work three contact storylines, build combat/driving/streetcraft skills, and decide who controls Solara.
+*HEATLINE: SOLARA* is an original single-player, third-person crime-action RPG built for modern desktop and mobile browsers. Play as Alex Moreno, explore four districts, work a 12-mission campaign across three contact storylines, take five repeatable activities, discover 60 city secrets, build combat/driving/streetcraft skills, and decide who controls Solara.
 
 This project is an independent genre exercise. It is not associated with, endorsed by, or derived from Rockstar Games, Take-Two Interactive, Grand Theft Auto, or any other commercial game. All names, code, story, missions, music, world layouts, and project assets are original.
 
@@ -28,6 +28,7 @@ Play the latest passing build at **[loggel.github.io/GTA-Web](https://loggel.git
 | Weapon radial | Tab |
 | Inventory | I |
 | Map | M |
+| Jobs and mission log | J |
 | Pause | Esc |
 
 Landscape mobile play uses a virtual movement stick, right-side camera drag, contextual action buttons, and aim assist. Portrait orientation displays a rotate-device prompt.

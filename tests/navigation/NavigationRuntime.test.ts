@@ -134,6 +134,26 @@ describe('NavigationRuntime routing', () => {
     expect(navigation.currentRoute.remainingDistanceMeters).toBe(0);
   });
 
+  it('draws a direct local segment when both mission positions resolve to one road node', async () => {
+    const navigation = runtime();
+    await navigation.update({ x: 2, z: 2 });
+
+    expect(navigation.setWaypoint({
+      id: 'local-mission',
+      label: 'Protect the garage',
+      source: 'mission',
+      position: { x: 28, z: 12 },
+    }).success).toBe(true);
+
+    expect(navigation.currentRoute.status).toBe('active');
+    expect(navigation.currentRoute.roadRoute?.edgeIds).toEqual([]);
+    expect(navigation.currentRoute.gpsRoute?.segments).toHaveLength(1);
+    expect(navigation.currentRoute.remainingDistanceMeters).toBeCloseTo(Math.hypot(26, 10));
+
+    await navigation.update({ x: 27, z: 12 });
+    expect(navigation.currentRoute.status).toBe('arrived');
+  });
+
   it('replans around closures and reports an unreachable destination', async () => {
     const navigation = runtime();
     await navigation.update({ x: 0, z: 0 });

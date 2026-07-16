@@ -414,13 +414,31 @@ export class NavigationRuntime<TChunk = WorldChunkDefinition> {
         position: { ...routeDestination },
       };
     }
-    const gpsRoute = createGpsRoute(roadRoute);
+    const roadGpsRoute = createGpsRoute(roadRoute);
+    const directDistance = distance(this.position, this.waypoint.position);
+    const gpsRoute: GpsRoute = roadGpsRoute.segments.length === 0
+      && directDistance > this.arrivalDistanceMeters
+      ? {
+          points: [{ ...this.position }, { ...this.waypoint.position }],
+          segments: [{
+            index: 0,
+            from: { ...this.position },
+            to: { ...this.waypoint.position },
+            distanceMeters: directDistance,
+            headingRadians: Math.atan2(
+              this.waypoint.position.x - this.position.x,
+              this.waypoint.position.z - this.position.z,
+            ),
+          }],
+          distanceMeters: directDistance,
+        }
+      : roadGpsRoute;
     this.route = {
       status: 'active',
       roadRoute,
       gpsRoute,
       segmentIndex: 0,
-      remainingDistanceMeters: roadRoute.distanceMeters,
+      remainingDistanceMeters: gpsRoute.distanceMeters,
       revision: this.route.revision + 1,
       lastPlanReason: reason,
     };

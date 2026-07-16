@@ -214,6 +214,7 @@ export interface CitySimulationApi {
   setQuality(quality: SimulationQuality): void;
   setActorLimits(limits: Readonly<ActorPopulationLimits>): ActorPopulationLimits;
   claimTrafficVehicle(id: string): TrafficVehicleSnapshot | null;
+  despawnEnemy(targetId: string): boolean;
   tick(context: CitySimulationTick): CitySimulationTickResult;
   getSnapshot(): CitySimulationSnapshot;
   dispose(): void;

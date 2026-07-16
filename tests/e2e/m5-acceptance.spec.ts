@@ -145,7 +145,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
 
     const initialInventory = await inventoryState(page);
     expect(initialInventory).toMatchObject({
-      itemCount: 10,
+      itemCount: 11,
       quickLoadout: {
         firearms: ['starter-pistol', null],
         melee: 'starter-melee',
@@ -176,7 +176,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
 
     await panel.locator('[data-instance-id="starter-handgun-ammo"]').click();
     await panel.getByRole('button', { name: 'Split stack' }).click();
-    expect((await inventoryState(page)).itemCount).toBe(11);
+    expect((await inventoryState(page)).itemCount).toBe(12);
     await expect(panel.getByRole('button', { name: /Handgun Rounds, quantity 12/ })).toHaveCount(2);
 
     const armorRecipe = panel.locator('[data-recipe-id="craft-armor-repair-plate"]');
@@ -184,7 +184,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
     const weightBeforeCraft = (await inventoryState(page)).weightKg;
     await armorRecipe.getByRole('button', { name: 'Craft' }).click();
     const craftedInventory = await inventoryState(page);
-    expect(craftedInventory.itemCount).toBe(12);
+    expect(craftedInventory.itemCount).toBe(13);
     expect(craftedInventory.weightKg).toBeGreaterThan(weightBeforeCraft);
     await expect(panel.getByRole('button', { name: /Armor Repair Plate, quantity 1/ })).toBeVisible();
     await closePanel(panel);
@@ -199,7 +199,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
     await expect(panel.locator('.property-card[data-property-id]')).toHaveCount(5);
     await panel.locator('[data-shop-item="ammo-smg"]').getByRole('button').click();
     await expect(panel.locator('[data-economy-cash]')).toHaveAttribute('data-economy-cash', '99996');
-    expect((await inventoryState(page)).itemCount).toBe(13);
+    expect((await inventoryState(page)).itemCount).toBe(14);
 
     let warehouse = panel.locator('.property-card[data-property-id="breakwater-warehouse"]');
     await warehouse.getByRole('button', { name: 'Buy · $18,000' }).click();
@@ -261,7 +261,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
 
     panel = await openHudPanel(page, 'inventory');
     expect(await inventoryState(page)).toMatchObject({
-      itemCount: 13,
+      itemCount: 14,
       quickLoadout: {
         firearms: ['starter-pistol', null],
         melee: 'starter-melee',
@@ -324,7 +324,7 @@ test.describe('M5 progression, inventory, economy, and persistence acceptance', 
     await expect(panel.locator('.property-card[data-property-id]')).toHaveCount(5);
     await panel.locator('[data-shop-item="ammo-smg"]').getByRole('button').tap();
     await expect(panel.locator('[data-economy-cash]')).toHaveAttribute('data-economy-cash', '4996');
-    expect((await inventoryState(page)).itemCount).toBe(11);
+    expect((await inventoryState(page)).itemCount).toBe(12);
     await closePanel(panel, true);
 
     const pause = page.getByLabel('Pause menu');

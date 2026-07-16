@@ -9,6 +9,7 @@ import type {
   AttributeDefinition,
   CheckpointDefinition,
   CollectibleDefinition,
+  CollectibleSetDefinition,
   DialogueEntry,
   ItemDefinition,
   MissionDefinition,
@@ -85,6 +86,11 @@ export const recipeRegistry = createDataRegistry<RecipeDefinition>('recipe', REC
 export const propertyRegistry = createDataRegistry<PropertyDefinition>('property', PROPERTIES, idOf);
 export const activityRegistry = createDataRegistry<ActivityDefinition>('activity', ACTIVITIES, idOf);
 export const collectibleRegistry = createDataRegistry<CollectibleDefinition>('collectible', COLLECTIBLES, idOf);
+export const collectibleSetRegistry = createDataRegistry<CollectibleSetDefinition>(
+  'collectible set',
+  COLLECTIBLE_SETS,
+  (definition) => definition.category,
+);
 export const radioStationRegistry = createDataRegistry<RadioStationDefinition>('radio station', RADIO_STATIONS, idOf);
 export const radioTrackRegistry = createDataRegistry<RadioTrackDefinition>('radio track', RADIO_TRACKS, idOf);
 
@@ -103,6 +109,7 @@ export const DATA_REGISTRIES = Object.freeze({
   properties: propertyRegistry,
   activities: activityRegistry,
   collectibles: collectibleRegistry,
+  collectibleSets: collectibleSetRegistry,
   radioStations: radioStationRegistry,
   radioTracks: radioTrackRegistry,
 });
@@ -135,6 +142,8 @@ export const getActivity = activityRegistry.get;
 export const requireActivity = activityRegistry.require;
 export const getCollectible = collectibleRegistry.get;
 export const requireCollectible = collectibleRegistry.require;
+export const getCollectibleSet = collectibleSetRegistry.get;
+export const requireCollectibleSet = collectibleSetRegistry.require;
 export const getRadioStation = radioStationRegistry.get;
 export const requireRadioStation = radioStationRegistry.require;
 export const getRadioTrack = radioTrackRegistry.get;
@@ -254,6 +263,34 @@ function validateMissionContent(issues: RegistryValidationIssue[]): void {
           }
         }
       }
+      if (objective.completion.kind === 'lose-wanted') {
+        if (objective.initialWantedLevel === undefined) {
+          addIssue(
+            issues,
+            'missions',
+            `${objective.id}.initialWantedLevel`,
+            'Lose-wanted objective requires an initial wanted level.',
+          );
+        } else if (
+          !Number.isSafeInteger(objective.initialWantedLevel)
+          || objective.initialWantedLevel < 1
+          || objective.initialWantedLevel > 5
+        ) {
+          addIssue(
+            issues,
+            'missions',
+            `${objective.id}.initialWantedLevel`,
+            'Initial wanted level must be a safe integer from 1 through 5.',
+          );
+        }
+      } else if (objective.initialWantedLevel !== undefined) {
+        addIssue(
+          issues,
+          'missions',
+          `${objective.id}.initialWantedLevel`,
+          'Only lose-wanted objectives may define an initial wanted level.',
+        );
+      }
       if (objective.activation !== undefined) {
         const choiceObjective = mission.objectives.find(
           (candidate) => candidate.id === objective.activation?.choiceObjectiveId,
@@ -308,6 +345,21 @@ function validateMissionContent(issues: RegistryValidationIssue[]): void {
       ) {
         addIssue(issues, 'missions', `${missionCheckpoint.id}.respawn`, 'Checkpoint coordinates must be finite.');
       }
+    }
+
+    const missionItemIds = new Set<string>();
+    for (const item of mission.missionItems ?? []) {
+      const path = `${mission.id}.missionItems`;
+      if (!itemRegistry.has(item.itemId)) {
+        addIssue(issues, 'missions', path, `Unknown item: ${item.itemId}`);
+      }
+      if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
+        addIssue(issues, 'missions', path, 'Mission item quantities must be positive safe integers.');
+      }
+      if (missionItemIds.has(item.itemId)) {
+        addIssue(issues, 'missions', path, `Duplicate mission item: ${item.itemId}`);
+      }
+      missionItemIds.add(item.itemId);
     }
 
     for (const dialogueKey of mission.dialogueKeys) {
@@ -543,9 +595,32 @@ function validateEconomy(issues: RegistryValidationIssue[]): void {
     }
   }
 
+  const variantSeedSalts = new Set<number>();
   for (const activity of ACTIVITIES) {
-    if (activity.baseCash <= 0 || activity.baseXp <= 0 || activity.cooldownMinutes <= 0) {
+    if (
+      !Number.isSafeInteger(activity.baseCash) || activity.baseCash <= 0
+      || !Number.isSafeInteger(activity.baseXp) || activity.baseXp <= 0
+      || !Number.isSafeInteger(activity.cooldownMinutes) || activity.cooldownMinutes <= 0
+    ) {
       addIssue(issues, 'activities', activity.id, 'Activity rewards and cooldown must be positive.');
+    }
+    if (activity.unlockFlag !== `activity-${activity.id}`) {
+      addIssue(issues, 'activities', `${activity.id}.unlockFlag`, 'Activity unlock flag must match its id.');
+    }
+    if (!Number.isSafeInteger(activity.variantSeedSalt) || activity.variantSeedSalt <= 0) {
+      addIssue(issues, 'activities', `${activity.id}.variantSeedSalt`, 'Variant seed salt must be a positive safe integer.');
+    } else if (variantSeedSalts.has(activity.variantSeedSalt)) {
+      addIssue(issues, 'activities', `${activity.id}.variantSeedSalt`, 'Variant seed salts must be unique.');
+    }
+    variantSeedSalts.add(activity.variantSeedSalt);
+    if (!Number.isSafeInteger(activity.variantCount) || activity.variantCount < 2) {
+      addIssue(issues, 'activities', `${activity.id}.variantCount`, 'Activity must expose at least two seeded variants.');
+    }
+    if (activity.districts.length === 0 || new Set(activity.districts).size !== activity.districts.length) {
+      addIssue(issues, 'activities', `${activity.id}.districts`, 'Activity districts must be non-empty and unique.');
+    }
+    if (activity.objectiveTemplate.length === 0) {
+      addIssue(issues, 'activities', `${activity.id}.objectiveTemplate`, 'Activity objective template cannot be empty.');
     }
     const difficulties = new Set<string>(activity.difficulties.map((difficulty) => difficulty.id));
     if (
@@ -554,10 +629,36 @@ function validateEconomy(issues: RegistryValidationIssue[]): void {
     ) {
       addIssue(issues, 'activities', activity.id, 'Activity must define all three difficulty bands.');
     }
+    let previousLevel = 0;
+    let previousReward = 0;
+    let previousTarget = 0;
+    for (const difficulty of activity.difficulties) {
+      if (
+        !Number.isSafeInteger(difficulty.levelRequirement)
+        || difficulty.levelRequirement <= previousLevel
+        || !Number.isFinite(difficulty.rewardMultiplier)
+        || difficulty.rewardMultiplier <= previousReward
+        || !Number.isFinite(difficulty.targetMultiplier)
+        || difficulty.targetMultiplier <= previousTarget
+      ) {
+        addIssue(issues, 'activities', `${activity.id}.${difficulty.id}`, 'Difficulty requirements and multipliers must increase by band.');
+      }
+      previousLevel = difficulty.levelRequirement;
+      previousReward = difficulty.rewardMultiplier;
+      previousTarget = difficulty.targetMultiplier;
+    }
   }
 }
 
 function validateCollectibles(issues: RegistryValidationIssue[]): void {
+  const expectedRules = {
+    'salvage-cache': 'nearby',
+    'stunt-jump': 'road-survey',
+    'signal-node': 'signal-scan',
+  } as const;
+  if (COLLECTIBLE_SETS.length !== 3 || new Set(COLLECTIBLE_SETS.map((set) => set.category)).size !== 3) {
+    addIssue(issues, 'collectibleSets', 'catalog', 'Expected one unique completion set per collectible category.');
+  }
   for (const set of COLLECTIBLE_SETS) {
     const definitions = COLLECTIBLES.filter((collectible) => collectible.category === set.category);
     if (definitions.length !== set.count) {
@@ -568,6 +669,13 @@ function validateCollectibles(issues: RegistryValidationIssue[]): void {
         addIssue(issues, 'collectibles', definition.id, 'Category ordinals must be consecutive.');
       }
     });
+    if (
+      !Number.isSafeInteger(set.completionReward.xp) || set.completionReward.xp <= 0
+      || !Number.isSafeInteger(set.completionReward.cash) || set.completionReward.cash <= 0
+      || set.completionReward.unlockFlag.length === 0
+    ) {
+      addIssue(issues, 'collectibleSets', set.category, 'Completion rewards and unlock flag must be populated.');
+    }
   }
   for (const collectible of COLLECTIBLES) {
     if (collectible.position.district !== collectible.district) {
@@ -576,9 +684,21 @@ function validateCollectibles(issues: RegistryValidationIssue[]): void {
     if (!Number.isFinite(collectible.position.x) || !Number.isFinite(collectible.position.z)) {
       addIssue(issues, 'collectibles', collectible.id, 'Collectible position must be finite.');
     }
+    if (collectible.revealRule !== expectedRules[collectible.category]) {
+      addIssue(issues, 'collectibles', `${collectible.id}.revealRule`, 'Reveal rule does not match the collectible category.');
+    }
+    if (
+      !Number.isSafeInteger(collectible.reward.xp) || collectible.reward.xp <= 0
+      || !Number.isSafeInteger(collectible.reward.cash) || collectible.reward.cash < 0
+    ) {
+      addIssue(issues, 'collectibles', `${collectible.id}.reward`, 'Collectible cash and XP rewards must be safe non-negative values.');
+    }
     for (const item of collectible.reward.items) {
       if (!itemRegistry.has(item.itemId)) {
         addIssue(issues, 'collectibles', `${collectible.id}.reward`, `Unknown item: ${item.itemId}`);
+      }
+      if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
+        addIssue(issues, 'collectibles', `${collectible.id}.reward`, 'Item reward quantity must be a positive safe integer.');
       }
     }
   }
@@ -609,6 +729,7 @@ export function validateDataRegistries(): readonly RegistryValidationIssue[] {
   validateCount(issues, 'properties', PROPERTIES.length, 5);
   validateCount(issues, 'activities', ACTIVITIES.length, 5);
   validateCount(issues, 'collectibles', COLLECTIBLES.length, 60);
+  validateCount(issues, 'collectibleSets', COLLECTIBLE_SETS.length, 3);
   validateCount(issues, 'radioStations', RADIO_STATIONS.length, 3);
   validateCount(issues, 'radioTracks', RADIO_TRACKS.length, 9);
 
@@ -626,6 +747,7 @@ export function validateDataRegistries(): readonly RegistryValidationIssue[] {
   validateUniqueKeys(issues, 'properties', PROPERTIES, idOf);
   validateUniqueKeys(issues, 'activities', ACTIVITIES, idOf);
   validateUniqueKeys(issues, 'collectibles', COLLECTIBLES, idOf);
+  validateUniqueKeys(issues, 'collectibleSets', COLLECTIBLE_SETS, (definition) => definition.category);
   validateUniqueKeys(issues, 'radioStations', RADIO_STATIONS, idOf);
   validateUniqueKeys(issues, 'radioTracks', RADIO_TRACKS, idOf);
 

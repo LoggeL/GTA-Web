@@ -72,6 +72,7 @@ import {
 } from './vehicle';
 import type { VehicleSimulationState } from './vehicle';
 import { createUniqueStolenVehicleIdentity } from './vehicleIdentity';
+import { restoreVehicleIntegrityToPercent } from './vehicleIntegrity';
 import { requireVehicleDriveProfile } from './vehicleProfiles';
 import {
   isVehicleRecoveryTransformSafe,
@@ -501,6 +502,13 @@ export class WorldView {
     return this.citySimulation.getCombatNpcSnapshot();
   }
 
+  public getResolvedCombatantIds(): readonly string[] {
+    this.assertAlive();
+    return this.citySimulation.getCombatNpcSnapshot()
+      .filter(({ state }) => state === 'surrender' || state === 'incapacitated')
+      .map(({ id }) => id);
+  }
+
   /** Spawns one of every authored role around a bounded encounter center. */
   public seedCombatEncounter(center: Readonly<{ x: number; z: number }>): readonly string[] {
     this.assertAlive();
@@ -539,6 +547,11 @@ export class WorldView {
   public damageCombatant(targetId: string, amount: number): boolean {
     this.assertAlive();
     return this.citySimulation.damageEnemy(targetId, amount, 'player') !== null;
+  }
+
+  public despawnCombatant(targetId: string): boolean {
+    this.assertAlive();
+    return this.citySimulation.despawnEnemy(targetId);
   }
 
   public applyActiveVehicleRecord(
@@ -637,6 +650,19 @@ export class WorldView {
     }
     this.updateCamera(1);
     this.emitSnapshot(true);
+  }
+
+  /** Restores the active mission vehicle to an authored checkpoint condition. */
+  public restoreActiveVehicleCondition(percent: number): WorldSnapshot {
+    this.assertAlive();
+    this.vehicle.integrity = restoreVehicleIntegrityToPercent(percent);
+    this.vehicle.health = this.vehicle.integrity.engineHealth;
+    this.vehicle.speed = 0;
+    this.vehicle.steering = 0;
+    this.vehicle.lastImpact = null;
+    this.vehicleVisual.sync(this.vehicle, 0);
+    this.emitSnapshot(true);
+    return this.getSnapshot();
   }
 
   public orientPlayerToward(position: Readonly<{ x: number; z: number }>): WorldSnapshot {

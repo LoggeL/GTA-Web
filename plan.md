@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 19:02 CEST
+Last updated: 2026-07-16 20:08 CEST
 Plan status: Active  
-Current focus: M6 campaign, dialogue, activities, and exploration implementation
+Current focus: Preview 3 deployment and live desktop/mobile smoke test
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -262,13 +262,15 @@ Acceptance: level/build choices alter measured behavior; inventory rejects inval
 
 Completion evidence: the level-20 progression domain, five attributes, all 24 prerequisite/capstone-aware skills, purchase/refund rules, and strict restore are integrated with measured spread, reload, melee, handling, durability, stealth, heat, reward, and capacity modifiers. The live 8×6 backpack supports shaped placement, rotation, stacking/splitting, weight, durability, repair/use, auto-sort, two firearms/one melee/two utility slots, unlimited stash, class-aware trunks, and nine safehouse-bench recipes through responsive desktop/touch UI. Transactional shops expose 15 offers; all five properties support purchase, one upgrade, capped accrual, idempotent collection, service perks, and ending-price/income modifiers. Save schema v3 migrates earlier previews and strictly validates loadout/recipe references. `npm run check` passed 69 files / 442 tests; the full Chromium desktop/mobile matrix passed 20 tests / 14 intentional project-specific skips; the focused M5 course proved exact runtime modifiers, invalid-placement/weight domain rejection, rotation/split/loadout/crafting, duplicate-purchase/collection safety, the three-payout cap, and full save/continue persistence. Desktop visual QA passed the Skills, Inventory, and Economy panels; the 844×390 touch course proved bounded panels and touch transactions. The production artifact is 1.12 MiB total / 0.39 MiB compressed.
 
-### M6 — Campaign, dialogue, activities, and exploration — `IN PROGRESS`
+### M6 — Campaign, dialogue, activities, and exploration — `COMPLETE`
 
-- [ ] Data-driven objective/checkpoint/dialogue framework and mission log/contact reputation.
-- [ ] Implement and individually test all 12 authored missions and both endings.
-- [ ] Five repeatable activities and all 60 collectibles with map/reward/save integration.
+- [x] Data-driven objective/checkpoint/dialogue framework and mission log/contact reputation.
+- [x] Implement and individually test all 12 authored missions and both endings.
+- [x] Five repeatable activities and all 60 collectibles with map/reward/save integration.
 
 Acceptance: a clean save can finish every mission in valid open order, recover from every checkpoint, reach either ending, and continue free roam; no mission-only state leaks into the world.
+
+Completion evidence: the schema-v4 mission and dialogue snapshots persist a fully data-driven 12-mission campaign, all 37 checkpoints, contact gates/reputation, 49 branch-safe reviewable dialogue entries, authored environment and wanted escalation, exact retry recovery, cleanup, both Rule and Expose endings, and postgame free roam. The Jobs board exposes every mission, objective, activity, discovery set, ending, and mission-log entry on desktop and touch. All five seeded repeatable activities track clears/cooldowns/bests and all 60 discoveries (30 salvage caches, 20 stunt jumps, 10 signal nodes) integrate map reveal, rewards, category completion, and saves. The clean-save browser course finished both endings, exercised checkpoint failure/retry, reached level gates through natural activities, completed all content, and survived save/quit/continue without state drift. `npm run check` passed 76 files / 480 tests; the fresh full Playwright matrix passed 23 applicable scenarios / 17 intentional device skips; focused M6 Rule/Expose/mobile acceptance passed 3 / 3 applicable scenarios; desktop and 844×390 Jobs-board visual/bounds QA passed; the production artifact is 1.21 MiB total / 0.41 MiB compressed.
 
 ### M7 — Audio, generated art, polish, and accessibility — `PENDING`
 
@@ -337,6 +339,8 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 18:55 | M5 | Completed and accepted the full RPG, tactical inventory/crafting, economy, property, responsive UI, and schema-v3 persistence milestone. The final browser pass also hardened exact wanted-level QA, stabilized stealth aim, and removed duplicate outer panel scrolling found during visual review. | `npm run check`: 69 files / 442 tests; Playwright: 20 passed / 14 intentional project-specific skips; focused M5 desktop/touch course green; 1280×720 visual QA; 1.12 MiB artifact / 0.39 MiB compressed; M5 marked `COMPLETE` |
 | 2026-07-16 19:02 | Preview 2.1 | Published the complete M5 RPG/inventory/crafting/economy/property loop through GitHub Pages. Live desktop smoke migrated and loaded an existing Preview 2 save into schema v3, populated the shaped starter inventory/loadout and all nine recipes, and rendered the checked panel layout. A fresh live 844×390 mobile run exposed all nine on-foot touch actions and all 48 inventory destinations inside a bounded panel with no page errors. | Source `5b4f8c0466045feb31220693ff3c8f622fc8b5ee`; tag `preview-2.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29517799115); [live preview](https://loggel.github.io/GTA-Web/?preview=2.1); checked JS `index-BObFDntf.js` / CSS `index-Dt7dpQ5a.css`; 1.12 MiB artifact / 0.39 MiB compressed |
 | 2026-07-16 19:02 | M6 | Began the campaign/content milestone. Existing campaign, mission, dialogue, activity, and collectible foundations are being audited against the 12-mission, two-ending, five-activity, and 60-collectible acceptance matrix before live integration. | M6 marked `IN PROGRESS`; Preview 3 remains gated on a clean-save full-campaign browser course, checkpoint recovery, both endings, free-roam continuation, and content persistence |
+| 2026-07-16 20:05 | M6 | Integrated the complete campaign/content runtime and closed review blockers before release: authored wanted escalation, surrender accounting and encounter cleanup, full checkpoint player/vehicle/mission-item restore, non-leaking mission environment persistence, immediate ending modifiers, reputation bonuses, same-road-node GPS guidance, and responsive Jobs/mission-log UI. The focused Rule/Expose/mobile course is green; the final full browser regression rerun remains the only milestone gate. | `npm run check`: 76 files / 480 tests; focused M6 Playwright: 3 passed / 3 intentional device skips; 1.21 MiB artifact / 0.41 MiB compressed; M6 remains `IN PROGRESS` until the fresh complete Playwright matrix passes |
+| 2026-07-16 20:08 | M6 | Completed and accepted the entire campaign, branching dialogue, repeatable-activity, collectible, checkpoint, cleanup, and postgame milestone. The final regression gate covered every earlier preview plus the complete Rule/Expose campaign and compact-mobile Jobs board. | `npm run check`: 76 files / 480 tests; Playwright: 23 passed / 17 intentional device skips; focused M6: 3 passed / 3 intentional device skips; 1280×720 and 844×390 visual/bounds QA; 1.21 MiB artifact / 0.41 MiB compressed; M6 marked `COMPLETE` |
 
 ## Release record
 

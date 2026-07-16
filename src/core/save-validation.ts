@@ -54,6 +54,8 @@ export function validateSaveGame(
     }
   }
   validateVehicleArray(value.ownedVehicles, registry, errors);
+  validateMissionRuntimeBoundary(value.missionRuntime, errors);
+  validateDialogueRuntimeBoundary(value.dialogueRuntime, errors);
   validateRecord(value.missions, 'missions', errors, (entry, path, id) => {
     validateRegistryId(id, registry.missionIds, path, errors);
     validateMission(entry, path, errors);
@@ -83,6 +85,32 @@ export function validateSaveGame(
     return { valid: false, errors };
   }
   return { valid: true, save: value as unknown as SaveGameV1, errors: [] };
+}
+
+function validateMissionRuntimeBoundary(value: unknown, errors: string[]): void {
+  if (value === null) return;
+  if (!isRecord(value)) {
+    errors.push('missionRuntime must be an object or null');
+    return;
+  }
+  validateLiteral(value.snapshotVersion, 1, 'missionRuntime.snapshotVersion', errors);
+  if (!isRecord(value.campaign)) {
+    errors.push('missionRuntime.campaign must be an object');
+  }
+  if (value.active !== null && !isRecord(value.active)) {
+    errors.push('missionRuntime.active must be an object or null');
+  }
+}
+
+function validateDialogueRuntimeBoundary(value: unknown, errors: string[]): void {
+  if (value === null) return;
+  if (!isRecord(value)) {
+    errors.push('dialogueRuntime must be an object or null');
+    return;
+  }
+  if (value.snapshotVersion !== 1 && value.snapshotVersion !== 2) {
+    errors.push('dialogueRuntime.snapshotVersion must equal 1 or 2');
+  }
 }
 
 function validateQuickLoadout(

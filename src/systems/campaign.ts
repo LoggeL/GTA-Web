@@ -47,6 +47,46 @@ export interface MissionRestartState {
   completedObjectives: readonly string[];
 }
 
+export interface CampaignMissionGateStatus {
+  readonly level: {
+    readonly current: number;
+    readonly required: number;
+    readonly met: boolean;
+  };
+  readonly reputation: {
+    readonly contact: CampaignContactId;
+    readonly current: number;
+    readonly required: number;
+    readonly met: boolean;
+  } | null;
+  readonly missingPrerequisiteIds: readonly MissionId[];
+}
+
+export interface CampaignMissionLogEntry {
+  readonly missionId: MissionId;
+  readonly number: number;
+  readonly title: string;
+  readonly subtitle: string;
+  readonly contact: MissionDefinition['contact'];
+  readonly state: CampaignMissionStatus;
+  readonly checkpointId: string | null;
+  readonly completedObjectiveIds: readonly string[];
+  readonly activeObjectiveIds: readonly string[];
+  readonly objectiveCount: number;
+  readonly gates: CampaignMissionGateStatus;
+}
+
+export interface CampaignCompletionSummary {
+  readonly completedMissionIds: readonly MissionId[];
+  readonly completedMissionCount: number;
+  readonly totalMissionCount: number;
+  readonly completedContactJobCount: number;
+  readonly totalContactJobCount: number;
+  readonly ending: EndingChoice | null;
+  readonly storyComplete: boolean;
+  readonly postgameFreeRoam: boolean;
+}
+
 export function createCampaignState(
   definitions: readonly MissionDefinition[],
   level = 1,
@@ -220,9 +260,16 @@ export function reachCheckpoint(
     return failure(state, `checkpoint "${checkpointId}" does not belong to the active mission`);
   }
   const progress = state.missions[missionId];
-  if (!progress || (checkpoint.afterObjectiveId !== null
+  if (!progress || progress.state !== 'active' || (checkpoint.afterObjectiveId !== null
     && !progress.completedObjectives.includes(checkpoint.afterObjectiveId))) {
     return failure(state, `checkpoint "${checkpointId}" has not been reached`);
+  }
+  const requestedIndex = definition.checkpoints.findIndex((entry) => entry.id === checkpointId);
+  const currentIndex = progress.checkpointId === null
+    ? -1
+    : definition.checkpoints.findIndex((entry) => entry.id === progress.checkpointId);
+  if (requestedIndex < currentIndex) {
+    return failure(state, `checkpoint "${checkpointId}" is older than the current checkpoint`);
   }
   const next = cloneCampaign(state);
   const nextProgress = next.missions[missionId];
@@ -308,6 +355,91 @@ export function restartState(state: Readonly<CampaignState>): MissionRestartStat
     checkpointId: progress.checkpointId,
     completedObjectives: [...progress.completedObjectives],
   } : null;
+}
+
+/** Builds a deterministic, UI-ready mission log without mutating campaign state. */
+export function getCampaignMissionLog(
+  state: Readonly<CampaignState>,
+  definitions: readonly MissionDefinition[],
+): readonly CampaignMissionLogEntry[] {
+  return [...definitions]
+    .sort((left, right) => left.number - right.number)
+    .map((definition) => {
+      const progress = state.missions[definition.id] ?? createMissionProgress();
+      const missingPrerequisiteIds = definition.prerequisites.filter(
+        (missionId) => state.missions[missionId]?.state !== 'complete',
+      );
+      const reputation = definition.reputationGate
+        ? {
+          contact: definition.reputationGate.contact,
+          current: state.contacts[definition.reputationGate.contact],
+          required: definition.reputationGate.minimum,
+          met: state.contacts[definition.reputationGate.contact] >= definition.reputationGate.minimum,
+        }
+        : null;
+      return {
+        missionId: definition.id,
+        number: definition.number,
+        title: definition.title,
+        subtitle: definition.subtitle,
+        contact: definition.contact,
+        state: progress.state,
+        checkpointId: progress.checkpointId,
+        completedObjectiveIds: [...progress.completedObjectives],
+        activeObjectiveIds: definition.objectives
+          .filter((objective) => isObjectiveAvailable(state, definition, objective.id))
+          .map((objective) => objective.id),
+        objectiveCount: definition.objectives.length,
+        gates: {
+          level: {
+            current: state.level,
+            required: definition.levelGate,
+            met: state.level >= definition.levelGate,
+          },
+          reputation,
+          missingPrerequisiteIds,
+        },
+      };
+    });
+}
+
+/** Summarizes authored story completion and requires all finale flags for postgame free roam. */
+export function getCampaignCompletionSummary(
+  state: Readonly<CampaignState>,
+  definitions: readonly MissionDefinition[],
+): CampaignCompletionSummary {
+  const completedMissionIds = definitions
+    .filter((definition) => state.missions[definition.id]?.state === 'complete')
+    .sort((left, right) => left.number - right.number)
+    .map((definition) => definition.id);
+  const contactJobs = definitions.filter((definition) => (
+    definition.contact === 'juno'
+    || definition.contact === 'malik'
+    || definition.contact === 'priya'
+  ));
+  const endingFlag = state.ending === null ? null : `ending-${state.ending}`;
+  const storyComplete = definitions.length > 0
+    && completedMissionIds.length === definitions.length
+    && state.missions.freehold?.state === 'complete'
+    && state.ending !== null;
+  return {
+    completedMissionIds,
+    completedMissionCount: completedMissionIds.length,
+    totalMissionCount: definitions.length,
+    completedContactJobCount: contactJobs.filter((definition) => (
+      state.missions[definition.id]?.state === 'complete'
+    )).length,
+    totalContactJobCount: contactJobs.length,
+    ending: state.ending,
+    storyComplete,
+    postgameFreeRoam: Boolean(
+      storyComplete
+      && endingFlag !== null
+      && state.worldFlags.includes('postgame-free-roam')
+      && state.worldFlags.includes('ending-choice-applied')
+      && state.worldFlags.includes(endingFlag),
+    ),
+  };
 }
 
 export function abandonMission(

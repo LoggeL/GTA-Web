@@ -113,6 +113,17 @@ export function createVehicleIntegrityState(): VehicleIntegrityState {
   };
 }
 
+export function restoreVehicleIntegrityToPercent(percent: number): VehicleIntegrityState {
+  if (!Number.isFinite(percent) || percent < 0 || percent > HEALTH_MAXIMUM) {
+    throw new RangeError('vehicle restore percentage must be between 0 and 100');
+  }
+  return {
+    bodyHealth: percent,
+    engineHealth: percent,
+    tireHealth: [percent, percent, percent, percent],
+  };
+}
+
 export function vehicleIntegrityCondition(
   input: Readonly<VehicleIntegrityState>,
 ): VehicleIntegrityCondition {

@@ -6,6 +6,8 @@ import {
   completeMission,
   completeObjective,
   createCampaignState,
+  getCampaignCompletionSummary,
+  getCampaignMissionLog,
   grantContactReputation,
   isObjectiveAvailable,
   reachCheckpoint,
@@ -182,6 +184,44 @@ describe('campaign state machine', () => {
       expect(completion.state.worldFlags).toContain('past-due:complete-flag');
     }
     expect(initial.missions['past-due']?.state).toBe('available');
+  });
+
+  it('exposes stable mission-log gates and never rolls the latest checkpoint backward', () => {
+    let state = createCampaignState(MISSIONS);
+    let log = getCampaignMissionLog(state, MISSIONS);
+    expect(log.map((entry) => entry.missionId)).toEqual([
+      'past-due', 'coastline-burn', 'rolling-stock', 'freehold',
+    ]);
+    expect(log.find((entry) => entry.missionId === 'rolling-stock')?.gates).toEqual({
+      level: { current: 1, required: 2, met: false },
+      reputation: { contact: 'juno', current: 0, required: 5, met: false },
+      missingPrerequisiteIds: ['coastline-burn'],
+    });
+
+    const started = startMission(state, 'past-due', MISSIONS);
+    if (!started.success) throw new Error(started.reason);
+    const objective = completeObjective(started.state, 'past-due:objective', MISSIONS);
+    if (!objective.success) throw new Error(objective.reason);
+    expect(objective.state.missions['past-due']?.checkpointId).toBe('past-due:complete');
+    expect(reachCheckpoint(objective.state, 'past-due:start', MISSIONS)).toMatchObject({
+      success: false,
+      reason: 'checkpoint "past-due:start" is older than the current checkpoint',
+    });
+
+    log = getCampaignMissionLog(objective.state, MISSIONS);
+    expect(log[0]).toMatchObject({
+      state: 'active',
+      checkpointId: 'past-due:complete',
+      completedObjectiveIds: ['past-due:objective'],
+      activeObjectiveIds: [],
+    });
+    state = objective.state;
+    expect(getCampaignCompletionSummary(state, MISSIONS)).toMatchObject({
+      completedMissionCount: 0,
+      totalMissionCount: 4,
+      storyComplete: false,
+      postgameFreeRoam: false,
+    });
   });
 
   it('applies deterministic contact reputation multipliers', () => {

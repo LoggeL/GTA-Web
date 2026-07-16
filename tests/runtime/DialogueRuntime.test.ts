@@ -34,7 +34,54 @@ describe('DialogueRuntime', () => {
     expect(runtime.currentLine).toBeNull();
     expect(runtime.status).toBe('complete');
     expect(skipped).toHaveBeenCalledWith({ remainingLines: 3 });
+    expect(runtime.reviewMission('past-due').map((entry) => entry.key)).toEqual([
+      'past-due.intro',
+      'past-due.chase',
+      'past-due.recovery',
+      'past-due.complete',
+    ]);
     expect(() => runtime.skip()).not.toThrow();
+  });
+
+  it('keeps skipped story reviewable across later sequences and resets', () => {
+    const runtime = new DialogueRuntime();
+    runtime.startMission('past-due');
+    runtime.skip();
+    runtime.startMission('coastline-burn');
+    runtime.advance();
+    runtime.reset();
+
+    expect(runtime.status).toBe('idle');
+    expect(runtime.reviewedKeys).toEqual([
+      'past-due.intro',
+      'past-due.chase',
+      'past-due.recovery',
+      'past-due.complete',
+      'coastline-burn.briefing',
+      'coastline-burn.blockade',
+    ]);
+    expect(runtime.reviewEntry('coastline-burn.blockade')?.text).toContain('Service lane');
+    runtime.clearReviewHistory();
+    expect(runtime.reviewEntries).toEqual([]);
+  });
+
+  it('selects exactly one finale branch and never reveals the other branch', () => {
+    const undecided = new DialogueRuntime();
+    const undecidedStart = undecided.startMission('freehold');
+    undecided.skip();
+
+    expect(undecidedStart.excludedKeys).toEqual(['freehold.rule', 'freehold.expose']);
+    expect(undecided.reviewedKeys).not.toContain('freehold.rule');
+    expect(undecided.reviewedKeys).not.toContain('freehold.expose');
+
+    const ruled = new DialogueRuntime();
+    const ruledStart = ruled.startMission('freehold', { branch: 'rule' });
+    ruled.skip();
+
+    expect(ruledStart.lineCount).toBe(5);
+    expect(ruledStart.excludedKeys).toEqual(['freehold.expose']);
+    expect(ruled.reviewedKeys).toContain('freehold.rule');
+    expect(ruled.reviewedKeys).not.toContain('freehold.expose');
   });
 
   it('preserves valid order while safely omitting missing or mismatched content', () => {
@@ -67,9 +114,30 @@ describe('DialogueRuntime', () => {
 
     expect(second.restore(snapshot).success).toBe(true);
     expect(second.currentLine?.key).toBe('past-due.chase');
+    expect(second.reviewedKeys).toEqual(['past-due.intro', 'past-due.chase']);
     const before = second.snapshot();
-    expect(second.restore({ snapshotVersion: 2 }).success).toBe(false);
+    expect(second.restore({ snapshotVersion: 99 }).success).toBe(false);
     expect(second.snapshot()).toEqual(before);
+  });
+
+  it('migrates v1 snapshots and resumes the restored line without advancing', () => {
+    const runtime = new DialogueRuntime();
+    const line = vi.fn();
+    runtime.events.on('dialogue:line', line);
+    const result = runtime.restore({
+      snapshotVersion: 1,
+      status: 'playing',
+      requestedKeys: ['past-due.intro', 'past-due.chase'],
+      lineKeys: ['past-due.intro', 'past-due.chase'],
+      missingKeys: [],
+      index: 1,
+    });
+
+    expect(result).toEqual({ success: true, migratedFromVersion: 1 });
+    expect(runtime.reviewedKeys).toEqual(['past-due.intro', 'past-due.chase']);
+    expect(runtime.resume()?.key).toBe('past-due.chase');
+    expect(runtime.currentLine?.key).toBe('past-due.chase');
+    expect(line).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }));
   });
 
   it('degrades restored sequences when content was removed', () => {
