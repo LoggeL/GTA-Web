@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 18:55 CEST
+Last updated: 2026-07-16 19:02 CEST
 Plan status: Active  
-Current focus: Preview 2.1 publication gate, then M6 campaign implementation
+Current focus: M6 campaign, dialogue, activities, and exploration implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -262,7 +262,7 @@ Acceptance: level/build choices alter measured behavior; inventory rejects inval
 
 Completion evidence: the level-20 progression domain, five attributes, all 24 prerequisite/capstone-aware skills, purchase/refund rules, and strict restore are integrated with measured spread, reload, melee, handling, durability, stealth, heat, reward, and capacity modifiers. The live 8×6 backpack supports shaped placement, rotation, stacking/splitting, weight, durability, repair/use, auto-sort, two firearms/one melee/two utility slots, unlimited stash, class-aware trunks, and nine safehouse-bench recipes through responsive desktop/touch UI. Transactional shops expose 15 offers; all five properties support purchase, one upgrade, capped accrual, idempotent collection, service perks, and ending-price/income modifiers. Save schema v3 migrates earlier previews and strictly validates loadout/recipe references. `npm run check` passed 69 files / 442 tests; the full Chromium desktop/mobile matrix passed 20 tests / 14 intentional project-specific skips; the focused M5 course proved exact runtime modifiers, invalid-placement/weight domain rejection, rotation/split/loadout/crafting, duplicate-purchase/collection safety, the three-payout cap, and full save/continue persistence. Desktop visual QA passed the Skills, Inventory, and Economy panels; the 844×390 touch course proved bounded panels and touch transactions. The production artifact is 1.12 MiB total / 0.39 MiB compressed.
 
-### M6 — Campaign, dialogue, activities, and exploration — `PENDING`
+### M6 — Campaign, dialogue, activities, and exploration — `IN PROGRESS`
 
 - [ ] Data-driven objective/checkpoint/dialogue framework and mission log/contact reputation.
 - [ ] Implement and individually test all 12 authored missions and both endings.
@@ -335,16 +335,18 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 18:14 | Preview 2 | Published the complete M4 vehicles/combat/wanted loop through GitHub Pages. Live desktop smoke migrated and loaded the existing Preview 1.1 save, rendered the level-five response with three planned roadblocks and a tracking helicopter, exposed the 175 m search radius and active weapon HUD, and loaded the checked JS/CSS hashes. A fresh 844×390 live-mobile run reached gameplay with all nine on-foot touch actions, level-five response telemetry, and no page errors. | Source `0b4b5a0a94efefad1e6d48681fceec7714ad13a9`; tag `preview-2`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29514132955); [live preview](https://loggel.github.io/GTA-Web/?preview=2); 1.03 MiB artifact / 0.36 MiB compressed; `npm run check` 62 files / 375 tests; Playwright 18 passed / 12 intentional skips |
 | 2026-07-16 18:15 | M5 | Began the RPG/inventory/economy milestone with parallel, isolated completion of progression and 24-node skills, shaped-grid inventory and bench crafting, and transactional shops/five-property income. Runtime/UI/save integration follows the pure-domain gates. | M5 marked `IN PROGRESS`; acceptance remains open until measured gameplay modifiers, responsive desktop/touch workflows, persistence, and duplicate-money/invalid-placement browser gates pass |
 | 2026-07-16 18:55 | M5 | Completed and accepted the full RPG, tactical inventory/crafting, economy, property, responsive UI, and schema-v3 persistence milestone. The final browser pass also hardened exact wanted-level QA, stabilized stealth aim, and removed duplicate outer panel scrolling found during visual review. | `npm run check`: 69 files / 442 tests; Playwright: 20 passed / 14 intentional project-specific skips; focused M5 desktop/touch course green; 1280×720 visual QA; 1.12 MiB artifact / 0.39 MiB compressed; M5 marked `COMPLETE` |
+| 2026-07-16 19:02 | Preview 2.1 | Published the complete M5 RPG/inventory/crafting/economy/property loop through GitHub Pages. Live desktop smoke migrated and loaded an existing Preview 2 save into schema v3, populated the shaped starter inventory/loadout and all nine recipes, and rendered the checked panel layout. A fresh live 844×390 mobile run exposed all nine on-foot touch actions and all 48 inventory destinations inside a bounded panel with no page errors. | Source `5b4f8c0466045feb31220693ff3c8f622fc8b5ee`; tag `preview-2.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29517799115); [live preview](https://loggel.github.io/GTA-Web/?preview=2.1); checked JS `index-BObFDntf.js` / CSS `index-Dt7dpQ5a.css`; 1.12 MiB artifact / 0.39 MiB compressed |
+| 2026-07-16 19:02 | M6 | Began the campaign/content milestone. Existing campaign, mission, dialogue, activity, and collectible foundations are being audited against the 12-mission, two-ending, five-activity, and 60-collectible acceptance matrix before live integration. | M6 marked `IN PROGRESS`; Preview 3 remains gated on a clean-save full-campaign browser course, checkpoint recovery, both endings, free-roam continuation, and content persistence |
 
 ## Release record
 
 - Repository: `https://github.com/LoggeL/GTA-Web`
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
-- Current preview: Preview 2 (`preview-2`)
-- Release commit: `0b4b5a0a94efefad1e6d48681fceec7714ad13a9`
-- Deployment workflow: [GitHub Pages run 29514132955 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29514132955)
+- Current preview: Preview 2.1 (`preview-2.1`)
+- Release commit: `5b4f8c0466045feb31220693ff3c8f622fc8b5ee`
+- Deployment workflow: [GitHub Pages run 29517799115 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29517799115)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.36 MiB at Preview 2 gate
-- Published artifact size: 1.03 MiB at Preview 2 gate
-- Final `npm run check`: pending for M8; Preview 2 gate passed with 62 files / 375 tests
-- Final browser smoke test: pending for M8; Preview 2 live smoke passed existing-save migration/load, level-five response, three roadblocks, tracking helicopter, wanted-search/weapon HUD, checked repository-base JS/CSS hashes, and a fresh 844×390 mobile start with all nine on-foot touch actions and no page errors
+- Current compressed shell: 0.39 MiB at Preview 2.1 gate
+- Published artifact size: 1.12 MiB at Preview 2.1 gate
+- Final `npm run check`: pending for M8; Preview 2.1 gate passed with 69 files / 442 tests
+- Final browser smoke test: pending for M8; Preview 2.1 live smoke passed Preview-2-to-v3 save migration/load, starter inventory/loadout/nine recipes, checked repository-base JS/CSS hashes, and a fresh 844×390 mobile start with nine touch actions, all 48 inventory destinations in-bounds, and no page errors
