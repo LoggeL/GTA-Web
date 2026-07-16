@@ -635,6 +635,7 @@ export class GameUI {
             <button data-open-panel="inventory">Inventory <kbd>I</kbd></button>
             <button data-open-panel="skills">Skills</button>
             <button data-open-panel="garage">Garage</button>
+            <button data-open-panel="properties">Economy</button>
             <button data-action="pause">Pause <kbd>Esc</kbd></button>
           </nav>
         </section>
@@ -649,6 +650,7 @@ export class GameUI {
               <button class="button" data-open-panel="inventory">Inventory</button>
               <button class="button" data-open-panel="skills">Skills</button>
               <button class="button" data-open-panel="garage">Garage</button>
+              <button class="button" data-open-panel="properties">Economy</button>
               <button class="button" data-open-panel="settings">Settings</button>
               <button class="button button--danger" data-action="quit-menu">Save and quit to menu</button>
             </nav>

@@ -1,7 +1,7 @@
 import { SeededRandom, type RandomSeed } from './random';
 
 export const GAME_STATE_VERSION = 1 as const;
-export const SAVE_GAME_VERSION = 2 as const;
+export const SAVE_GAME_VERSION = 3 as const;
 
 export type SaveSlotId = 1 | 2 | 3;
 export type AlexPreset = 'masculine' | 'feminine';
@@ -104,6 +104,12 @@ export interface SavedInventory {
   items: SavedItemInstance[];
 }
 
+export interface SavedQuickLoadout {
+  firearms: [string | null, string | null];
+  melee: string | null;
+  consumables: [string | null, string | null];
+}
+
 export interface SavedVehicle {
   instanceId: string;
   definitionId: string;
@@ -167,6 +173,8 @@ export interface SaveGameV1 {
   inventory: SavedInventory;
   stash: SavedItemInstance[];
   trunks: Record<string, SavedInventory>;
+  quickLoadout: SavedQuickLoadout;
+  unlockedRecipes: string[];
   ownedVehicles: SavedVehicle[];
   missions: Record<string, SavedMissionProgress>;
   contacts: Record<string, number>;
@@ -296,6 +304,12 @@ export function createInitialSaveGame(
     },
     stash: [],
     trunks: {},
+    quickLoadout: {
+      firearms: [null, null],
+      melee: null,
+      consumables: [null, null],
+    },
+    unlockedRecipes: [],
     ownedVehicles: [],
     missions: {},
     contacts: {

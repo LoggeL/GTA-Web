@@ -58,6 +58,7 @@ async function placeBehindCombatant(page: Page, targetId: string): Promise<QaCom
       target.x + Math.sin(target.heading) * 1.4,
       target.z + Math.cos(target.heading) * 1.4,
     );
+    api.face(target.x, target.z);
     return target;
   }, targetId);
 }

@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 18:14 CEST
+Last updated: 2026-07-16 18:55 CEST
 Plan status: Active  
-Current focus: M5 implementation
+Current focus: Preview 2.1 publication gate, then M6 campaign implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -252,13 +252,15 @@ Acceptance: stealth and loud paths both resolve an encounter; each enemy role de
 
 Completion evidence: all 15 authored weapons are selectable and use distinct tier handling, ammunition, reload, recoil, wear, reliability, and durability; melee supports light chains, charged heavy attacks, blocking, stamina, guard breaks, dodges, and crouch-context non-graphic takedowns; soft cover, shoulder peeking, hybrid desktop/mobile aim assist, armor absorption, and abstract impacts are active in the live world. The deterministic combat NPC runtime supplies the five role-specific tactics, navigation, vision/hearing/light/noise/cover perception, suspicion, engagement, repositioning, retreat/surrender, and bounded pooling. Crimes flow through real pedestrian witnesses into the persistent wanted runtime; pursuit/search clearing, road-graph-anchored physical roadblocks, response budgets, the AI-only tactical helicopter, and clinic/station defeat penalties are integrated. The tutorial safe zone remains free of ambient hostile fire. `npm run check` passed 62 files / 375 tests; the full Playwright matrix passed 18 tests / 12 intentional project-specific skips; focused desktop and 844×390 M4 courses passed stealth, loud combat, every weapon/role, wanted levels 1–5, roadblocks, helicopter, and arrest; desktop visual QA passed both clear and level-five response states; the production artifact is 1.03 MiB total / 0.36 MiB compressed.
 
-### M5 — RPG, inventory, crafting, economy, and properties — `PENDING`
+### M5 — RPG, inventory, crafting, economy, and properties — `COMPLETE`
 
-- [ ] XP/level/attributes and all 24 skill nodes with prerequisites/exclusive capstones.
-- [ ] Grid/weight/durability inventory, stash/trunks, touch transfers, recipes.
-- [ ] Shops, economy, five properties/upgrades/income and ending modifiers.
+- [x] XP/level/attributes and all 24 skill nodes with prerequisites/exclusive capstones.
+- [x] Grid/weight/durability inventory, stash/trunks, touch transfers, recipes.
+- [x] Shops, economy, five properties/upgrades/income and ending modifiers.
 
 Acceptance: level/build choices alter measured behavior; inventory rejects invalid placement/weight and survives save/load; property payout caps and purchases cannot duplicate money.
+
+Completion evidence: the level-20 progression domain, five attributes, all 24 prerequisite/capstone-aware skills, purchase/refund rules, and strict restore are integrated with measured spread, reload, melee, handling, durability, stealth, heat, reward, and capacity modifiers. The live 8×6 backpack supports shaped placement, rotation, stacking/splitting, weight, durability, repair/use, auto-sort, two firearms/one melee/two utility slots, unlimited stash, class-aware trunks, and nine safehouse-bench recipes through responsive desktop/touch UI. Transactional shops expose 15 offers; all five properties support purchase, one upgrade, capped accrual, idempotent collection, service perks, and ending-price/income modifiers. Save schema v3 migrates earlier previews and strictly validates loadout/recipe references. `npm run check` passed 69 files / 442 tests; the full Chromium desktop/mobile matrix passed 20 tests / 14 intentional project-specific skips; the focused M5 course proved exact runtime modifiers, invalid-placement/weight domain rejection, rotation/split/loadout/crafting, duplicate-purchase/collection safety, the three-payout cap, and full save/continue persistence. Desktop visual QA passed the Skills, Inventory, and Economy panels; the 844×390 touch course proved bounded panels and touch transactions. The production artifact is 1.12 MiB total / 0.39 MiB compressed.
 
 ### M6 — Campaign, dialogue, activities, and exploration — `PENDING`
 
@@ -331,6 +333,8 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 18:10 | Preview 1.1 | Published the complete M3 vehicle/traffic/ownership/garage build through GitHub Pages. Live smoke passed through splash, menu, existing-save load, rendered gameplay, starter-vehicle entry, engine-health HUD, and the garage panel; deployed repository-base JS/CSS hashes matched the checked production build. | Source `89fbbb2ed2d01a060df2d3c0539bfdac3e4fa794`; tag `preview-1.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29509656104); [live preview](https://loggel.github.io/GTA-Web/?preview=1.1); 0.96 MiB artifact / 0.34 MiB compressed; `npm run check` 48 files / 301 tests; Playwright 16 passed / 10 intentional skips |
 | 2026-07-16 18:11 | M4 | Completed the live combat/stealth/NPC/wanted milestone: 15 weapons, brawling and takedowns, soft cover and aim assist, five-role perception/navigation/tactics, witness-driven heat, persistent pursuit/search, physical roadblocks, tactical helicopter, armor, and death/arrest recovery. The authored combat zone was moved away from the tutorial garage after the full matrix exposed unsafe hostile proximity. | `npm run check`: 62 files / 375 tests; Playwright: 18 passed / 12 intentional project-specific skips; M4 desktop/mobile course 2 passed / 2 intentional skips; deterministic 300-second NPC soak; desktop clear/level-five visual QA; 1.03 MiB artifact / 0.36 MiB compressed |
 | 2026-07-16 18:14 | Preview 2 | Published the complete M4 vehicles/combat/wanted loop through GitHub Pages. Live desktop smoke migrated and loaded the existing Preview 1.1 save, rendered the level-five response with three planned roadblocks and a tracking helicopter, exposed the 175 m search radius and active weapon HUD, and loaded the checked JS/CSS hashes. A fresh 844×390 live-mobile run reached gameplay with all nine on-foot touch actions, level-five response telemetry, and no page errors. | Source `0b4b5a0a94efefad1e6d48681fceec7714ad13a9`; tag `preview-2`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29514132955); [live preview](https://loggel.github.io/GTA-Web/?preview=2); 1.03 MiB artifact / 0.36 MiB compressed; `npm run check` 62 files / 375 tests; Playwright 18 passed / 12 intentional skips |
+| 2026-07-16 18:15 | M5 | Began the RPG/inventory/economy milestone with parallel, isolated completion of progression and 24-node skills, shaped-grid inventory and bench crafting, and transactional shops/five-property income. Runtime/UI/save integration follows the pure-domain gates. | M5 marked `IN PROGRESS`; acceptance remains open until measured gameplay modifiers, responsive desktop/touch workflows, persistence, and duplicate-money/invalid-placement browser gates pass |
+| 2026-07-16 18:55 | M5 | Completed and accepted the full RPG, tactical inventory/crafting, economy, property, responsive UI, and schema-v3 persistence milestone. The final browser pass also hardened exact wanted-level QA, stabilized stealth aim, and removed duplicate outer panel scrolling found during visual review. | `npm run check`: 69 files / 442 tests; Playwright: 20 passed / 14 intentional project-specific skips; focused M5 desktop/touch course green; 1280×720 visual QA; 1.12 MiB artifact / 0.39 MiB compressed; M5 marked `COMPLETE` |
 
 ## Release record
 

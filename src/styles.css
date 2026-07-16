@@ -885,6 +885,7 @@ kbd {
 .panel-card {
   width: min(96vw, 76rem);
   height: min(92vh, 50rem);
+  overflow: hidden;
   padding: clamp(1rem, 3vw, 2.5rem);
 }
 
@@ -1061,6 +1062,811 @@ kbd {
 
 .skill-columns article:nth-child(3) {
   border-top: 0.2rem solid var(--teal);
+}
+
+.skills-panel {
+  display: grid;
+  gap: 1.35rem;
+  padding-bottom: 1rem;
+}
+
+.skills-panel__header,
+.skills-panel__section-heading,
+.skill-tree > header,
+.attribute-card > header > div:first-child,
+.attribute-card > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.skills-panel h2,
+.skills-panel h3,
+.skills-panel h4,
+.skills-panel h5,
+.skills-panel p {
+  margin: 0;
+}
+
+.skills-panel__header {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-top: 0.22rem solid var(--teal);
+  border-radius: 0.65rem;
+  background: linear-gradient(125deg, rgb(80 215 207 / 13%), rgb(255 255 255 / 3%));
+}
+
+.skills-panel__header h2 {
+  margin: 0.2rem 0 0.55rem;
+  font-size: clamp(1.45rem, 3vw, 2.35rem);
+}
+
+.skills-panel__header > div:first-child {
+  flex: 1 1 20rem;
+}
+
+.skills-panel__header > div:first-child > p:last-child,
+.skills-panel__section-heading > p,
+.skill-tree > header p,
+.attribute-card > p,
+.attribute-card li,
+.skill-node p,
+.attribute-card footer small {
+  color: var(--muted);
+}
+
+.skills-panel__xp {
+  overflow: hidden;
+  width: min(28rem, 100%);
+  height: 0.42rem;
+  margin-bottom: 0.38rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.skills-panel__xp span {
+  display: block;
+  width: var(--xp-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--teal), var(--orange));
+}
+
+.skills-panel__points {
+  display: flex;
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.skills-panel__points div {
+  min-width: 8.5rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: rgb(0 0 0 / 22%);
+}
+
+.skills-panel__points dt {
+  color: var(--muted);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.skills-panel__points dd {
+  margin: 0.2rem 0 0;
+  font-size: 1.4rem;
+  font-weight: 800;
+}
+
+.skills-panel__section {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.skills-panel__section-heading {
+  align-items: end;
+}
+
+.skills-panel__section-heading > p {
+  max-width: 34rem;
+  text-align: right;
+}
+
+.attribute-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.attribute-card,
+.skill-tree {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: rgb(255 255 255 / 4%);
+}
+
+.attribute-card {
+  display: grid;
+  min-height: 16.5rem;
+  padding: 0.8rem;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 0.65rem;
+}
+
+.attribute-card header span,
+.skill-tree > header > span {
+  color: var(--orange);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.attribute-card__pips {
+  display: grid;
+  margin-top: 0.55rem;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.2rem;
+}
+
+.attribute-card__pips i {
+  height: 0.28rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 12%);
+}
+
+.attribute-card__pips i.is-filled {
+  background: var(--teal);
+}
+
+.attribute-card ul {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.7rem;
+}
+
+.attribute-card footer {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.attribute-card button,
+.skill-node button {
+  min-height: 2.25rem;
+  padding: 0.42rem 0.62rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: rgb(80 215 207 / 13%);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.67rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.attribute-card button:hover:not(:disabled),
+.attribute-card button:focus-visible,
+.skill-node button:hover:not(:disabled),
+.skill-node button:focus-visible {
+  border-color: var(--accent);
+  background: rgb(80 215 207 / 24%);
+}
+
+.attribute-card button:disabled,
+.skill-node button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.skill-tree-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.skill-tree--combat { border-top: 0.2rem solid var(--danger); }
+.skill-tree--driving { border-top: 0.2rem solid var(--orange); }
+.skill-tree--streetcraft { border-top: 0.2rem solid var(--teal); }
+
+.skill-tree > header {
+  padding: 0.75rem;
+  background: rgb(0 0 0 / 18%);
+}
+
+.skill-tree ol {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skill-node {
+  display: grid;
+  min-height: 7.8rem;
+  padding: 0.72rem;
+  border-top: 1px solid var(--line);
+  grid-template-columns: minmax(0, 1fr) 5.8rem;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.skill-node.is-unlocked {
+  background: rgb(80 215 207 / 9%);
+}
+
+.skill-node.is-available {
+  background: rgb(245 153 59 / 7%);
+}
+
+.skill-node > div > span {
+  color: var(--muted);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.skill-node h5 {
+  margin: 0.18rem 0 0.28rem;
+  font-size: 0.86rem;
+}
+
+.skill-node p {
+  font-size: 0.67rem;
+  line-height: 1.4;
+}
+
+.tactical-inventory,
+.economy-panel {
+  display: grid;
+  gap: 1.2rem;
+  padding-bottom: 1rem;
+}
+
+.tactical-inventory h2,
+.tactical-inventory h3,
+.tactical-inventory h4,
+.tactical-inventory p,
+.economy-panel h2,
+.economy-panel h3,
+.economy-panel h4,
+.economy-panel h5,
+.economy-panel p {
+  margin: 0;
+}
+
+.tactical-inventory__header,
+.economy-panel__header,
+.inventory-container > header,
+.storage-list > header,
+.crafting-panel > header,
+.economy-panel__section-heading,
+.shop-card > header,
+.property-card > header,
+.property-card__payout,
+.property-card > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tactical-inventory__header,
+.economy-panel__header {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-top: 0.22rem solid var(--teal);
+  border-radius: 0.65rem;
+  background: linear-gradient(125deg, rgb(80 215 207 / 12%), rgb(255 255 255 / 3%));
+}
+
+.tactical-inventory__header h2,
+.economy-panel__header h2 {
+  margin: 0.18rem 0 0.35rem;
+  font-size: clamp(1.35rem, 3vw, 2.15rem);
+}
+
+.tactical-inventory__header > div > p:last-child,
+.economy-panel__header > div > p:last-child,
+.inventory-container header p,
+.storage-list header p,
+.economy-panel__section-heading > p,
+.shop-card > header p,
+.shop-card li p,
+.property-card > p,
+.property-card li,
+.property-card > small,
+.recipe-card p,
+.recipe-card small,
+.inventory-details > p,
+.storage-list > small {
+  color: var(--muted);
+}
+
+.inventory-weight {
+  width: min(17rem, 38vw);
+}
+
+.inventory-weight > span {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.inventory-weight > div {
+  overflow: hidden;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.inventory-weight i {
+  display: block;
+  width: var(--weight-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--teal), var(--orange));
+}
+
+.loadout-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.loadout-strip article {
+  position: relative;
+  min-height: 3.6rem;
+  padding: 0.65rem 2rem 0.65rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  background: rgb(255 255 255 / 4%);
+}
+
+.loadout-strip span,
+.shop-card li span,
+.property-card header span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.loadout-strip strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 0.22rem;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loadout-strip button {
+  position: absolute;
+  top: 0.42rem;
+  right: 0.42rem;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 20%);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tactical-inventory__workspace {
+  display: grid;
+  grid-template-columns: minmax(24rem, 1.55fr) minmax(16rem, 0.75fr);
+  gap: 0.8rem;
+}
+
+.inventory-container,
+.inventory-details,
+.storage-list,
+.crafting-panel,
+.shop-card,
+.property-card {
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: rgb(255 255 255 / 4%);
+}
+
+.inventory-container,
+.inventory-details,
+.storage-list,
+.crafting-panel {
+  padding: 0.75rem;
+}
+
+.inventory-container > header,
+.storage-list > header,
+.crafting-panel > header {
+  margin-bottom: 0.6rem;
+}
+
+.inventory-container button,
+.inventory-details button,
+.storage-list button,
+.crafting-panel button,
+.economy-panel button {
+  min-height: 2.1rem;
+  padding: 0.38rem 0.58rem;
+  border: 1px solid var(--line);
+  border-radius: 0.34rem;
+  background: rgb(80 215 207 / 11%);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.inventory-container button:hover:not(:disabled),
+.inventory-container button:focus-visible,
+.inventory-details button:hover:not(:disabled),
+.inventory-details button:focus-visible,
+.storage-list button:hover:not(:disabled),
+.storage-list button:focus-visible,
+.crafting-panel button:hover:not(:disabled),
+.crafting-panel button:focus-visible,
+.economy-panel button:hover:not(:disabled),
+.economy-panel button:focus-visible {
+  border-color: var(--accent);
+  background: rgb(80 215 207 / 22%);
+}
+
+.inventory-container button:disabled,
+.inventory-details button:disabled,
+.storage-list button:disabled,
+.crafting-panel button:disabled,
+.economy-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.43;
+}
+
+.inventory-grid--interactive {
+  position: relative;
+  display: grid;
+  width: 100%;
+  max-width: none;
+  aspect-ratio: var(--grid-width) / var(--grid-height);
+  grid-template-columns: repeat(var(--grid-width), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--grid-height), minmax(0, 1fr));
+  border: 1px solid rgb(80 215 207 / 28%);
+  border-radius: 0.35rem;
+  background: rgb(0 0 0 / 28%);
+}
+
+.inventory-cell {
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 1px solid rgb(255 255 255 / 7%) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.inventory-cell:hover,
+.inventory-cell:focus-visible {
+  border-color: rgb(80 215 207 / 55%) !important;
+  background: rgb(80 215 207 / 7%) !important;
+}
+
+.inventory-item {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  overflow: hidden;
+  min-height: 0 !important;
+  margin: 0.14rem;
+  padding: 0.24rem !important;
+  grid-column: var(--item-x) / span var(--item-width);
+  grid-row: var(--item-y) / span var(--item-height);
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 28%) !important;
+  border-radius: 0.28rem !important;
+  background: rgb(40 75 91 / 94%) !important;
+  box-shadow: 0 0.35rem 1rem rgb(0 0 0 / 25%);
+  text-align: center;
+}
+
+.inventory-item--weapon { background: rgb(125 48 53 / 95%) !important; }
+.inventory-item--ammo { background: rgb(135 91 31 / 95%) !important; }
+.inventory-item--consumable { background: rgb(25 105 93 / 95%) !important; }
+.inventory-item--component { background: rgb(46 69 116 / 95%) !important; }
+.inventory-item--armor { background: rgb(83 71 111 / 95%) !important; }
+.inventory-item--attachment { background: rgb(105 64 108 / 95%) !important; }
+.inventory-item--quest { background: rgb(113 91 34 / 95%) !important; }
+.inventory-item--contraband { background: rgb(111 50 89 / 95%) !important; }
+
+.inventory-item.is-selected {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 0.12rem var(--accent), 0 0.45rem 1.2rem rgb(0 0 0 / 40%);
+}
+
+.inventory-item span {
+  overflow: hidden;
+  width: 100%;
+  font-size: clamp(0.46rem, 0.85vw, 0.68rem);
+  text-overflow: ellipsis;
+}
+
+.inventory-item b {
+  position: absolute;
+  top: 0.16rem;
+  right: 0.24rem;
+  font-size: 0.58rem;
+}
+
+.inventory-item i {
+  position: absolute;
+  right: 0.18rem;
+  bottom: 0.18rem;
+  left: 0.18rem;
+  height: 0.18rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--teal) 0 var(--durability), rgb(0 0 0 / 38%) var(--durability));
+}
+
+.inventory-details {
+  min-height: 16rem;
+}
+
+.inventory-details h3 {
+  margin: 0.22rem 0 0.55rem;
+  font-size: 1.35rem;
+}
+
+.inventory-details dl,
+.economy-panel__header dl {
+  display: flex;
+  gap: 0.45rem;
+  margin: 0.85rem 0;
+}
+
+.inventory-details dl div,
+.economy-panel__header dl div {
+  flex: 1;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: rgb(0 0 0 / 18%);
+}
+
+.inventory-details dt,
+.economy-panel__header dt {
+  color: var(--muted);
+  font-size: 0.56rem;
+  text-transform: uppercase;
+}
+
+.inventory-details dd,
+.economy-panel__header dd {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.inventory-details__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.storage-columns,
+.shop-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.storage-list header > div:last-child {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.storage-list ul,
+.shop-card ul {
+  display: grid;
+  max-height: 13rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.storage-list li button {
+  display: flex;
+  width: 100%;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: space-between;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.storage-list li button.is-selected {
+  background: rgb(80 215 207 / 12%);
+}
+
+.storage-list li.is-empty {
+  padding: 1rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.storage-list.is-unavailable {
+  display: grid;
+  min-height: 6rem;
+  place-content: center;
+}
+
+.crafting-panel > header > span {
+  padding: 0.34rem 0.52rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.crafting-panel > header > span.is-online {
+  border-color: rgb(80 215 207 / 45%);
+  color: var(--teal);
+}
+
+.recipe-grid,
+.property-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.recipe-card {
+  position: relative;
+  display: grid;
+  min-height: 12.5rem;
+  padding: 0.72rem;
+  border: 1px solid var(--line);
+  border-radius: 0.42rem;
+  background: rgb(0 0 0 / 15%);
+  grid-template-rows: auto auto 1fr auto auto auto;
+  gap: 0.35rem;
+}
+
+.recipe-card.is-craftable {
+  border-color: rgb(80 215 207 / 38%);
+  background: rgb(80 215 207 / 6%);
+}
+
+.recipe-card > span {
+  justify-self: end;
+  color: var(--muted);
+  font-size: 0.58rem;
+}
+
+.recipe-card strong,
+.recipe-card small {
+  font-size: 0.64rem;
+}
+
+.economy-panel__header dl {
+  min-width: 18rem;
+}
+
+.economy-panel__header dd {
+  font-size: 1.08rem;
+}
+
+.economy-panel__section {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.economy-panel__section-heading {
+  align-items: end;
+}
+
+.economy-panel__section-heading > p {
+  max-width: 30rem;
+  text-align: right;
+}
+
+.shop-card {
+  overflow: hidden;
+}
+
+.shop-card > header {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--line);
+  background: rgb(0 0 0 / 16%);
+}
+
+.shop-card > header > span {
+  color: var(--orange);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
+.shop-card li {
+  display: grid;
+  min-height: 6rem;
+  padding: 0.65rem;
+  border-bottom: 1px solid var(--line);
+  grid-template-columns: minmax(0, 1fr) 8.5rem;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.shop-card li:last-child {
+  border-bottom: 0;
+}
+
+.shop-card li h5 {
+  margin: 0.15rem 0 0.2rem;
+}
+
+.shop-card li p {
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.shop-card li small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--danger);
+  font-size: 0.58rem;
+}
+
+.property-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.property-card {
+  display: grid;
+  min-height: 22rem;
+  padding: 0.72rem;
+  grid-template-rows: auto auto 1fr auto auto auto;
+  gap: 0.55rem;
+}
+
+.property-card.is-owned {
+  border-color: rgb(80 215 207 / 36%);
+  background: rgb(80 215 207 / 6%);
+}
+
+.property-card header b {
+  color: var(--orange);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+}
+
+.property-card > p,
+.property-card li,
+.property-card > small {
+  font-size: 0.65rem;
+  line-height: 1.4;
+}
+
+.property-card ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.property-card__payout {
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: rgb(0 0 0 / 17%);
+  font-size: 0.65rem;
+}
+
+.property-card > footer {
+  align-items: stretch;
+  flex-direction: column;
 }
 
 .garage-panel {
@@ -1603,6 +2409,20 @@ kbd {
   }
 }
 
+@media (max-width: 1100px) {
+  .attribute-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .property-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .recipe-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 760px) {
   .save-card {
     align-items: stretch;
@@ -1617,11 +2437,73 @@ kbd {
   .preset-grid,
   .inventory-layout,
   .skill-columns,
+  .skill-tree-grid,
   .garage-panel__condition,
   .settings-grid,
   .controls-grid,
   .keyboard-bindings {
     grid-template-columns: 1fr;
+  }
+
+  .attribute-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tactical-inventory__header,
+  .economy-panel__header,
+  .inventory-container > header,
+  .storage-list > header,
+  .crafting-panel > header,
+  .economy-panel__section-heading,
+  .shop-card > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tactical-inventory__workspace,
+  .storage-columns,
+  .shop-columns,
+  .property-grid,
+  .recipe-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .loadout-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inventory-weight,
+  .economy-panel__header dl {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .inventory-weight > span,
+  .economy-panel__section-heading > p {
+    text-align: left;
+  }
+
+  .shop-card li {
+    grid-template-columns: minmax(0, 1fr) 7rem;
+  }
+
+  .skills-panel__header,
+  .skills-panel__section-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .skills-panel__section-heading > p {
+    text-align: left;
+  }
+
+  .skills-panel__points {
+    width: 100%;
+  }
+
+  .skills-panel__points div {
+    flex: 1;
+    min-width: 0;
   }
 
   .garage-panel__header,

@@ -19,6 +19,7 @@ export interface SaveValidationRegistry {
   propertyIds?: ReadonlySet<string>;
   activityIds?: ReadonlySet<string>;
   collectibleIds?: ReadonlySet<string>;
+  recipeIds?: ReadonlySet<string>;
 }
 
 export type SaveValidationResult =
@@ -43,6 +44,15 @@ export function validateSaveGame(
   validateRecord(value.trunks, 'trunks', errors, (entry, path) => {
     validateInventory(entry, path, registry, errors);
   });
+  validateQuickLoadout(value.quickLoadout, value.inventory, errors);
+  validateUniqueStrings(value.unlockedRecipes, 'unlockedRecipes', errors);
+  if (Array.isArray(value.unlockedRecipes)) {
+    for (const recipeId of value.unlockedRecipes) {
+      if (typeof recipeId === 'string') {
+        validateRegistryId(recipeId, registry.recipeIds, `unlockedRecipes.${recipeId}`, errors);
+      }
+    }
+  }
   validateVehicleArray(value.ownedVehicles, registry, errors);
   validateRecord(value.missions, 'missions', errors, (entry, path, id) => {
     validateRegistryId(id, registry.missionIds, path, errors);
@@ -73,6 +83,52 @@ export function validateSaveGame(
     return { valid: false, errors };
   }
   return { valid: true, save: value as unknown as SaveGameV1, errors: [] };
+}
+
+function validateQuickLoadout(
+  value: unknown,
+  inventoryValue: unknown,
+  errors: string[],
+): void {
+  if (!isRecord(value)) {
+    errors.push('quickLoadout must be an object');
+    return;
+  }
+  validateNullableStringTuple(value.firearms, 'quickLoadout.firearms', errors);
+  validateNullableStringTuple(value.consumables, 'quickLoadout.consumables', errors);
+  if (value.melee !== null) {
+    validateNonEmptyString(value.melee, 'quickLoadout.melee', errors);
+  }
+  const references = [
+    ...(Array.isArray(value.firearms) ? value.firearms : []),
+    value.melee,
+    ...(Array.isArray(value.consumables) ? value.consumables : []),
+  ].filter((entry): entry is string => typeof entry === 'string');
+  if (new Set(references).size !== references.length) {
+    errors.push('quickLoadout cannot assign an item instance more than once');
+  }
+  if (isRecord(inventoryValue) && Array.isArray(inventoryValue.items)) {
+    const carriedIds = new Set(inventoryValue.items.flatMap((entry) => (
+      isRecord(entry) && typeof entry.instanceId === 'string' ? [entry.instanceId] : []
+    )));
+    for (const reference of references) {
+      if (!carriedIds.has(reference)) {
+        errors.push(`quickLoadout reference "${reference}" must exist in inventory`);
+      }
+    }
+  }
+}
+
+function validateNullableStringTuple(value: unknown, path: string, errors: string[]): void {
+  if (!Array.isArray(value) || value.length !== 2) {
+    errors.push(`${path} must contain exactly two entries`);
+    return;
+  }
+  value.forEach((entry, index) => {
+    if (entry !== null) {
+      validateNonEmptyString(entry, `${path}[${index}]`, errors);
+    }
+  });
 }
 
 function validateWanted(value: unknown, errors: string[]): void {

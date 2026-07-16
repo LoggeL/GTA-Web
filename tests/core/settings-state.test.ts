@@ -51,7 +51,7 @@ describe('initial serializable state', () => {
       label: 'Night run',
     });
 
-    expect(save.schemaVersion).toBe(2);
+    expect(save.schemaVersion).toBe(3);
     expect(save.slot).toEqual({
       id: 2,
       label: 'Night run',
@@ -60,6 +60,12 @@ describe('initial serializable state', () => {
     });
     expect(save.player.level).toBe(1);
     expect(save.player.attributes).toEqual({ grit: 1, aim: 1, handling: 1, nerve: 1, hustle: 1 });
+    expect(save.quickLoadout).toEqual({
+      firearms: [null, null],
+      melee: null,
+      consumables: [null, null],
+    });
+    expect(save.unlockedRecipes).toEqual([]);
     expect(save.activeDistrict).toBe('arroyo-heights');
     expect(JSON.parse(JSON.stringify(save))).toEqual(save);
   });

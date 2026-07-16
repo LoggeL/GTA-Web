@@ -165,6 +165,18 @@ export interface EnvironmentUpdate {
   clockRate?: number;
 }
 
+/** Measured RPG modifiers consumed by the live world simulation. */
+export interface WorldProgressionModifiers {
+  meleeDamageMultiplier: number;
+  weaponSpreadMultiplier: number;
+  reloadTimeMultiplier: number;
+  vehicleStabilityMultiplier: number;
+  vehicleBrakingMultiplier: number;
+  vehicleDurabilityMultiplier: number;
+  enemySuspicionTimeMultiplier: number;
+  crouchedNoiseMultiplier: number;
+}
+
 export interface WorldViewOptions {
   mount: HTMLElement;
   seed?: number | string;
@@ -184,6 +196,7 @@ export interface WorldViewOptions {
   aimAssistLevel?: 'off' | 'low' | 'medium' | 'high';
   aimAssistDevice?: 'desktop' | 'mobile';
   desktopSoftLockEnabled?: boolean;
+  progressionModifiers?: Partial<WorldProgressionModifiers>;
   onFrame?: (frameMilliseconds: number) => void;
   onSnapshot?: (snapshot: WorldSnapshot) => void;
   onCrime?: (event: CrimeEvent) => void;

@@ -32,6 +32,8 @@ export type TrunkRowBonus = 0 | 1;
 export interface GarageState {
   cash: number;
   trunkRowBonus: TrunkRowBonus;
+  /** Optional property perk applied to service quotes and committed repairs. */
+  vehicleRepairDiscountPercent?: number;
   ownedVehicles: SavedVehicle[];
   trunks: Record<string, SavedInventory>;
 }
@@ -436,6 +438,7 @@ export function quoteVehicleRepair(
   vehicle: Readonly<SavedVehicle>,
   definition: Readonly<VehicleDefinition>,
   scope: VehicleRepairScope,
+  discountPercent = 0,
 ): number {
   if (!isRepairScope(scope)) {
     throw new RangeError('vehicle repair scope must be valid');
@@ -454,7 +457,9 @@ export function quoteVehicleRepair(
     + REPAIR_VALUE_RATE.engine * engineMissing / 100
     + REPAIR_VALUE_RATE.tire * tireMissing / 100
   );
-  return rawCost > 0 ? Math.max(1, Math.ceil(rawCost - Number.EPSILON)) : 0;
+  assertPercent(discountPercent, 'vehicle repair discount');
+  const discountedCost = rawCost * (1 - discountPercent / 100);
+  return discountedCost > 0 ? Math.max(1, Math.ceil(discountedCost - Number.EPSILON)) : 0;
 }
 
 export function repairVehicle(
@@ -476,7 +481,12 @@ export function repairVehicle(
   if (!definition) {
     return failure(original, `unknown vehicle definition "${vehicle.definitionId}"`);
   }
-  const cost = quoteVehicleRepair(vehicle, definition, request.scope);
+  const cost = quoteVehicleRepair(
+    vehicle,
+    definition,
+    request.scope,
+    state.vehicleRepairDiscountPercent ?? 0,
+  );
   if (cost === 0) {
     return failure(original, `vehicle has no ${request.scope} damage to repair`);
   }
@@ -804,6 +814,9 @@ function cloneGarageState(state: Readonly<GarageState>): GarageState {
   return {
     cash: state.cash,
     trunkRowBonus: state.trunkRowBonus,
+    ...(state.vehicleRepairDiscountPercent === undefined
+      ? {}
+      : { vehicleRepairDiscountPercent: state.vehicleRepairDiscountPercent }),
     ownedVehicles,
     trunks: Object.fromEntries(
       trunkKeys.map((instanceId) => [instanceId, cloneInventory(state.trunks[instanceId]!)]),

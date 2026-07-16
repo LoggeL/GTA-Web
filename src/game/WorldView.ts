@@ -62,6 +62,7 @@ import type {
   WorldSnapshot,
   WorldVehicleInitialization,
   WorldViewOptions,
+  WorldProgressionModifiers,
 } from './types';
 import {
   createVehicleState,
@@ -86,6 +87,17 @@ const DEFAULT_CAMERA_YAW = Math.PI * 0.14;
 const DEFAULT_CAMERA_PITCH = 0.42;
 const CAMERA_TARGET_HEIGHT = 1.48;
 const TRAFFIC_INTERACTION_PREFIX = 'traffic:';
+
+const DEFAULT_PROGRESSION_MODIFIERS: Readonly<WorldProgressionModifiers> = Object.freeze({
+  meleeDamageMultiplier: 1,
+  weaponSpreadMultiplier: 1,
+  reloadTimeMultiplier: 1,
+  vehicleStabilityMultiplier: 1,
+  vehicleBrakingMultiplier: 1,
+  vehicleDurabilityMultiplier: 1,
+  enemySuspicionTimeMultiplier: 1,
+  crouchedNoiseMultiplier: 1,
+});
 
 function clampAxis(value: number): number {
   return Math.max(-1, Math.min(1, value));
@@ -157,6 +169,18 @@ function copyInput(target: WorldInputState, source: Partial<WorldInputState>): v
   }
 }
 
+function normalizeProgressionModifiers(
+  modifiers: Partial<WorldProgressionModifiers> | undefined,
+): WorldProgressionModifiers {
+  const normalized = { ...DEFAULT_PROGRESSION_MODIFIERS, ...modifiers };
+  for (const [key, value] of Object.entries(normalized)) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`${key} progression modifier must be finite and positive`);
+    }
+  }
+  return normalized;
+}
+
 export class WorldView {
   public readonly renderer: WebGLRenderer;
   public readonly scene: Scene;
@@ -192,6 +216,7 @@ export class WorldView {
   private readonly aimAssistDevice: 'desktop' | 'mobile';
   private readonly desktopSoftLockEnabled: boolean;
   private readonly onPlayerDamage: ((event: PlayerDamageEvent) => void) | null;
+  private progressionModifiers: WorldProgressionModifiers;
   private readonly interiorRuntime: InteriorRuntime;
   private readonly interiorSceneVisual: InteriorSceneVisual;
   private readonly interiorPortalVisual: InteriorPortalVisual;
@@ -257,6 +282,7 @@ export class WorldView {
     this.aimAssistDevice = options.aimAssistDevice ?? 'desktop';
     this.desktopSoftLockEnabled = options.desktopSoftLockEnabled ?? true;
     this.onPlayerDamage = options.onPlayerDamage ?? null;
+    this.progressionModifiers = normalizeProgressionModifiers(options.progressionModifiers);
     this.exteriorCollisions = this.layout.collisions;
     this.player = createPlayerState(options.initialPosition ?? PLAYER_SPAWN);
     this.player.heading = options.initialHeading ?? 0;
@@ -426,6 +452,17 @@ export class WorldView {
     }
   }
 
+  public setProgressionModifiers(
+    modifiers: Partial<WorldProgressionModifiers>,
+  ): Readonly<WorldProgressionModifiers> {
+    this.assertAlive();
+    this.progressionModifiers = normalizeProgressionModifiers({
+      ...this.progressionModifiers,
+      ...modifiers,
+    });
+    return { ...this.progressionModifiers };
+  }
+
   public setCityStreaming(
     renderableActiveCellIds: readonly CellId[],
     residentCellIds: readonly CellId[],
@@ -488,6 +525,13 @@ export class WorldView {
   public selectCombatWeapon(weaponId: string): WorldSnapshot {
     this.assertAlive();
     this.combatRuntime.selectWeapon(weaponId);
+    this.emitSnapshot(true);
+    return this.getSnapshot();
+  }
+
+  public setCombatLoadout(weaponIds: readonly string[]): WorldSnapshot {
+    this.assertAlive();
+    this.combatRuntime.setLoadout(weaponIds);
     this.emitSnapshot(true);
     return this.getSnapshot();
   }
@@ -931,6 +975,9 @@ export class WorldView {
       }
       stepVehicle(this.vehicle, input, this.activeCollisions(), dt, {
         rainIntensity: this.environment.rainIntensity,
+        stabilityMultiplier: this.progressionModifiers.vehicleStabilityMultiplier,
+        brakingMultiplier: this.progressionModifiers.vehicleBrakingMultiplier,
+        durabilityMultiplier: this.progressionModifiers.vehicleDurabilityMultiplier,
       });
       this.updateVehicleRecovery(dt);
       this.vehicleVisual.sync(this.vehicle, dt);
@@ -964,7 +1011,11 @@ export class WorldView {
           ? 1
           : this.vehicle.occupied
             ? Math.min(1, Math.abs(this.vehicle.speed) / 14)
-            : this.player.sprinting ? 0.68 : this.player.crouching ? 0.08 : 0.24,
+            : this.player.sprinting
+              ? 0.68
+              : this.player.crouching
+                ? 0.08 * this.progressionModifiers.crouchedNoiseMultiplier
+                : 0.24,
         input: simulationInput,
         obstructions: this.activeCollisions().map((collision) => ({
           x: (collision.minX + collision.maxX) / 2,
@@ -1268,7 +1319,6 @@ export class WorldView {
     aimJustStarted: boolean,
   ): boolean {
     this.updateSoftCover(input);
-    const saveSpreadMultiplier = 1;
     const frame = this.combatRuntime.tick(deltaSeconds, {
       fire: !this.vehicle.occupied && input.fire,
       heavyAttackHeld: !this.vehicle.occupied && input.heavyAttackHeld,
@@ -1279,7 +1329,9 @@ export class WorldView {
       dodge: !this.vehicle.occupied && input.dodge,
     }, {
       reliabilityRoll: this.combatRandom.next(),
-      spreadMultiplier: saveSpreadMultiplier * (input.aim ? 0.76 : 1.18),
+      spreadMultiplier: this.progressionModifiers.weaponSpreadMultiplier * (input.aim ? 0.76 : 1.18),
+      meleeDamageMultiplier: this.progressionModifiers.meleeDamageMultiplier,
+      reloadTimeMultiplier: this.progressionModifiers.reloadTimeMultiplier,
     });
     const aimDirection = this.resolveCombatAim(aimJustStarted || frame.weaponChanged);
     let attacked = false;

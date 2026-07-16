@@ -44,6 +44,11 @@ export const DEFAULT_SAVE_MIGRATIONS: readonly SaveMigration[] = [
     toVersion: 2,
     apply: migrateVersionOne,
   },
+  {
+    fromVersion: 2,
+    toVersion: 3,
+    apply: migrateVersionTwo,
+  },
 ];
 
 /** Canonical JSON sorts object keys so checksum output is insertion-order independent. */
@@ -209,6 +214,19 @@ function migrateVersionOne(value: Readonly<Record<string, unknown>>): Record<str
       heat: 0,
       searchSecondsRemaining: 0,
     },
+  };
+}
+
+function migrateVersionTwo(value: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return {
+    ...value,
+    schemaVersion: 3,
+    quickLoadout: value.quickLoadout === undefined ? {
+      firearms: [null, null],
+      melee: null,
+      consumables: [null, null],
+    } : value.quickLoadout,
+    unlockedRecipes: value.unlockedRecipes === undefined ? [] : value.unlockedRecipes,
   };
 }
 

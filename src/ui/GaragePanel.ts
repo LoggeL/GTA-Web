@@ -291,7 +291,9 @@ function createVehicleModel(
   definition: Readonly<VehicleDefinition> | undefined,
 ): GarageVehiclePanelModel {
   const trunk = state.trunks[vehicle.instanceId];
-  const repairCost = definition ? quoteVehicleRepair(vehicle, definition, 'all') : 0;
+  const repairCost = definition
+    ? quoteVehicleRepair(vehicle, definition, 'all', state.vehicleRepairDiscountPercent ?? 0)
+    : 0;
   const repair = availability(
     !definition
       ? 'Vehicle definition unavailable'

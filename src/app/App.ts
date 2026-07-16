@@ -4,19 +4,30 @@ import {
   createInitialSaveGame,
   type GameSettings,
   type SaveGameV1,
+  type SavedInventory,
+  type SavedItemInstance,
   type SaveService,
   type SaveSlotId,
 } from '../core';
 import {
   PLAYER_SPAWN,
   VEHICLE_SPAWN,
+  WORLD_COMBAT_WEAPON_ORDER,
   WorldView,
   createWorldInputState,
   resolveCombatDamage,
   type WorldSnapshot,
   type WorldVehicleInitialization,
 } from '../game';
-import { ITEMS, VEHICLES, getVehicle } from '../data';
+import {
+  ITEMS,
+  PROPERTIES,
+  RECIPES,
+  SKILL_NODES,
+  VEHICLES,
+  WEAPONS,
+  getVehicle,
+} from '../data';
 import { CityStreamingController } from '../game/CityStreamingController';
 import {
   DomInputAdapter,
@@ -44,6 +55,9 @@ import {
   parseGaragePanelAction,
   type NearbyUnregisteredVehicle,
 } from '../ui/GaragePanel';
+import { SkillsPanel, parseSkillsPanelAction } from '../ui/SkillsPanel';
+import { InventoryPanel, parseInventoryPanelAction } from '../ui/InventoryPanel';
+import { EconomyPanel, parseEconomyPanelAction } from '../ui/EconomyPanel';
 import { AudioEngine } from '../audio/AudioEngine';
 import type {
   CrimeEvent,
@@ -59,10 +73,38 @@ import {
   repaintVehicle,
   repairVehicle,
   retrieveVehicleFromGarage,
+  calculateProgressionModifiers,
+  addItem,
+  assignQuickLoadout,
+  autoSortTacticalContainer,
+  accruePropertyPayouts,
+  collectPropertyIncome,
+  craftUnlockedRecipe,
+  grantXp,
+  inventoryWeight,
+  levelProgress,
+  moveItem,
+  purchaseAttribute,
+  purchaseProperty,
+  purchaseShopItem,
+  purchaseSkill,
+  repairItemWithConsumable,
+  resolvePropertyServiceModifiers,
+  splitStack,
+  tacticalInventorySaveFields,
+  transferAllTacticalItems,
+  transferTacticalItem,
+  updateBackpackGritCapacity,
+  upgradeProperty,
+  useConsumable,
   WantedRuntime,
+  type EconomyState,
   type GarageState,
   type GarageTransactionResult,
+  type ProgressionState,
   type RoadblockCandidate,
+  type TacticalContainerRef,
+  type TacticalInventoryState,
   type WantedRuntimeSnapshot,
 } from '../systems';
 
@@ -93,6 +135,14 @@ interface HeatlineQaApi {
     z: number;
   }[];
   setMoney(value: number): number;
+  grantXp(amount: number): { level: number; xp: number; attributePoints: number; skillPoints: number };
+  inventoryState(): {
+    itemCount: number;
+    weightKg: number;
+    quickLoadout: SaveGameV1['quickLoadout'];
+    unlockedRecipes: number;
+  };
+  accruePropertyPayouts(count?: number): Record<string, number>;
   setActiveVehicleClass(classId: string): WorldSnapshot;
   setActiveVehicleCondition(bodyHealth: number, engineHealth: number): WorldSnapshot;
   combatants(): readonly {
@@ -155,6 +205,11 @@ export class App {
   #navigationDriveWaypointSet = false;
   #mapRenderer: MapRenderer | null = null;
   #garagePanel: GaragePanel | null = null;
+  #skillsPanel: SkillsPanel | null = null;
+  #inventoryPanel: InventoryPanel | null = null;
+  #economyPanel: EconomyPanel | null = null;
+  #inventorySelection: string | null = null;
+  #m5TransactionSequence = 0;
   #mapModel: MapRenderModel | null = null;
   readonly #mapMarkerFilters: Record<MapFilterKind, boolean> = {
     mission: true,
@@ -244,6 +299,7 @@ export class App {
     };
     save.player.money = 850;
     ensureStarterVehicle(save);
+    ensureM5StarterInventory(save);
     await this.#saveService.saveSlot(save);
     await this.#loadGame(save, true);
   }
@@ -268,6 +324,7 @@ export class App {
   async #loadGame(save: SaveGameV1, isNew: boolean): Promise<void> {
     this.#teardownWorld();
     ensureStarterVehicle(save);
+    ensureM5StarterInventory(save);
     this.#currentSave = save;
     this.#activeSlot = save.slot.id;
     this.#lastSnapshotAt = performance.now();
@@ -329,6 +386,8 @@ export class App {
       x: 360,
       z: -320,
     });
+    this.#applyProgressionRuntimeModifiers();
+    this.#syncWorldQuickLoadout();
 
     this.#domInput = new DomInputAdapter(this.#world.renderer.domElement, this.#inputController);
     this.#touchInput = new TouchInput(this.#root, this.#inputController);
@@ -424,6 +483,22 @@ export class App {
       worldMount.dataset.softCoverPeeking = String(snapshot.softCoverPeeking);
       worldMount.dataset.aimTargetId = snapshot.aimTargetId ?? '';
       worldMount.dataset.activeCombatants = String(snapshot.activeCombatants);
+      if (this.#currentSave) {
+        const modifiers = calculateProgressionModifiers(
+          progressionStateFromSave(this.#currentSave),
+          this.#currentSave.ending,
+        );
+        worldMount.dataset.rpgMaximumHealth = modifiers.maximumHealth.toFixed(2);
+        worldMount.dataset.rpgCarryWeight = modifiers.backpackWeightKg.toFixed(2);
+        worldMount.dataset.rpgMeleeDamage = modifiers.meleeDamageMultiplier.toFixed(4);
+        worldMount.dataset.rpgWeaponSpread = modifiers.weaponSpreadMultiplier.toFixed(4);
+        worldMount.dataset.rpgReloadTime = modifiers.reloadTimeMultiplier.toFixed(4);
+        worldMount.dataset.rpgVehicleStability = modifiers.vehicleStabilityMultiplier.toFixed(4);
+        worldMount.dataset.rpgVehicleBraking = modifiers.vehicleBrakingMultiplier.toFixed(4);
+        worldMount.dataset.rpgVehicleDurability = modifiers.vehicleDurabilityMultiplier.toFixed(4);
+        worldMount.dataset.rpgHeatGain = modifiers.heatGainMultiplier.toFixed(4);
+        worldMount.dataset.rpgCashReward = modifiers.cashRewardMultiplier.toFixed(4);
+      }
     }
     if (this.#currentSave) {
       this.#currentSave.playtimeSeconds += deltaSeconds;
@@ -455,7 +530,12 @@ export class App {
 
     const hud: HudSnapshot = {
       health: this.#currentSave?.player.health ?? 100,
-      maxHealth: 100 + Math.max(0, (this.#currentSave?.player.attributes.grit ?? 1) - 1) * 10,
+      maxHealth: this.#currentSave
+        ? calculateProgressionModifiers(
+          progressionStateFromSave(this.#currentSave),
+          this.#currentSave.ending,
+        ).maximumHealth
+        : 100,
       armor: this.#currentSave?.player.armor ?? 0,
       stamina: snapshot.activeWeaponClassId === 'melee'
         ? snapshot.meleeStamina
@@ -477,7 +557,9 @@ export class App {
       timeLabel: this.#timeLabel(snapshot.timeOfDay),
       money: this.#currentSave?.player.money ?? 0,
       level: this.#currentSave?.player.level ?? 1,
-      xpProgress: 0,
+      xpProgress: this.#currentSave
+        ? levelProgress(progressionStateFromSave(this.#currentSave)).fraction * 100
+        : 0,
       ammo: snapshot.activeWeaponClassId === 'melee' ? 0 : snapshot.weaponAmmo,
       ammoReserve: snapshot.activeWeaponClassId === 'melee' ? 0 : snapshot.weaponAmmoReserve,
       weapon: `${snapshot.activeWeaponName} · T${snapshot.activeWeaponTier} · ${Math.round(snapshot.weaponDurability)}%${snapshot.weaponReloading ? ' · RELOADING' : ''}`,
@@ -645,7 +727,10 @@ export class App {
     }, ITEMS, outcome);
     save.player.money = penalty.cash;
     save.inventory = penalty.inventory;
-    save.player.health = 100 + Math.max(0, save.player.attributes.grit - 1) * 10;
+    save.player.health = calculateProgressionModifiers(
+      progressionStateFromSave(save),
+      save.ending,
+    ).maximumHealth;
     save.player.armor = 0;
     this.#pendingCrimes.clear();
     this.#policeVisibleSeconds = 0;
@@ -700,11 +785,23 @@ export class App {
     if (_panel === 'garage') {
       this.#renderGaragePanel();
     }
+    if (_panel === 'skills') {
+      this.#renderSkillsPanel();
+    }
+    if (_panel === 'inventory') {
+      this.#renderInventoryPanel();
+    }
+    if (_panel === 'properties') {
+      this.#renderEconomyPanel();
+    }
   }
 
   #closePanel(): void {
     this.#panelOpen = false;
     this.#garagePanel = null;
+    this.#skillsPanel = null;
+    this.#inventoryPanel = null;
+    this.#economyPanel = null;
     if (this.#world && !this.#paused) {
       this.#world.resume();
       this.#world.focus();
@@ -731,10 +828,499 @@ export class App {
     this.#garagePanel.draw(this.#garageState(save), this.#nearbyRegistrationCandidate(snapshot));
   }
 
+  #renderSkillsPanel(): void {
+    const host = this.#root.querySelector<HTMLElement>('[data-panel-body]');
+    const save = this.#currentSave;
+    if (!host || !save) return;
+    this.#skillsPanel = new SkillsPanel(host);
+    this.#skillsPanel.draw(progressionStateFromSave(save));
+  }
+
+  readonly #onSkillsPanelClick = (event: Event): void => {
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (!this.#panelOpen || panel?.dataset.panel !== 'skills') return;
+    const action = parseSkillsPanelAction(event.target);
+    if (!action) return;
+    const save = this.#currentSave;
+    if (!save) return;
+    const previousState = progressionStateFromSave(save);
+    const result = action.type === 'attribute'
+      ? purchaseAttribute(previousState, action.attributeId)
+      : purchaseSkill(previousState, action.skillId, SKILL_NODES);
+    if (!result.success) {
+      this.#ui.toast(result.reason, 'warning');
+      this.#renderSkillsPanel();
+      return;
+    }
+    const previousModifiers = calculateProgressionModifiers(previousState, save.ending);
+    const nextModifiers = calculateProgressionModifiers(result.state, save.ending);
+    applyProgressionStateToSave(save, result.state);
+    const capacity = updateBackpackGritCapacity(
+      save.inventory,
+      ITEMS,
+      result.state.attributes.grit,
+    );
+    if (capacity.success) save.inventory = capacity.inventory;
+    if (nextModifiers.maximumHealth > previousModifiers.maximumHealth) {
+      save.player.health = Math.min(
+        nextModifiers.maximumHealth,
+        save.player.health + nextModifiers.maximumHealth - previousModifiers.maximumHealth,
+      );
+    }
+    this.#applyProgressionRuntimeModifiers(nextModifiers);
+    const label = action.type === 'attribute'
+      ? `${action.attributeId[0]!.toUpperCase()}${action.attributeId.slice(1)} increased`
+      : `${SKILL_NODES.find((definition) => definition.id === action.skillId)?.name ?? 'Skill'} unlocked`;
+    this.#ui.toast(label, 'success');
+    this.#renderSkillsPanel();
+    void this.#saveNow(false);
+  };
+
+  #applyProgressionRuntimeModifiers(
+    modifiers = this.#currentSave
+      ? calculateProgressionModifiers(progressionStateFromSave(this.#currentSave), this.#currentSave.ending)
+      : null,
+  ): void {
+    const save = this.#currentSave;
+    if (!save || !modifiers) return;
+    const propertyModifiers = resolvePropertyServiceModifiers(
+      this.#economyState(save),
+      PROPERTIES,
+      save.ending,
+    );
+    this.#wantedSnapshot = this.#wantedRuntime?.setModifiers({
+      nerve: save.player.attributes.nerve,
+      ending: save.ending,
+      heatGainMultiplier: 1,
+      searchDurationMultiplier:
+        (save.player.unlockedSkills.includes('driving-heat-sink') ? 0.82 : 1)
+        * propertyModifiers.wantedSearchDurationMultiplier,
+    }) ?? this.#wantedSnapshot;
+    this.#world?.setProgressionModifiers?.({
+      meleeDamageMultiplier: modifiers.meleeDamageMultiplier,
+      weaponSpreadMultiplier: modifiers.weaponSpreadMultiplier,
+      reloadTimeMultiplier: modifiers.reloadTimeMultiplier,
+      vehicleStabilityMultiplier: modifiers.vehicleStabilityMultiplier,
+      vehicleBrakingMultiplier: modifiers.vehicleBrakingMultiplier,
+      vehicleDurabilityMultiplier: modifiers.vehicleDurabilityMultiplier,
+      enemySuspicionTimeMultiplier: modifiers.enemySuspicionTimeMultiplier,
+      crouchedNoiseMultiplier: save.player.unlockedSkills.includes('streetcraft-shadow') ? 0.8 : 1,
+    });
+  }
+
+  #tacticalInventoryState(save: Readonly<SaveGameV1>): TacticalInventoryState {
+    return {
+      backpack: cloneSavedInventory(save.inventory),
+      stash: save.stash.map((item) => ({ ...item })),
+      trunks: Object.fromEntries(
+        Object.entries(save.trunks).map(([id, trunk]) => [id, cloneSavedInventory(trunk)]),
+      ),
+      quickLoadout: {
+        firearms: [...save.quickLoadout.firearms],
+        melee: save.quickLoadout.melee,
+        consumables: [...save.quickLoadout.consumables],
+      },
+      recipeUnlocks: { unlockedRecipeIds: [...save.unlockedRecipes] },
+    };
+  }
+
+  #commitTacticalInventory(state: Readonly<TacticalInventoryState>): void {
+    const save = this.#currentSave;
+    if (!save) return;
+    const fields = tacticalInventorySaveFields(state);
+    save.inventory = fields.inventory;
+    save.stash = fields.stash;
+    save.trunks = fields.trunks;
+    save.quickLoadout = fields.quickLoadout;
+    save.unlockedRecipes = fields.unlockedRecipes;
+  }
+
+  #renderInventoryPanel(): void {
+    const host = this.#root.querySelector<HTMLElement>('[data-panel-body]');
+    const save = this.#currentSave;
+    if (!host || !save) return;
+    const state = this.#tacticalInventoryState(save);
+    if (this.#inventorySelection && !findTacticalItem(state, this.#inventorySelection)) {
+      this.#inventorySelection = null;
+    }
+    const snapshot = this.#lastWorldSnapshot;
+    const activeTrunkId = snapshot?.mode === 'vehicle' && snapshot.vehicleRegistered
+      && state.trunks[snapshot.vehicleInstanceId]
+      ? snapshot.vehicleInstanceId
+      : null;
+    this.#inventoryPanel = new InventoryPanel(host);
+    this.#inventoryPanel.draw({
+      tactical: state,
+      selectedInstanceId: this.#inventorySelection,
+      safehouseBench: snapshot?.interiorId === 'moreno-garage',
+      activeTrunkId,
+    });
+  }
+
+  readonly #onInventoryPanelClick = (event: Event): void => {
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (!this.#panelOpen || panel?.dataset.panel !== 'inventory') return;
+    const action = parseInventoryPanelAction(event.target);
+    if (!action) return;
+    const save = this.#currentSave;
+    if (!save) return;
+    let state = this.#tacticalInventoryState(save);
+    const selected = this.#inventorySelection ? findTacticalItem(state, this.#inventorySelection) : null;
+    let successLabel = '';
+    let failureReason: string | null = null;
+
+    if (action.type === 'select') {
+      this.#inventorySelection = action.instanceId;
+      this.#renderInventoryPanel();
+      return;
+    }
+
+    if (action.type === 'move' || action.type === 'rotate' || action.type === 'split') {
+      if (!selected || selected.container.kind !== 'backpack') {
+        failureReason = 'Select a backpack item first.';
+      } else if (action.type === 'move') {
+        const moved = moveItem(
+          state.backpack,
+          ITEMS,
+          selected.item.instanceId,
+          action.x,
+          action.y,
+          selected.item.rotated,
+        );
+        if (moved.success) {
+          state.backpack = moved.inventory;
+          successLabel = 'Item moved';
+        } else failureReason = moved.reason;
+      } else if (action.type === 'rotate') {
+        const moved = moveItem(
+          state.backpack,
+          ITEMS,
+          selected.item.instanceId,
+          selected.item.x,
+          selected.item.y,
+          !selected.item.rotated,
+        );
+        if (moved.success) {
+          state.backpack = moved.inventory;
+          successLabel = 'Item rotated';
+        } else failureReason = moved.reason;
+      } else {
+        const quantity = Math.floor(selected.item.quantity / 2);
+        const split = splitStack(
+          state.backpack,
+          ITEMS,
+          selected.item.instanceId,
+          quantity,
+          this.#nextM5Id(`${selected.item.definitionId}-split`),
+        );
+        if (split.success) {
+          state.backpack = split.inventory;
+          successLabel = 'Stack split';
+        } else failureReason = split.reason;
+      }
+    } else if (action.type === 'auto-sort') {
+      const sorted = autoSortTacticalContainer(state, ITEMS, action.container);
+      if (sorted.success) {
+        state = sorted.state;
+        successLabel = 'Container sorted';
+      } else failureReason = sorted.reason;
+    } else if (action.type === 'transfer' && selected) {
+      const transfer = transferTacticalItem(state, ITEMS, {
+        source: selected.container,
+        destination: action.destination,
+        instanceId: selected.item.instanceId,
+        quantity: selected.item.quantity,
+        destinationInstanceId: selected.item.instanceId,
+      });
+      if (transfer.success) {
+        state = transfer.state;
+        successLabel = `Moved to ${action.destination.kind}`;
+      } else failureReason = transfer.reason;
+    } else if (action.type === 'transfer-all') {
+      const transfer = transferAllTacticalItems(state, ITEMS, action.source, action.destination);
+      if (transfer.success) {
+        state = transfer.state;
+        successLabel = 'Items transferred';
+      } else failureReason = transfer.reason;
+    } else if (action.type === 'assign-loadout' || action.type === 'clear-loadout') {
+      const itemId = action.type === 'clear-loadout' ? null : selected?.item.instanceId ?? null;
+      const assigned = assignQuickLoadout(state, ITEMS, WEAPONS, action.slot, itemId);
+      if (assigned.success) {
+        state = assigned.state;
+        successLabel = itemId ? 'Quick loadout updated' : 'Quick slot cleared';
+      } else failureReason = assigned.reason;
+    } else if (action.type === 'use' && selected) {
+      if (selected.container.kind !== 'backpack') {
+        failureReason = 'Consumables must be carried before use.';
+      } else {
+        const used = useConsumable(state.backpack, ITEMS, selected.item.instanceId, 1);
+        if (used.success) {
+          state.backpack = used.inventory;
+          this.#applyConsumableEffect(used.usedDefinitionId);
+          successLabel = `${ITEMS.find((item) => item.id === used.usedDefinitionId)?.name ?? 'Item'} used`;
+        } else failureReason = used.reason;
+      }
+    } else if (action.type === 'repair' && selected) {
+      if (selected.container.kind !== 'backpack') {
+        failureReason = 'Repair targets and kits must be carried.';
+      } else {
+        const targetDefinition = ITEMS.find((item) => item.id === selected.item.definitionId);
+        const kitDefinitionId = targetDefinition?.category === 'weapon'
+          ? 'weapon-repair-kit'
+          : targetDefinition?.category === 'armor' ? 'armor-repair-plate' : null;
+        const kit = kitDefinitionId
+          ? state.backpack.items.find((item) => item.definitionId === kitDefinitionId)
+          : null;
+        if (!kit) failureReason = 'No compatible repair item is carried.';
+        else {
+          const repaired = repairItemWithConsumable(
+            state.backpack,
+            ITEMS,
+            selected.item.instanceId,
+            kit.instanceId,
+          );
+          if (repaired.success) {
+            state.backpack = repaired.inventory;
+            successLabel = `Restored ${Math.round(repaired.restoredDurability)} durability`;
+          } else failureReason = repaired.reason;
+        }
+      }
+    } else if (action.type === 'craft') {
+      const bench = this.#lastWorldSnapshot?.interiorId === 'moreno-garage' ? 'safehouse' : 'field';
+      const crafted = craftUnlockedRecipe(
+        state.backpack,
+        ITEMS,
+        RECIPES,
+        state.recipeUnlocks,
+        action.recipeId,
+        bench,
+        this.#nextM5Id(`crafted-${action.recipeId}`),
+      );
+      if (crafted.success) {
+        state.backpack = crafted.inventory;
+        successLabel = `${ITEMS.find((item) => item.id === crafted.produced.itemId)?.name ?? 'Item'} crafted`;
+      } else failureReason = crafted.reason;
+    } else if (action.type === 'transfer') {
+      failureReason = 'Select an item to transfer.';
+    }
+
+    if (failureReason) {
+      this.#ui.toast(failureReason, 'warning');
+      this.#renderInventoryPanel();
+      return;
+    }
+    this.#commitTacticalInventory(state);
+    if (this.#inventorySelection && !findTacticalItem(state, this.#inventorySelection)) {
+      this.#inventorySelection = null;
+    }
+    this.#syncWorldQuickLoadout();
+    this.#ui.toast(successLabel || 'Inventory updated', 'success');
+    this.#renderInventoryPanel();
+    void this.#saveNow(false);
+  };
+
+  readonly #onInventoryDragStart = (event: DragEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !target.matches('.inventory-item[data-instance-id]')) return;
+    const instanceId = target.dataset.instanceId;
+    if (!instanceId || !event.dataTransfer) return;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', instanceId);
+  };
+
+  readonly #onInventoryDragOver = (event: DragEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('[data-inventory-action="move"]')) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  };
+
+  readonly #onInventoryDrop = (event: DragEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('[data-inventory-action="move"]')) return;
+    const instanceId = event.dataTransfer?.getData('text/plain');
+    if (!instanceId) return;
+    event.preventDefault();
+    this.#inventorySelection = instanceId;
+    this.#onInventoryPanelClick(event);
+  };
+
+  #applyConsumableEffect(definitionId: string): void {
+    const save = this.#currentSave;
+    if (!save) return;
+    const maximumHealth = calculateProgressionModifiers(
+      progressionStateFromSave(save),
+      save.ending,
+    ).maximumHealth;
+    if (definitionId === 'medkit') {
+      const healingMultiplier = resolvePropertyServiceModifiers(
+        this.#economyState(save),
+        PROPERTIES,
+        save.ending,
+      ).foodHealingMultiplier;
+      save.player.health = Math.min(maximumHealth, save.player.health + 45 * healingMultiplier);
+    }
+    if (definitionId === 'armor-repair-plate') save.player.armor = Math.min(100, save.player.armor + 35);
+  }
+
+  #syncWorldQuickLoadout(): void {
+    const save = this.#currentSave;
+    if (!save) return;
+    const equipped = [
+      save.quickLoadout.melee,
+      ...save.quickLoadout.firearms,
+    ].flatMap((instanceId) => {
+      const item = save.inventory.items.find((candidate) => candidate.instanceId === instanceId);
+      return item ? [item.definitionId] : [];
+    });
+    this.#world?.setCombatLoadout?.(equipped);
+  }
+
+  #economyState(save: Readonly<SaveGameV1>): EconomyState {
+    return {
+      cash: save.player.money,
+      properties: Object.fromEntries(
+        Object.entries(save.properties).map(([id, property]) => [id, { ...property }]),
+      ),
+    };
+  }
+
+  #commitEconomy(state: Readonly<EconomyState>): void {
+    const save = this.#currentSave;
+    if (!save) return;
+    save.player.money = state.cash;
+    save.properties = Object.fromEntries(
+      Object.entries(state.properties).map(([id, property]) => [id, { ...property }]),
+    );
+  }
+
+  #renderEconomyPanel(): void {
+    const host = this.#root.querySelector<HTMLElement>('[data-panel-body]');
+    const save = this.#currentSave;
+    if (!host || !save) return;
+    const inventoryCanAccept = Object.fromEntries(ITEMS.map((definition) => {
+      const result = addItem(save.inventory, ITEMS, {
+        definitionId: definition.id,
+        quantity: 1,
+        instanceIdBase: `preview-${definition.id}`,
+      });
+      return [definition.id, result.success];
+    }));
+    this.#economyPanel = new EconomyPanel(host);
+    this.#economyPanel.draw({
+      economy: this.#economyState(save),
+      ending: save.ending,
+      progression: progressionStateFromSave(save),
+      inventoryCanAccept,
+    });
+  }
+
+  readonly #onEconomyPanelClick = (event: Event): void => {
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (!this.#panelOpen || panel?.dataset.panel !== 'properties') return;
+    const action = parseEconomyPanelAction(event.target);
+    if (!action) return;
+    const save = this.#currentSave;
+    if (!save) return;
+    let economy = this.#economyState(save);
+    let successLabel = '';
+    let failureReason: string | null = null;
+    if (action.type === 'buy-item') {
+      const definition = ITEMS.find((item) => item.id === action.itemId);
+      if (!definition) failureReason = 'Shop item is unavailable.';
+      else {
+        const added = addItem(save.inventory, ITEMS, {
+          definitionId: definition.id,
+          quantity: 1,
+          instanceIdBase: this.#nextM5Id(`shop-${definition.id}`),
+        });
+        if (!added.success) failureReason = added.reason;
+        else {
+          const purchased = purchaseShopItem(economy, definition, 1, {
+            market: action.market,
+            legitimateDiscountPercent: save.player.unlockedSkills.includes('streetcraft-silver-tongue') ? 10 : 0,
+            ending: save.ending,
+          });
+          if (!purchased.success) failureReason = purchased.reason;
+          else {
+            economy = purchased.state;
+            save.inventory = added.inventory;
+            successLabel = `${definition.name} purchased · $${purchased.cost.toLocaleString('en-US')}`;
+          }
+        }
+      }
+    } else if (action.type === 'purchase-property' || action.type === 'upgrade-property') {
+      const definition = PROPERTIES.find((property) => property.id === action.propertyId);
+      if (!definition) failureReason = 'Property is unavailable.';
+      else {
+        const transaction = action.type === 'purchase-property'
+          ? purchaseProperty(economy, definition)
+          : upgradeProperty(economy, definition);
+        if (!transaction.success) failureReason = transaction.reason;
+        else {
+          economy = transaction.state;
+          successLabel = action.type === 'purchase-property'
+            ? `${definition.name} purchased`
+            : `${definition.upgrade.name} installed`;
+        }
+      }
+    } else {
+      const collected = collectPropertyIncome(
+        economy,
+        PROPERTIES,
+        action.type === 'collect-all' ? 'all' : action.propertyId,
+        save.ending,
+      );
+      if (collected.amount <= 0) failureReason = 'No property income is ready.';
+      else {
+        economy = collected.state;
+        for (const grant of collected.grants) this.#grantItemToBackpackOrStash(grant.itemId, grant.quantity);
+        successLabel = `Collected $${collected.amount.toLocaleString('en-US')}`;
+      }
+    }
+    if (failureReason) {
+      this.#ui.toast(failureReason, 'warning');
+      this.#renderEconomyPanel();
+      return;
+    }
+    this.#commitEconomy(economy);
+    this.#applyProgressionRuntimeModifiers();
+    this.#ui.toast(successLabel, 'success');
+    this.#renderEconomyPanel();
+    void this.#saveNow(false);
+  };
+
+  #grantItemToBackpackOrStash(definitionId: string, quantity: number): void {
+    const save = this.#currentSave;
+    const definition = ITEMS.find((item) => item.id === definitionId);
+    if (!save || !definition || quantity <= 0) return;
+    const added = addItem(save.inventory, ITEMS, {
+      definitionId,
+      quantity,
+      instanceIdBase: this.#nextM5Id(`grant-${definitionId}`),
+    });
+    if (added.success) {
+      save.inventory = added.inventory;
+      return;
+    }
+    appendAbstractStash(save.stash, definition, quantity, () => this.#nextM5Id(`stash-${definitionId}`));
+  }
+
+  #nextM5Id(prefix: string): string {
+    this.#m5TransactionSequence += 1;
+    return `${prefix}-${this.#activeSlot ?? 0}-${this.#m5TransactionSequence}`;
+  }
+
   #garageState(save: Readonly<SaveGameV1>): GarageState {
+    const propertyModifiers = resolvePropertyServiceModifiers(
+      this.#economyState(save),
+      PROPERTIES,
+      save.ending,
+    );
     return {
       cash: save.player.money,
       trunkRowBonus: save.player.unlockedSkills.includes('driving-trunk-master') ? 1 : 0,
+      vehicleRepairDiscountPercent: propertyModifiers.vehicleRepairDiscountPercent,
       ownedVehicles: save.ownedVehicles,
       trunks: save.trunks,
     };
@@ -752,6 +1338,13 @@ export class App {
     return {
       instanceId: snapshot.vehicleInstanceId,
       definitionId: snapshot.vehicleClassId,
+      registrationDiscountPercent: this.#currentSave
+        ? resolvePropertyServiceModifiers(
+          this.#economyState(this.#currentSave),
+          PROPERTIES,
+          this.#currentSave.ending,
+        ).vehicleRegistrationDiscountPercent
+        : 0,
     };
   }
 
@@ -974,6 +1567,12 @@ export class App {
 
   #bindGlobalEvents(): void {
     this.#root.addEventListener('click', this.#onGaragePanelClick);
+    this.#root.addEventListener('click', this.#onSkillsPanelClick);
+    this.#root.addEventListener('click', this.#onInventoryPanelClick);
+    this.#root.addEventListener('click', this.#onEconomyPanelClick);
+    this.#root.addEventListener('dragstart', this.#onInventoryDragStart);
+    this.#root.addEventListener('dragover', this.#onInventoryDragOver);
+    this.#root.addEventListener('drop', this.#onInventoryDrop);
     globalThis.addEventListener('keydown', (event) => {
       if (!this.#world || event.repeat) return;
       if (event.code === 'Escape') {
@@ -1039,6 +1638,7 @@ export class App {
     this.#world = null;
     this.#mapRenderer = null;
     this.#mapModel = null;
+    this.#inventorySelection = null;
     this.#lastWorldSnapshot = null;
     this.#lastExteriorSnapshot = null;
     this.#audio.stopRadio();
@@ -1166,6 +1766,55 @@ export class App {
         this.#onWorldSnapshot(world.getSnapshot());
         return value;
       },
+      grantXp: (amount) => {
+        if (!Number.isSafeInteger(amount) || amount < 0) {
+          throw new RangeError('QA XP must be a non-negative safe integer');
+        }
+        const save = this.#currentSave;
+        if (!save) throw new Error('QA XP requires an active save');
+        const result = grantXp(progressionStateFromSave(save), amount);
+        applyProgressionStateToSave(save, result.state);
+        const capacity = updateBackpackGritCapacity(
+          save.inventory,
+          ITEMS,
+          result.state.attributes.grit,
+        );
+        if (capacity.success) save.inventory = capacity.inventory;
+        this.#applyProgressionRuntimeModifiers();
+        this.#onWorldSnapshot(world.getSnapshot());
+        return {
+          level: result.state.level,
+          xp: result.state.xp,
+          attributePoints: result.state.attributePoints,
+          skillPoints: result.state.skillPoints,
+        };
+      },
+      inventoryState: () => {
+        const save = this.#currentSave;
+        if (!save) throw new Error('QA inventory requires an active save');
+        return {
+          itemCount: save.inventory.items.length,
+          weightKg: inventoryWeight(save.inventory, ITEMS),
+          quickLoadout: {
+            firearms: [...save.quickLoadout.firearms],
+            melee: save.quickLoadout.melee,
+            consumables: [...save.quickLoadout.consumables],
+          },
+          unlockedRecipes: save.unlockedRecipes.length,
+        };
+      },
+      accruePropertyPayouts: (count = 1) => {
+        if (!Number.isSafeInteger(count) || count < 0 || count > 100) {
+          throw new RangeError('QA property payouts must be an integer from 0 through 100');
+        }
+        const save = this.#currentSave;
+        if (!save) throw new Error('QA property payouts require an active save');
+        const state = accruePropertyPayouts(this.#economyState(save), PROPERTIES, count);
+        this.#commitEconomy(state);
+        return Object.fromEntries(
+          Object.entries(state.properties).map(([id, property]) => [id, property.uncollectedPayouts]),
+        );
+      },
       setActiveVehicleClass: (classId) => {
         const definition = getVehicle(classId);
         if (!definition) throw new Error(`Unknown QA vehicle class: ${classId}`);
@@ -1236,7 +1885,13 @@ export class App {
         z: combatant.position.z,
       })),
       seedCombatEncounter: (x, z) => world.seedCombatEncounter({ x, z }),
-      selectWeapon: (weaponId) => world.selectCombatWeapon(weaponId),
+      selectWeapon: (weaponId) => {
+        // The QA hook deliberately exposes the complete authored arsenal so
+        // milestone acceptance can exercise weapon cycling independently of a
+        // player's persisted M5 quick-loadout choices.
+        world.setCombatLoadout(WORLD_COMBAT_WEAPON_ORDER);
+        return world.selectCombatWeapon(weaponId);
+      },
       damageCombatant: (targetId, amount) => {
         if (!Number.isFinite(amount) || amount < 0) {
           throw new RangeError('QA combat damage must be finite and non-negative');
@@ -1252,8 +1907,13 @@ export class App {
         if (!save || !runtime) throw new Error('QA wanted level requires an active save');
         const level = value as 0 | 1 | 2 | 3 | 4 | 5;
         const snapshot = world.getSnapshot();
+        // Acceptance scenarios need an exact, deterministic response level.
+        // Clear already-observed crimes and the previous ladder state first so
+        // a delayed pedestrian report cannot race this explicit QA command.
+        this.#pendingCrimes.clear();
+        const cleared = runtime.clear();
         const next = level === 0
-          ? runtime.clear()
+          ? cleared
           : runtime.escalate(
             level,
             { x: snapshot.position.x, z: snapshot.position.z },
@@ -1657,6 +2317,79 @@ export class App {
   }
 }
 
+function progressionStateFromSave(save: Readonly<SaveGameV1>): ProgressionState {
+  return {
+    level: save.player.level,
+    xp: save.player.xp,
+    attributePoints: save.player.attributePoints,
+    skillPoints: save.player.skillPoints,
+    attributes: { ...save.player.attributes },
+    unlockedSkills: [...save.player.unlockedSkills],
+  };
+}
+
+function applyProgressionStateToSave(save: SaveGameV1, state: Readonly<ProgressionState>): void {
+  save.player.level = state.level;
+  save.player.xp = state.xp;
+  save.player.attributePoints = state.attributePoints;
+  save.player.skillPoints = state.skillPoints;
+  save.player.attributes = { ...state.attributes };
+  save.player.unlockedSkills = [...state.unlockedSkills];
+}
+
+function cloneSavedInventory(inventory: Readonly<SavedInventory>): SavedInventory {
+  return {
+    gridWidth: inventory.gridWidth,
+    gridHeight: inventory.gridHeight,
+    maxWeightKg: inventory.maxWeightKg,
+    items: inventory.items.map((item) => ({ ...item })),
+  };
+}
+
+function findTacticalItem(
+  state: Readonly<TacticalInventoryState>,
+  instanceId: string,
+): { container: TacticalContainerRef; item: SavedItemInstance } | null {
+  const backpack = state.backpack.items.find((item) => item.instanceId === instanceId);
+  if (backpack) return { container: { kind: 'backpack' }, item: backpack };
+  const stash = state.stash.find((item) => item.instanceId === instanceId);
+  if (stash) return { container: { kind: 'stash' }, item: stash };
+  for (const [vehicleInstanceId, trunk] of Object.entries(state.trunks)) {
+    const item = trunk.items.find((candidate) => candidate.instanceId === instanceId);
+    if (item) return { container: { kind: 'trunk', vehicleInstanceId }, item };
+  }
+  return null;
+}
+
+function appendAbstractStash(
+  stash: SavedItemInstance[],
+  definition: (typeof ITEMS)[number],
+  quantity: number,
+  nextId: () => string,
+): void {
+  let remaining = quantity;
+  for (const item of stash) {
+    if (item.definitionId !== definition.id || item.quantity >= definition.maximumStack) continue;
+    const added = Math.min(remaining, definition.maximumStack - item.quantity);
+    item.quantity += added;
+    remaining -= added;
+    if (remaining === 0) return;
+  }
+  while (remaining > 0) {
+    const stackQuantity = Math.min(remaining, definition.maximumStack);
+    stash.push({
+      instanceId: nextId(),
+      definitionId: definition.id,
+      quantity: stackQuantity,
+      durability: 100,
+      x: 0,
+      y: 0,
+      rotated: false,
+    });
+    remaining -= stackQuantity;
+  }
+}
+
 function ensureStarterVehicle(save: SaveGameV1): void {
   if (save.worldFlags['starter-vehicle-granted']) return;
   if (save.ownedVehicles.length > 0) {
@@ -1686,6 +2419,47 @@ function ensureStarterVehicle(save: SaveGameV1): void {
   });
   save.trunks[instanceId] = createVehicleTrunk(definition, 0);
   save.worldFlags['starter-vehicle-granted'] = true;
+}
+
+function ensureM5StarterInventory(save: SaveGameV1): void {
+  const capacity = updateBackpackGritCapacity(save.inventory, ITEMS, save.player.attributes.grit);
+  if (capacity.success) save.inventory = capacity.inventory;
+  if (save.worldFlags['m5-starter-inventory-granted']) {
+    if (save.unlockedRecipes.length === 0) save.unlockedRecipes = RECIPES.map((recipe) => recipe.id);
+    return;
+  }
+  const grants = [
+    { definitionId: 'melee-tier-1', quantity: 1, instanceIdBase: 'starter-melee' },
+    { definitionId: 'pistol-tier-1', quantity: 1, instanceIdBase: 'starter-pistol' },
+    { definitionId: 'ammo-handgun', quantity: 24, instanceIdBase: 'starter-handgun-ammo' },
+    { definitionId: 'medkit', quantity: 1, instanceIdBase: 'starter-medkit' },
+    { definitionId: 'weapon-repair-kit', quantity: 1, instanceIdBase: 'starter-weapon-repair' },
+    { definitionId: 'component-scrap', quantity: 6, instanceIdBase: 'starter-scrap' },
+    { definitionId: 'component-cloth', quantity: 6, instanceIdBase: 'starter-cloth' },
+    { definitionId: 'component-chemicals', quantity: 6, instanceIdBase: 'starter-chemicals' },
+    { definitionId: 'component-electronics', quantity: 4, instanceIdBase: 'starter-electronics' },
+    { definitionId: 'component-powder', quantity: 6, instanceIdBase: 'starter-powder' },
+  ] as const;
+  for (const grant of grants) {
+    if (save.inventory.items.some((item) => item.instanceId === grant.instanceIdBase)) continue;
+    const added = addItem(save.inventory, ITEMS, grant);
+    if (added.success) {
+      save.inventory = added.inventory;
+      continue;
+    }
+    const definition = ITEMS.find((item) => item.id === grant.definitionId);
+    if (definition) appendAbstractStash(save.stash, definition, grant.quantity, () => grant.instanceIdBase);
+  }
+  const melee = save.inventory.items.find((item) => item.instanceId === 'starter-melee');
+  const pistol = save.inventory.items.find((item) => item.instanceId === 'starter-pistol');
+  const medkit = save.inventory.items.find((item) => item.instanceId === 'starter-medkit');
+  save.quickLoadout = {
+    firearms: [pistol?.instanceId ?? null, null],
+    melee: melee?.instanceId ?? null,
+    consumables: [medkit?.instanceId ?? null, null],
+  };
+  save.unlockedRecipes = RECIPES.map((recipe) => recipe.id);
+  save.worldFlags['m5-starter-inventory-granted'] = true;
 }
 
 function worldVehicleFromSave(save: Readonly<SaveGameV1>): WorldVehicleInitialization {

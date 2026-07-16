@@ -53,9 +53,23 @@ describe('save validation and format', () => {
   it('round-trips exports and rejects malformed JSON', () => {
     const save = createInitialSaveGame(3, 'feminine', { timestamp: 7 });
     save.player.money = 250;
+    save.inventory.items.push({
+      instanceId: 'carry-sidearm',
+      definitionId: 'test-sidearm',
+      quantity: 1,
+      durability: 87,
+      x: 0,
+      y: 0,
+      rotated: false,
+    });
+    save.quickLoadout.firearms[0] = 'carry-sidearm';
+    save.unlockedRecipes.push('test-recipe');
     const serialized = serializeSaveGame(save);
 
-    const parsed = parseSaveGame(serialized);
+    const parsed = parseSaveGame(serialized, {
+      itemIds: new Set(['test-sidearm']),
+      recipeIds: new Set(['test-recipe']),
+    });
     expect(parsed.success).toBe(true);
     if (parsed.success) {
       expect(parsed.save).toEqual(save);
@@ -87,23 +101,128 @@ describe('save validation and format', () => {
     }
   });
 
-  it('migrates Preview 1 schema saves with a clear wanted snapshot', () => {
+  it('migrates Preview 1 schema saves through v3 with M4 and M5 defaults', () => {
     const current = createInitialSaveGame(2, 'feminine');
     const legacy: Record<string, unknown> = { ...current, schemaVersion: 1 };
     delete legacy.wanted;
+    delete legacy.quickLoadout;
+    delete legacy.unlockedRecipes;
 
     const migrated = migrateSaveGame(legacy);
 
     expect(migrated.success).toBe(true);
     if (migrated.success) {
       expect(migrated.migratedFrom).toBe(1);
-      expect(migrated.save.schemaVersion).toBe(2);
+      expect(migrated.save.schemaVersion).toBe(3);
       expect(migrated.save.wanted).toEqual({
         level: 0,
         phase: 'clear',
         heat: 0,
         searchSecondsRemaining: 0,
       });
+      expect(migrated.save.quickLoadout).toEqual({
+        firearms: [null, null],
+        melee: null,
+        consumables: [null, null],
+      });
+      expect(migrated.save.unlockedRecipes).toEqual([]);
+    }
+  });
+
+  it('migrates Preview 2 schema saves with independent M5 defaults', () => {
+    const current = createInitialSaveGame(1, 'masculine');
+    const legacy: Record<string, unknown> = {
+      ...current,
+      schemaVersion: 2,
+      wanted: {
+        level: 2,
+        phase: 'pursuit',
+        heat: 41,
+        searchSecondsRemaining: 0,
+      },
+    };
+    delete legacy.quickLoadout;
+    delete legacy.unlockedRecipes;
+
+    const migrated = migrateSaveGame(legacy);
+
+    expect(migrated.success).toBe(true);
+    if (migrated.success) {
+      expect(migrated.migratedFrom).toBe(2);
+      expect(migrated.save.schemaVersion).toBe(3);
+      expect(migrated.save.wanted).toEqual(legacy.wanted);
+      expect(migrated.save.quickLoadout).toEqual({
+        firearms: [null, null],
+        melee: null,
+        consumables: [null, null],
+      });
+      expect(migrated.save.unlockedRecipes).toEqual([]);
+      migrated.save.quickLoadout.firearms[0] = 'changed-after-migration';
+      migrated.save.unlockedRecipes.push('changed-after-migration');
+      expect(legacy).not.toHaveProperty('quickLoadout');
+      expect(legacy).not.toHaveProperty('unlockedRecipes');
+    }
+  });
+
+  it('validates quick-loadout references and unlocked recipe ids', () => {
+    const save = createInitialSaveGame(1, 'masculine');
+    save.inventory.items.push({
+      instanceId: 'carried-1',
+      definitionId: 'sidearm',
+      quantity: 1,
+      durability: 100,
+      x: 0,
+      y: 0,
+      rotated: false,
+    });
+    save.quickLoadout.firearms = ['carried-1', 'carried-1'];
+    save.quickLoadout.melee = 'stash-only';
+    save.quickLoadout.consumables = ['', null];
+    save.stash.push({
+      instanceId: 'stash-only',
+      definitionId: 'knife',
+      quantity: 1,
+      durability: 100,
+      x: 0,
+      y: 0,
+      rotated: false,
+    });
+    save.unlockedRecipes = ['known-recipe', 'known-recipe', 'unknown-recipe'];
+
+    const result = validateSaveGame(save, {
+      itemIds: new Set(['sidearm', 'knife']),
+      recipeIds: new Set(['known-recipe']),
+    });
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.stringContaining('quickLoadout cannot assign'),
+        expect.stringContaining('quickLoadout reference "stash-only"'),
+        expect.stringContaining('quickLoadout.consumables[0]'),
+        expect.stringContaining('unlockedRecipes[1] must be unique'),
+        expect.stringContaining('unknown-recipe'),
+      ]));
+    }
+  });
+
+  it('does not launder malformed v2 M5 fields during migration', () => {
+    const current = createInitialSaveGame(1, 'masculine');
+    const malformed = {
+      ...current,
+      schemaVersion: 2,
+      quickLoadout: null,
+      unlockedRecipes: null,
+    };
+
+    const migrated = migrateSaveGame(malformed);
+
+    expect(migrated.success).toBe(false);
+    if (!migrated.success) {
+      expect(migrated.errors).toEqual(expect.arrayContaining([
+        expect.stringContaining('quickLoadout must be an object'),
+        expect.stringContaining('unlockedRecipes must be an array'),
+      ]));
     }
   });
 

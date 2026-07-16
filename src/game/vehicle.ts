@@ -60,6 +60,9 @@ export interface VehicleStateOptions {
 export interface VehicleSurfaceState {
   /** Zero is dry and one is the authored maximum rain intensity. */
   readonly rainIntensity?: number;
+  readonly stabilityMultiplier?: number;
+  readonly brakingMultiplier?: number;
+  readonly durabilityMultiplier?: number;
 }
 
 export function createVehicleState(
@@ -116,6 +119,14 @@ function moveTowards(current: number, target: number, maximumDelta: number): num
   return current + Math.sign(target - current) * maximumDelta;
 }
 
+function positiveMultiplier(value: number | undefined, label: string): number {
+  const resolved = value ?? 1;
+  if (!Number.isFinite(resolved) || resolved <= 0) {
+    throw new RangeError(`${label} multiplier must be finite and positive`);
+  }
+  return resolved;
+}
+
 function applyRollingDrag(
   state: VehicleSimulationState,
   deltaSeconds: number,
@@ -135,6 +146,9 @@ export function stepVehicle(
   const dt = Math.min(0.05, Math.max(0, deltaSeconds));
   const throttle = Math.min(1, Math.max(-1, input.moveForward));
   const rainIntensity = Math.min(1, Math.max(0, surface.rainIntensity ?? 0));
+  const stabilityMultiplier = positiveMultiplier(surface.stabilityMultiplier, 'vehicle stability');
+  const brakingMultiplier = positiveMultiplier(surface.brakingMultiplier, 'vehicle braking');
+  const durabilityMultiplier = positiveMultiplier(surface.durabilityMultiplier, 'vehicle durability');
   const profile = requireVehicleDriveProfile(state.vehicleClassId);
   const handling = profile.arcadeHandling;
   const condition = vehiclePerformanceModifiers(state.integrity);
@@ -150,7 +164,7 @@ export function stepVehicle(
   const maximumReverseSpeed = vehicleReverseSpeedMetersPerSecond(profile) * condition.topSpeed;
   // Rain is intentionally mild: enough to lengthen braking and soften turn-in,
   // without making the arcade handling unpredictable on touch controls.
-  const roadGrip = Math.min(1.2, (1 - rainIntensity * 0.14) * profile.grip * condition.grip * gripUpgrade);
+  const roadGrip = Math.min(1.45, (1 - rainIntensity * 0.14) * profile.grip * condition.grip * gripUpgrade * stabilityMultiplier);
 
   if (throttle > 0 && condition.engineOutput > 0) {
     const acceleration = profile.accelerationMetersPerSecondSquared * condition.engineOutput * engineUpgrade;
@@ -161,6 +175,7 @@ export function stepVehicle(
         * condition.braking
         * roadGrip
         * brakeUpgrade
+        * brakingMultiplier
         * brakeMassResponse;
       state.speed = Math.max(0, state.speed + braking * throttle * dt);
     } else if (condition.engineOutput > 0) {
@@ -245,7 +260,8 @@ export function stepVehicle(
     const collisionMassScale = Math.sqrt(profile.massKg / REFERENCE_VEHICLE_MASS_KG);
     const equivalentImpactSpeed = collisionResult.normalSpeedMetersPerSecond
       * collisionMassScale
-      * armorDamageMultiplier;
+      * armorDamageMultiplier
+      / durabilityMultiplier;
     const damage = applyVehicleDamage(state.integrity, profile, {
       kind: 'collision',
       impactSpeedMetersPerSecond: equivalentImpactSpeed,

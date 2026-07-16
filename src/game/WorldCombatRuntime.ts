@@ -38,6 +38,8 @@ export interface WorldCombatTickOptions {
   readonly reliabilityRoll: number;
   readonly spreadMultiplier?: number;
   readonly meleeDamageMultiplier?: number;
+  /** A value below one shortens the authored reload duration. */
+  readonly reloadTimeMultiplier?: number;
 }
 
 export interface WorldCombatFrame {
@@ -66,6 +68,7 @@ export interface WorldCombatDefenseResult {
 export class WorldCombatRuntime {
   private readonly definitions = WORLD_COMBAT_WEAPON_ORDER.map(requireCombatWeaponDefinition);
   private readonly weaponStates = new Map<string, CombatWeaponState>();
+  private equippedWeaponIds = new Set<string>(this.definitions.map((definition) => definition.id));
   private activeIndex = 1;
   private melee = createMeleeCombatState();
 
@@ -92,14 +95,18 @@ export class WorldCombatRuntime {
 
     let weaponChanged = false;
     if (input.cycleWeapon) {
-      this.activeIndex = (this.activeIndex + 1) % this.definitions.length;
+      this.activeIndex = this.nextEquippedIndex(this.activeIndex);
       weaponChanged = true;
     }
     const definition = this.activeDefinition;
     let state = this.requireWeaponState(definition);
     let reloadStarted = false;
     if (input.reload) {
-      const reload = beginCombatWeaponReload(definition, state);
+      const reloadTimeMultiplier = options.reloadTimeMultiplier ?? 1;
+      if (!Number.isFinite(reloadTimeMultiplier) || reloadTimeMultiplier <= 0) {
+        throw new RangeError('reload time multiplier must be finite and positive');
+      }
+      const reload = beginCombatWeaponReload(definition, state, 1 / reloadTimeMultiplier);
       state = reload.state;
       reloadStarted = reload.started;
       this.weaponStates.set(definition.id, state);
@@ -149,6 +156,19 @@ export class WorldCombatRuntime {
     return this.snapshot();
   }
 
+  /** Restricts ordinary cycling to the persisted quick loadout while retaining QA direct selection. */
+  public setLoadout(weaponIds: readonly string[]): WorldCombatSnapshot {
+    const available = new Set(this.definitions.map((definition) => definition.id));
+    const equipped = [...new Set(weaponIds)].filter((id) => available.has(id));
+    if (equipped.length === 0) equipped.push('melee-tier-1');
+    this.equippedWeaponIds = new Set(equipped);
+    if (!this.equippedWeaponIds.has(this.activeDefinition.id)) {
+      const firstIndex = this.definitions.findIndex((definition) => this.equippedWeaponIds.has(definition.id));
+      this.activeIndex = firstIndex >= 0 ? firstIndex : 0;
+    }
+    return this.snapshot();
+  }
+
   public resolveIncomingDamage(
     amount: number,
     attack: 'melee' | 'projectile',
@@ -177,7 +197,7 @@ export class WorldCombatRuntime {
       weaponState: { ...this.requireWeaponState(weapon) },
       melee: { ...this.melee },
       activeIndex: this.activeIndex,
-      weaponCount: this.definitions.length,
+      weaponCount: this.equippedWeaponIds.size,
     };
   }
 
@@ -191,5 +211,14 @@ export class WorldCombatRuntime {
     const state = this.weaponStates.get(definition.id);
     if (!state) throw new Error(`Missing world combat state for ${definition.id}`);
     return state;
+  }
+
+  private nextEquippedIndex(currentIndex: number): number {
+    for (let offset = 1; offset <= this.definitions.length; offset += 1) {
+      const candidate = (currentIndex + offset) % this.definitions.length;
+      const definition = this.definitions[candidate];
+      if (definition && this.equippedWeaponIds.has(definition.id)) return candidate;
+    }
+    return currentIndex;
   }
 }
