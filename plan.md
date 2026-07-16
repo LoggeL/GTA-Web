@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 21:04 CEST
+Last updated: 2026-07-16 21:55 CEST
 Plan status: Active  
-Current focus: M7 Release Candidate publication and live desktop/mobile smoke
+Current focus: M8 persistence UI, performance optimization, soak, and final release
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -289,11 +289,18 @@ Acceptance: generated assets are local and credited in the progress log; audio u
 
 Completion evidence: all three stations and nine authored procedural tracks now share one authoritative catalog, advance automatically, retain station/track state across vehicle entry/exit, and expose desktop/touch controls plus persistent HUD text. The independent master/music/SFX/UI/ambience mixer, explicit user-gesture unlock, suspend/resume lifecycle, five bounded long-lived world voices, and procedural engine/rain/city/siren/UI/weapon/impact/pickup/cash/dialogue cues are integrated without per-frame allocation growth. Deterministic speed/impact camera shake obeys its independent intensity and exact zero/Reduced Motion gates. The generated 1200×630 social card, canonical/Open Graph/Twitter metadata, favicon, signature/dimension/reference checks, semantic meters/live regions, modal focus trap/inert/return behavior, visible focus, UI/subtitle scaling, high contrast, safe areas, touch-only Pause/Jobs/Map/Inventory/Settings routes, compact 667×375 objective, 44 px targets, and portrait input/audio pause all passed. `npm run check` passed 77 test files / 497 Vitest tests plus 5 release tests; focused M7 Playwright passed 4 applicable scenarios / 2 intentional skips; the complete resource-bounded Chromium matrix passed 27 applicable scenarios / 19 intentional device skips. The production artifact is 1.47 MiB total / 0.65 MiB compressed.
 
-### M8 — Persistence, QA, optimization, and release — `PENDING`
+### M8 — Persistence, QA, optimization, and release — `IN PROGRESS`
 
-- [ ] Three-slot IndexedDB save, autosave/backup/migrations/export/import and corruption/quota handling.
-- [ ] Unit/integration/e2e suites, cross-browser checks, memory/performance/load budgets, final copy/content audit.
-- [ ] Production build and GitHub Actions Pages workflow; repository creation, push, deploy, live URL smoke test.
+- [x] Harden the save core with serialized per-slot writes, atomic active/last-known-good rotation, checksummed emergency exports, migrations, structured storage/read errors, and future-version preservation.
+- [ ] Present truthful three-slot states and real save previews in the UI: empty, ready, recovered, corrupt, and unsupported-version saves must expose only safe actions.
+- [ ] Integrate JSON export/import review and destination selection, persistent quota/storage/session-only warnings, and downloadable emergency recovery data outside the transient HUD toast layer.
+- [ ] Coalesce overlapping saves and restrict autosaves to safe world states; advance the autosave clock only after a successful write and retain a bounded retry path after failure.
+- [ ] Apply the intended low-quality base resolution and skip dry-weather rain-particle uploads; then profile collision/obstruction and ambient-instance updates before making further render-loop changes.
+- [ ] Split performance QA into realistic travel/adjacent-cell FPS measurement and a separate far-teleport residency/pool/heap stress course; record renderer, buffer, quality, adaptive-level, and timing diagnostics before assertions.
+- [x] Add cross-browser release jobs, production asset/metadata/bundle gates, bounded performance instrumentation, and WebGL context loss/recovery coverage.
+- [ ] Complete persistence unit/UI/e2e coverage for import/export, backup recovery, corruption, future-version, quota, and IndexedDB-unavailable cases.
+- [ ] Pass the complete unit/integration/browser matrix, declared 60/30 FPS acceptance, a 20-minute desktop/mobile soak, memory/pool bounds, and the final copy/content/accessibility audit.
+- [ ] Publish the passing Final build through GitHub Pages, verify the exact live assets and desktop/mobile gameplay, record the final evidence here, and tag the verified source commit.
 
 Acceptance: all checks below pass, deployment workflow is green, live GitHub Pages playthrough reaches gameplay on desktop and mobile viewport, assets stream under the repository base path, and the final URL is recorded here.
 
@@ -353,16 +360,17 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 20:18 | Preview 3 / M7 | Published and tagged the complete M6 campaign/content build, then advanced the ground-truth focus to M7. Live desktop smoke reached a fresh save, rendered gameplay, and opened the complete Jobs board. A separate production-only Playwright course passed at 844×390 with touch emulation, nine bounded action buttons, the 12-mission/5-activity/3-collection Jobs board, portrait rotation recovery, exact deployed JS/CSS hashes, and zero console, page, or failed-request errors. | Source `238f29a0212c22c19253d3444ffefe50e7d0abcb`; tag `preview-3`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29522788866); [live preview](https://loggel.github.io/GTA-Web/?preview=3); checked JS `index-C7E-9w1U.js` / CSS `index-BSVQ3fo5.css`; live mobile smoke 1/1 in 3.5 s; 1.21 MiB artifact / 0.41 MiB compressed; `npm run check` 76 files / 480 tests; full Playwright 23 passed / 17 intentional skips |
 | 2026-07-16 21:04 | M7 | Completed and accepted audio, radio, procedural cues, independent camera shake, generated social art, publishing metadata, responsive touch paths, portrait safety, and the full accessibility/presentation pass. The regression gate exposed and corrected a real nested-modal inert/focus ordering defect; older gameplay tests now explicitly return focus to the 3D surface after verifying accessible launcher focus restoration. | `npm run check`: 77 files / 497 Vitest tests + 5 release tests; focused M7 Playwright: 4 passed / 2 intentional skips; complete Chromium matrix: 27 passed / 19 intentional skips; release asset graph green; 1.47 MiB artifact / 0.65 MiB compressed; M7 marked `COMPLETE` |
 | 2026-07-16 21:04 | M8 foundation | Hardened the save core ahead of the final milestone: per-slot write serialization, atomic active/last-known-good rotation, checksummed emergency exports, structured quota/storage errors, safe corruption recovery, and non-overwrite preservation of valid future-version saves. Added release asset-reference/budget gates, Firefox/WebKit smoke projects, and bounded performance/context-recovery harnesses; acceptance remains open pending UI surfacing, cross-browser execution, performance remediation, and final release. | Save persistence tests 20/20; WebGL context recovery audit green; current performance audit identifies desktop/mobile frame-budget work still required; M8 remains `PENDING` until the Release Candidate is live |
+| 2026-07-16 21:55 | Release Candidate / M8 | Published and tagged the fully accepted M7 build, then advanced the ground-truth focus to M8. The release gate keeps full desktop/mobile WebGL gameplay in Chromium and deterministic browser-neutral menu/settings/audio/persistence coverage in headless Firefox/WebKit; the complete 3D route also remains part of the local all-engine gate. Live desktop created a fresh save, entered a vehicle, changed radio stations, and opened Settings. Live 844×390 touch emulation created a second fresh save, exposed nine actions, opened all 12 story jobs and five activities, paused in portrait, and recovered in landscape. | Source `3734268f3fdc53af7eb9ddb9d17f94123b5d46a6`; tag `release-candidate`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29529173474); [live RC](https://loggel.github.io/GTA-Web/?rc=release-candidate); exact deployed JS `index-CvHlgKlp.js`, Three.js `three-DUbjvPP5.js`, and CSS `index-DEWhMpJi.css`; social SHA-256 `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`; metadata green; zero desktop/mobile console errors; 1.47 MiB artifact / 0.65 MiB compressed; `npm run check` 77 files / 497 tests + 5 release tests |
 
 ## Release record
 
 - Repository: `https://github.com/LoggeL/GTA-Web`
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
-- Current preview: Preview 3 (`preview-3`)
-- Release commit: `238f29a0212c22c19253d3444ffefe50e7d0abcb`
-- Deployment workflow: [GitHub Pages run 29522788866 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29522788866)
+- Current preview: Release Candidate (`release-candidate`)
+- Release commit: `3734268f3fdc53af7eb9ddb9d17f94123b5d46a6`
+- Deployment workflow: [GitHub Pages run 29529173474 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29529173474)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.41 MiB at Preview 3 gate
-- Published artifact size: 1.21 MiB at Preview 3 gate
-- Final `npm run check`: pending for M8; Preview 3 gate passed with 76 files / 480 tests
-- Final browser smoke test: pending for M8; Preview 3 live smoke passed a fresh desktop start and complete Jobs-board review plus a production-only 844×390 touch course with nine bounded actions, complete campaign/content counts, portrait rotation recovery, checked repository-base JS/CSS hashes, and zero console, page, or failed-request errors
+- Current compressed shell: 0.65 MiB at Release Candidate gate
+- Published artifact size: 1.47 MiB at Release Candidate gate
+- Final `npm run check`: pending for M8; Release Candidate gate passed with 77 files / 497 tests plus 5 release tests
+- Final browser smoke test: pending for M8; Release Candidate CI passed the production build, full Chromium desktop/mobile gameplay, and deterministic Firefox/WebKit UI compatibility gates. The live RC passed fresh desktop and touch saves, vehicle/radio/settings, nine touch actions, complete campaign/activity counts, portrait pause/recovery, exact JS/Three.js/CSS/social bytes, publishing metadata, and zero desktop/mobile console errors.
