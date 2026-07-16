@@ -22,7 +22,7 @@ async function interact(page: Page, isMobile: boolean): Promise<void> {
     await page.keyboard.press('e');
     return;
   }
-  const button = page.getByLabel('Touch controls').getByRole('button', { name: 'Interact' });
+  const button = page.locator('[data-touch-action="interact"]');
   await button.dispatchEvent('pointerdown');
   await page.waitForTimeout(45);
   await button.dispatchEvent('pointerup');

@@ -24,6 +24,9 @@ export function toWorldInputState(frame: InputFrame): WorldInputState {
   input.moveForward = frame.axes.throttle.value;
   input.aim = frame.commands.vehicleAim.pressed;
   input.handbrake = frame.commands.handbrake.pressed;
+  input.vehiclePrimaryAction = frame.commands.vehiclePrimaryAction.pressed;
+  input.vehicleCameraToggle = frame.commands.cameraToggle.justPressed;
+  input.vehicleReset = frame.commands.vehicleReset.justPressed;
   input.interact = frame.commands.enterExit.justPressed;
   return input;
 }

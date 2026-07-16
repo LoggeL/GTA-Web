@@ -13,6 +13,16 @@ function isUnifiedSink(
   return typeof sink !== 'function';
 }
 
+function capturePointerIfAvailable(element: HTMLElement, pointerId: number): void {
+  try {
+    element.setPointerCapture(pointerId);
+  } catch (error) {
+    if (!(error instanceof DOMException) || error.name !== 'NotFoundError') {
+      throw error;
+    }
+  }
+}
+
 export class TouchInput {
   readonly #stick: HTMLElement;
   readonly #knob: HTMLElement;
@@ -66,7 +76,7 @@ export class TouchInput {
   readonly #onStickDown = (event: PointerEvent): void => {
     event.preventDefault();
     this.#stickPointer = event.pointerId;
-    this.#stick.setPointerCapture(event.pointerId);
+    capturePointerIfAvailable(this.#stick, event.pointerId);
     this.#updateStick(event);
   };
 
@@ -89,7 +99,7 @@ export class TouchInput {
     this.#cameraPointer = event.pointerId;
     this.#cameraX = event.clientX;
     this.#cameraY = event.clientY;
-    this.#camera.setPointerCapture(event.pointerId);
+    capturePointerIfAvailable(this.#camera, event.pointerId);
   };
 
   readonly #onCameraMove = (event: PointerEvent): void => {

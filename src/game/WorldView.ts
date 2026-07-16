@@ -48,16 +48,24 @@ import type {
   ShoulderSide,
   WorldInputState,
   WorldSnapshot,
+  WorldVehicleInitialization,
   WorldViewOptions,
 } from './types';
 import {
-  VEHICLE_RADIUS,
   createVehicleState,
   findVehicleExitPoint,
   stepVehicle,
   vehicleCanExit,
 } from './vehicle';
 import type { VehicleSimulationState } from './vehicle';
+import { createUniqueStolenVehicleIdentity } from './vehicleIdentity';
+import { requireVehicleDriveProfile } from './vehicleProfiles';
+import {
+  isVehicleRecoveryTransformSafe,
+  unstuckVehicle,
+  uprightVehicle,
+} from './vehicleRecovery';
+import type { VehicleRecoveryTransform } from './vehicleRecovery';
 import { AvatarVisual, RainField, VehicleVisual, createCityVisuals } from './visuals';
 import type { CityVisualBundle } from './visuals';
 import type { CityVisualStreamingSnapshot } from './visuals';
@@ -65,6 +73,7 @@ import type { CityVisualStreamingSnapshot } from './visuals';
 const DEFAULT_CAMERA_YAW = Math.PI * 0.14;
 const DEFAULT_CAMERA_PITCH = 0.42;
 const CAMERA_TARGET_HEIGHT = 1.48;
+const TRAFFIC_INTERACTION_PREFIX = 'traffic:';
 
 function clampAxis(value: number): number {
   return Math.max(-1, Math.min(1, value));
@@ -95,6 +104,15 @@ function copyInput(target: WorldInputState, source: Partial<WorldInputState>): v
   if (source.handbrake !== undefined) {
     target.handbrake = source.handbrake;
   }
+  if (source.vehiclePrimaryAction !== undefined) {
+    target.vehiclePrimaryAction = source.vehiclePrimaryAction;
+  }
+  if (source.vehicleCameraToggle !== undefined) {
+    target.vehicleCameraToggle ||= source.vehicleCameraToggle;
+  }
+  if (source.vehicleReset !== undefined) {
+    target.vehicleReset ||= source.vehicleReset;
+  }
   if (source.interact !== undefined) {
     target.interact ||= source.interact;
   }
@@ -118,6 +136,19 @@ export class WorldView {
   private readonly mount: HTMLElement;
   private readonly player: PlayerSimulationState;
   private readonly vehicle: VehicleSimulationState;
+  private activeVehicleInstanceId: string;
+  private activeVehicleRegistered: boolean;
+  private activeVehicleName: string;
+  private activeVehiclePaint: string;
+  private vehicleClaimSequence = 0;
+  private readonly knownVehicleInstanceIds: Set<string>;
+  private vehicleSirenActive = false;
+  private vehicleCloseCamera = false;
+  private lastSafeVehicleTransform: VehicleRecoveryTransform = {
+    position: { ...VEHICLE_SPAWN },
+    heading: 0,
+  };
+  private tippedVehicleSeconds = 0;
   private readonly environment: EnvironmentState;
   private readonly externalInput = createWorldInputState();
   private readonly cityVisuals: CityVisualBundle;
@@ -167,7 +198,25 @@ export class WorldView {
     this.exteriorCollisions = this.layout.collisions;
     this.player = createPlayerState(options.initialPosition ?? PLAYER_SPAWN);
     this.player.heading = options.initialHeading ?? 0;
-    this.vehicle = createVehicleState(VEHICLE_SPAWN);
+    const initialVehicle = options.initialVehicle ?? {
+      instanceId: 'moreno-rook',
+      classId: 'compact',
+      registered: true,
+    };
+    this.vehicle = createVehicleState(VEHICLE_SPAWN, initialVehicle.classId, {
+      integrity: initialVehicle.integrity,
+      upgrades: initialVehicle.upgrades,
+    });
+    this.activeVehicleInstanceId = initialVehicle.instanceId;
+    this.knownVehicleInstanceIds = new Set([
+      ...(options.reservedVehicleInstanceIds ?? []),
+      initialVehicle.instanceId,
+    ]);
+    this.activeVehicleRegistered = initialVehicle.registered;
+    this.activeVehicleName = initialVehicle.instanceId === 'moreno-rook'
+      ? 'Moreno Rook'
+      : requireVehicleDriveProfile(initialVehicle.classId).name;
+    this.activeVehiclePaint = initialVehicle.paint ?? 'factory';
     this.environment = createEnvironmentState({
       timeOfDay: options.timeOfDay,
       rainIntensity: options.rainIntensity,
@@ -239,6 +288,7 @@ export class WorldView {
     this.citySimulation.attach(this.scene);
     this.avatarVisual.sync(this.player);
     this.vehicleVisual.sync(this.vehicle, 0);
+    this.activeVehiclePaint = this.vehicleVisual.setPaint(this.activeVehiclePaint);
 
     this.controls = options.enableDefaultControls === false
       ? null
@@ -341,6 +391,48 @@ export class WorldView {
     return this.citySimulation.getSnapshot();
   }
 
+  public applyActiveVehicleRecord(
+    record: Readonly<WorldVehicleInitialization>,
+  ): boolean {
+    this.assertAlive();
+    if (record.instanceId !== this.activeVehicleInstanceId) {
+      return false;
+    }
+    this.configureActiveVehicleRecord(record);
+    return true;
+  }
+
+  /** Selects a stored garage vehicle as the vehicle waiting outside. */
+  public selectActiveVehicleRecord(
+    record: Readonly<WorldVehicleInitialization>,
+  ): void {
+    this.assertAlive();
+    this.activeVehicleInstanceId = record.instanceId;
+    this.knownVehicleInstanceIds.add(record.instanceId);
+    this.configureActiveVehicleRecord(record);
+  }
+
+  private configureActiveVehicleRecord(
+    record: Readonly<WorldVehicleInitialization>,
+  ): void {
+    const heading = this.vehicle.heading;
+    const occupied = this.vehicle.occupied;
+    const configured = createVehicleState(this.vehicle.position, record.classId, {
+      integrity: record.integrity,
+      upgrades: record.upgrades,
+    });
+    Object.assign(this.vehicle, configured);
+    this.vehicle.heading = heading;
+    this.vehicle.occupied = occupied;
+    this.activeVehicleRegistered = record.registered;
+    this.activeVehicleName = record.instanceId === 'moreno-rook'
+      ? 'Moreno Rook'
+      : requireVehicleDriveProfile(record.classId).name;
+    this.vehicleVisual.sync(this.vehicle, 0);
+    this.activeVehiclePaint = this.vehicleVisual.setPaint(record.paint ?? this.activeVehiclePaint);
+    this.emitSnapshot(true);
+  }
+
   public get activeCollisionCount(): number {
     return this.exteriorCollisions.length + this.roadClosureVisual.collisions.length;
   }
@@ -363,6 +455,12 @@ export class WorldView {
       this.vehicle.position.z = position.z;
       this.vehicle.speed = 0;
       this.vehicle.steering = 0;
+      this.vehicle.pitch = 0;
+      this.vehicle.roll = 0;
+      this.lastSafeVehicleTransform = {
+        position: { ...this.vehicle.position },
+        heading: this.vehicle.heading,
+      };
       this.vehicleVisual.sync(this.vehicle, 0);
     } else {
       this.applyPlayerTransform({
@@ -374,18 +472,62 @@ export class WorldView {
     this.emitSnapshot(true);
   }
 
+  /** Repositions the occupied vehicle without repairing or replacing it. */
+  public recoverActiveVehicle(kind: 'upright' | 'unstuck' = 'unstuck'): boolean {
+    this.assertAlive();
+    if (!this.vehicle.occupied) return false;
+    const recovered = this.recoverVehiclePose(kind);
+    if (recovered) {
+      this.updateCamera(1);
+      this.emitSnapshot(true);
+    }
+    return recovered;
+  }
+
   public enterNearestVehicle(maximumDistance = 5): boolean {
     this.assertAlive();
     if (
       this.vehicle.occupied
-      || this.vehicle.health <= 0
       || !this.player.grounded
       || this.player.traversalMode === 'vaulting'
     ) {
       return false;
     }
     const target = this.getInteractionTarget(maximumDistance);
-    if (target?.id !== 'moreno-rook') {
+    if (!target) {
+      return false;
+    }
+
+    if (target.id.startsWith(TRAFFIC_INTERACTION_PREFIX)) {
+      const trafficId = target.id.slice(TRAFFIC_INTERACTION_PREFIX.length);
+      const claimed = this.citySimulation.claimTrafficVehicle(trafficId);
+      if (!claimed) {
+        return false;
+      }
+      const claimedState = createVehicleState(
+        { x: claimed.position.x, y: VEHICLE_SPAWN.y, z: claimed.position.z },
+        claimed.classId,
+      );
+      Object.assign(this.vehicle, claimedState);
+      this.vehicle.heading = claimed.heading;
+      this.vehicle.speed = claimed.speed;
+      this.lastSafeVehicleTransform = {
+        position: { ...this.vehicle.position },
+        heading: this.vehicle.heading,
+      };
+      const identity = createUniqueStolenVehicleIdentity(
+        trafficId,
+        this.knownVehicleInstanceIds,
+        this.vehicleClaimSequence,
+      );
+      this.activeVehicleInstanceId = identity.instanceId;
+      this.vehicleClaimSequence = identity.nextSequence;
+      this.knownVehicleInstanceIds.add(identity.instanceId);
+      this.activeVehicleRegistered = false;
+      this.activeVehicleName = requireVehicleDriveProfile(claimed.classId).name;
+      this.vehicleVisual.sync(this.vehicle, 0);
+      this.activeVehiclePaint = this.vehicleVisual.setPaint('factory');
+    } else if (target.id !== this.activeVehicleInstanceId || this.vehicle.health <= 0) {
       return false;
     }
 
@@ -402,12 +544,13 @@ export class WorldView {
     if (!vehicleCanExit(this.vehicle)) {
       return false;
     }
-    const exitPoint = findVehicleExitPoint(this.vehicle, this.layout.collisions);
+    const exitPoint = findVehicleExitPoint(this.vehicle, this.activeCollisions());
     if (!exitPoint) {
       return false;
     }
 
     this.vehicle.occupied = false;
+    this.vehicleSirenActive = false;
     this.player.position = { ...exitPoint };
     this.player.velocity = { x: 0, y: 0, z: 0 };
     this.player.heading = this.vehicle.heading;
@@ -467,7 +610,7 @@ export class WorldView {
     if (this.vehicle.occupied) {
       return vehicleCanExit(this.vehicle)
         ? {
-            id: 'moreno-rook',
+            id: this.activeVehicleInstanceId,
             kind: 'vehicle',
             prompt: 'Press E to exit vehicle',
             distanceMeters: 0,
@@ -505,6 +648,18 @@ export class WorldView {
       prompt: definition.portal.prompt,
       enabled: this.interiorRuntime.evaluatePortal(definition.portal.id, actor).eligible,
     }));
+    const activeProfile = requireVehicleDriveProfile(this.vehicle.vehicleClassId);
+    const trafficCandidates = this.citySimulation.getSnapshot().traffic.map((vehicle) => {
+      const profile = requireVehicleDriveProfile(vehicle.classId);
+      return {
+        id: `${TRAFFIC_INTERACTION_PREFIX}${vehicle.id}`,
+        kind: 'vehicle' as const,
+        position: vehicle.position,
+        radius: profile.arcadeHandling.collisionRadiusMeters,
+        prompt: `Press E to steal ${profile.name}`,
+        enabled: this.player.grounded && this.player.traversalMode !== 'vaulting',
+      };
+    });
     return findNearestInteractionTarget({
       origin: this.player.position,
       heading: this.player.heading,
@@ -512,13 +667,14 @@ export class WorldView {
       collisions: this.layout.collisions,
       candidates: [
         {
-          id: 'moreno-rook',
+          id: this.activeVehicleInstanceId,
           kind: 'vehicle',
           position: this.vehicle.position,
-          radius: VEHICLE_RADIUS,
+          radius: activeProfile.arcadeHandling.collisionRadiusMeters,
           prompt: 'Press E to drive',
           enabled: this.vehicle.health > 0 && this.player.grounded && this.player.traversalMode !== 'vaulting',
         },
+        ...trafficCandidates,
         ...portalCandidates,
       ],
     });
@@ -596,6 +752,9 @@ export class WorldView {
     if (input.shoulderSwap) {
       this.shoulderSide = oppositeShoulder(this.shoulderSide);
     }
+    if (input.vehicleCameraToggle && this.vehicle.occupied) {
+      this.vehicleCloseCamera = !this.vehicleCloseCamera;
+    }
     this.cameraYaw += input.cameraYawDelta;
     this.cameraPitch = MathUtils.clamp(this.cameraPitch + input.cameraPitchDelta, 0.12, 1.05);
 
@@ -604,11 +763,18 @@ export class WorldView {
     }
 
     if (this.vehicle.occupied) {
+      this.vehicleSirenActive = this.vehicle.vehicleClassId === 'police-cruiser'
+        && input.vehiclePrimaryAction;
+      if (input.vehicleReset) {
+        this.recoverVehiclePose('unstuck');
+      }
       stepVehicle(this.vehicle, input, this.activeCollisions(), dt, {
         rainIntensity: this.environment.rainIntensity,
       });
+      this.updateVehicleRecovery(dt);
       this.vehicleVisual.sync(this.vehicle, dt);
     } else {
+      this.vehicleSirenActive = false;
       stepPlayer(this.player, input, this.cameraYaw, this.activeCollisions(), dt);
       this.avatarVisual.sync(this.player);
     }
@@ -619,6 +785,7 @@ export class WorldView {
         deltaSeconds: dt,
         playerPosition: { ...actor.position },
         playerHeading: actor.heading,
+        input: this.vehicleSirenActive ? { sirenActive: true } : undefined,
       });
     }
 
@@ -734,6 +901,20 @@ export class WorldView {
       dayPhase: dayPhaseAt(this.environment.timeOfDay),
       rainIntensity: this.environment.rainIntensity,
       vehicleHealth: this.vehicle.occupied ? this.vehicle.health : null,
+      vehicleInstanceId: this.activeVehicleInstanceId,
+      vehicleClassId: this.vehicle.vehicleClassId,
+      vehicleName: this.activeVehicleName,
+      vehicleRegistered: this.activeVehicleRegistered,
+      vehiclePosition: { ...this.vehicle.position },
+      vehicleIntegrity: {
+        bodyHealth: this.vehicle.integrity.bodyHealth,
+        engineHealth: this.vehicle.integrity.engineHealth,
+        tireHealth: [...this.vehicle.integrity.tireHealth] as [number, number, number, number],
+      },
+      vehicleUpgrades: { ...this.vehicle.upgrades },
+      vehiclePaint: this.activeVehiclePaint,
+      vehicleSirenActive: this.vehicleSirenActive,
+      vehicleCameraView: this.vehicleCloseCamera ? 'close' : 'chase',
       prompt,
     };
   }
@@ -791,14 +972,64 @@ export class WorldView {
     input.aim ||= this.externalInput.aim;
     input.shoulderSwap ||= this.externalInput.shoulderSwap;
     input.handbrake ||= this.externalInput.handbrake;
+    input.vehiclePrimaryAction ||= this.externalInput.vehiclePrimaryAction;
+    input.vehicleCameraToggle ||= this.externalInput.vehicleCameraToggle;
+    input.vehicleReset ||= this.externalInput.vehicleReset;
     input.interact ||= this.externalInput.interact;
     input.cameraYawDelta += this.externalInput.cameraYawDelta;
     input.cameraPitchDelta += this.externalInput.cameraPitchDelta;
     this.externalInput.interact = false;
+    this.externalInput.vehicleReset = false;
+    this.externalInput.vehicleCameraToggle = false;
     this.externalInput.shoulderSwap = false;
     this.externalInput.cameraYawDelta = 0;
     this.externalInput.cameraPitchDelta = 0;
     return input;
+  }
+
+  private recoverVehiclePose(kind: 'upright' | 'unstuck'): boolean {
+    const collisions = this.activeCollisions();
+    const options = { fallbackTransform: this.lastSafeVehicleTransform };
+    const result = kind === 'upright'
+      ? uprightVehicle(this.vehicle, collisions, options)
+      : unstuckVehicle(this.vehicle, collisions, options);
+    if (!result.success) return false;
+    this.tippedVehicleSeconds = 0;
+    this.lastSafeVehicleTransform = {
+      position: { ...result.transform.position },
+      heading: result.transform.heading,
+    };
+    this.vehicleVisual.sync(this.vehicle, 0);
+    return true;
+  }
+
+  private updateVehicleRecovery(deltaSeconds: number): void {
+    const pitch = Math.abs(this.vehicle.pitch ?? 0);
+    const roll = Math.abs(this.vehicle.roll ?? 0);
+    const tipped = pitch > Math.PI * 0.46 || roll > Math.PI * 0.46;
+    if (tipped && Math.abs(this.vehicle.speed) < 1.5) {
+      this.tippedVehicleSeconds += deltaSeconds;
+      if (this.tippedVehicleSeconds >= 1.6) {
+        this.recoverVehiclePose('upright');
+      }
+      return;
+    }
+    this.tippedVehicleSeconds = 0;
+    const transform: VehicleRecoveryTransform = {
+      position: { ...this.vehicle.position },
+      heading: this.vehicle.heading,
+    };
+    if (
+      pitch < 0.2
+      && roll < 0.2
+      && isVehicleRecoveryTransformSafe(
+        transform,
+        this.vehicle.vehicleClassId,
+        this.activeCollisions(),
+      )
+    ) {
+      this.lastSafeVehicleTransform = transform;
+    }
   }
 
   private updateCamera(deltaSeconds: number): void {
@@ -809,7 +1040,9 @@ export class WorldView {
     this.cameraTarget.set(source.x, source.y + targetHeight, source.z);
 
     const speedDistance = this.reducedMotion ? 0 : Math.min(2.4, Math.abs(this.vehicle.speed) * 0.075);
-    const distance = inVehicle ? 8.4 + speedDistance : aim ? 4.15 : 6.75;
+    const distance = inVehicle
+      ? (this.vehicleCloseCamera ? 5.25 : 8.4) + speedDistance
+      : aim ? 4.15 : 6.75;
     const placement = computeCameraPlacement({
       target: this.cameraTarget,
       yaw: this.cameraYaw,
@@ -886,6 +1119,7 @@ export class WorldView {
 
   private applyPlayerTransform(transform: Readonly<InteriorTransform>): void {
     this.vehicle.occupied = false;
+    this.vehicleSirenActive = false;
     this.player.position = { ...transform.position };
     this.player.velocity = { x: 0, y: 0, z: 0 };
     this.player.heading = transform.heading;

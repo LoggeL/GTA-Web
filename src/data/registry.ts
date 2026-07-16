@@ -410,6 +410,7 @@ function validateProgression(issues: RegistryValidationIssue[]): void {
 }
 
 function validateVehiclesAndWeapons(issues: RegistryValidationIssue[]): void {
+  const handlingSignatures = new Set<string>();
   for (const vehicle of VEHICLES) {
     if (
       vehicle.accelerationMetersPerSecondSquared <= 0 ||
@@ -422,6 +423,39 @@ function validateVehiclesAndWeapons(issues: RegistryValidationIssue[]): void {
     if (vehicle.grip <= 0 || vehicle.grip > 1 || vehicle.turnResponse <= 0 || vehicle.turnResponse > 1) {
       addIssue(issues, 'vehicles', vehicle.id, 'Grip and turn response must be in the range (0, 1].');
     }
+    const handling = vehicle.arcadeHandling;
+    if (
+      handling.reverseSpeedKph <= 0
+      || handling.reverseSpeedKph >= vehicle.topSpeedKph
+      || handling.brakeDecelerationMetersPerSecondSquared <= 0
+      || handling.handbrakeDecelerationMetersPerSecondSquared <= 0
+      || handling.steeringResponsePerSecond <= 0
+      || handling.turnRateRadiansPerSecond <= 0
+      || handling.handbrakeTurnMultiplier <= 0
+      || handling.collisionRadiusMeters <= 0
+      || handling.collisionWidthMeters <= 0
+      || handling.collisionLengthMeters <= 0
+      || handling.wheelbaseMeters <= 0
+      || handling.trackWidthMeters <= 0
+      || handling.rideHeightMeters <= 0
+      || handling.suspensionTravelMeters <= 0
+    ) {
+      addIssue(issues, 'vehicles', `${vehicle.id}.arcadeHandling`, 'Arcade handling values must be positive and reverse speed must be below top speed.');
+    }
+    if (handling.highSpeedSteeringFactor <= 0 || handling.highSpeedSteeringFactor > 1) {
+      addIssue(issues, 'vehicles', `${vehicle.id}.arcadeHandling.highSpeedSteeringFactor`, 'High-speed steering must be in the range (0, 1].');
+    }
+    if (
+      handling.wheelbaseMeters > handling.collisionLengthMeters
+      || handling.trackWidthMeters > handling.collisionWidthMeters
+    ) {
+      addIssue(issues, 'vehicles', `${vehicle.id}.arcadeHandling`, 'Wheel contacts must fit inside the collision box.');
+    }
+    const handlingSignature = JSON.stringify(handling);
+    if (handlingSignatures.has(handlingSignature)) {
+      addIssue(issues, 'vehicles', `${vehicle.id}.arcadeHandling`, 'Every vehicle class must have a distinct arcade handling profile.');
+    }
+    handlingSignatures.add(handlingSignature);
     if (vehicle.id === 'police-cruiser' && (vehicle.registerable || vehicle.baseValue !== 0)) {
       addIssue(issues, 'vehicles', vehicle.id, 'Police cruisers cannot be registered or sold.');
     }

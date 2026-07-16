@@ -696,6 +696,26 @@ h3 {
   letter-spacing: 0.08em;
 }
 
+.vehicle-condition {
+  display: block;
+  width: 7.5rem;
+  height: 0.28rem;
+  margin-block: 0.25rem 0.12rem;
+  margin-left: auto;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 25%);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 42%);
+}
+
+.vehicle-condition i {
+  display: block;
+  width: var(--vehicle-health, 100%);
+  height: 100%;
+  background: linear-gradient(90deg, var(--danger), var(--orange), var(--teal));
+  transition: width 180ms ease-out;
+}
+
 .interaction-prompt {
   bottom: 16%;
   left: 50%;
@@ -1043,6 +1063,181 @@ kbd {
   border-top: 0.2rem solid var(--teal);
 }
 
+.garage-panel {
+  display: grid;
+  gap: 1rem;
+  padding-bottom: 1rem;
+}
+
+.garage-panel__header,
+.garage-panel__summary,
+.garage-panel__vehicle > header,
+.garage-panel__service-row,
+.garage-panel__repair {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.garage-panel__header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+  background: rgb(7 18 27 / 96%);
+}
+
+.garage-panel__header h2,
+.garage-panel h3,
+.garage-panel h4,
+.garage-panel p {
+  margin-block: 0.2rem;
+}
+
+.garage-panel__eyebrow {
+  color: var(--teal);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.garage-panel__summary {
+  margin: 0;
+}
+
+.garage-panel__summary div {
+  min-width: 8.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 4%);
+}
+
+.garage-panel__summary dt {
+  color: var(--muted);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.garage-panel__summary dd {
+  margin: 0.2rem 0 0;
+  font-weight: 800;
+}
+
+.garage-panel__candidate,
+.garage-panel__vehicle,
+.garage-panel--away {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-top: 0.2rem solid var(--orange);
+  background: rgb(255 255 255 / 4%);
+}
+
+.garage-panel__candidate article {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-top: 0.5rem;
+}
+
+.garage-panel__candidate article h4 {
+  min-width: 12rem;
+}
+
+.garage-panel__vehicle-list {
+  display: grid;
+  margin: 0.65rem 0 0;
+  padding: 0;
+  gap: 0.8rem;
+  list-style: none;
+}
+
+.garage-panel__vehicle {
+  border-top-color: var(--teal);
+}
+
+.garage-panel__vehicle > header > p:first-child {
+  color: var(--orange);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.garage-panel__condition {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0.8rem 0;
+}
+
+.garage-panel__condition > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.garage-panel__condition meter {
+  width: 100%;
+  height: 0.55rem;
+  grid-column: 1 / -1;
+  accent-color: var(--teal);
+}
+
+.garage-panel fieldset {
+  display: grid;
+  margin: 0.8rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  gap: 0.5rem;
+}
+
+.garage-panel legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.garage-panel__paint {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.garage-panel button {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  background: rgb(80 215 207 / 9%);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.garage-panel button:hover:not(:disabled),
+.garage-panel button:focus-visible {
+  border-color: var(--teal);
+  background: rgb(80 215 207 / 18%);
+}
+
+.garage-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.garage-panel__action-reason {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
 .skill-columns p,
 .list-panel p {
   color: var(--muted);
@@ -1231,6 +1426,17 @@ kbd {
     transform: translate(-50%, -50%);
   }
 
+  .touch-stick small {
+    position: absolute;
+    top: 0.7rem;
+    left: 50%;
+    color: rgb(255 255 255 / 72%);
+    font-size: 0.52rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    transform: translateX(-50%);
+  }
+
   [data-touch-action] {
     position: absolute;
     z-index: 1;
@@ -1287,6 +1493,56 @@ kbd {
   [data-touch-action='interact'] {
     right: calc(max(1.2rem, env(safe-area-inset-right)) + 9.1rem);
     bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 1.8rem);
+  }
+
+  [data-touch-action='reload'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 13.2rem);
+    bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 1.8rem);
+  }
+
+  [data-touch-layout='vehicle'] .touch-stick {
+    width: 8.2rem;
+    height: 8.2rem;
+    border-color: rgb(83 223 208 / 42%);
+    border-radius: 2.2rem;
+    background:
+      linear-gradient(90deg, transparent 49%, rgb(255 255 255 / 10%) 50%, transparent 51%),
+      linear-gradient(transparent 49%, rgb(255 255 255 / 10%) 50%, transparent 51%),
+      rgb(7 18 27 / 38%);
+  }
+
+  [data-touch-layout='vehicle'] [data-touch-action='jump'] {
+    right: max(1.2rem, env(safe-area-inset-right));
+    bottom: max(1.3rem, env(safe-area-inset-bottom));
+    width: 5rem;
+    height: 5rem;
+  }
+
+  [data-touch-layout='vehicle'] [data-touch-action='interact'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 5.5rem);
+    bottom: max(1.3rem, env(safe-area-inset-bottom));
+  }
+
+  [data-touch-layout='vehicle'] [data-touch-action='crouch'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 9.7rem);
+    bottom: max(1.3rem, env(safe-area-inset-bottom));
+  }
+
+  [data-touch-layout='vehicle'] [data-touch-action='reload'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 13.9rem);
+    bottom: max(1.3rem, env(safe-area-inset-bottom));
+  }
+
+  [data-touch-layout='vehicle'] [data-touch-action='fire'] {
+    right: max(1.2rem, env(safe-area-inset-right));
+    bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 5.5rem);
+    width: 3.8rem;
+    height: 3.8rem;
+  }
+
+  [data-touch-layout='vehicle'] [data-touch-action='aim'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 4.3rem);
+    bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 5.5rem);
   }
 
   .has-touch-controls .minimap {
@@ -1351,10 +1607,32 @@ kbd {
   .preset-grid,
   .inventory-layout,
   .skill-columns,
+  .garage-panel__condition,
   .settings-grid,
   .controls-grid,
   .keyboard-bindings {
     grid-template-columns: 1fr;
+  }
+
+  .garage-panel__header,
+  .garage-panel__vehicle > header,
+  .garage-panel__service-row,
+  .garage-panel__repair {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .garage-panel__summary {
+    width: 100%;
+  }
+
+  .garage-panel__summary div {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .garage-panel__paint {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .preset-option {

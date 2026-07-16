@@ -2,7 +2,7 @@ import type { GameSettings, InputAction, InputBinding } from '../core';
 import { isValidKeyboardCode } from '../input';
 
 export type AlexPreset = 'masculine' | 'feminine';
-export type OverlayPanel = 'map' | 'inventory' | 'skills' | 'properties' | 'missions' | 'settings';
+export type OverlayPanel = 'map' | 'inventory' | 'skills' | 'garage' | 'properties' | 'missions' | 'settings';
 
 export interface SaveSlotSummary {
   slot: 1 | 2 | 3;
@@ -34,6 +34,7 @@ export interface HudSnapshot {
   weapon: string;
   speedKph?: number;
   vehicleName?: string;
+  vehicleHealth?: number;
   radio?: string;
   interaction?: string;
 }
@@ -207,6 +208,7 @@ export class GameUI {
   #dialogueTimer = 0;
   #bindingCapture: BindingCapture | null = null;
   #streamFailureReturnFocus: HTMLElement | null = null;
+  #touchVehicleMode: boolean | null = null;
 
   readonly #handleBindingKeyDown = (event: KeyboardEvent): void => {
     const capture = this.#bindingCapture;
@@ -333,7 +335,13 @@ export class GameUI {
       this.#query<HTMLElement>('[data-hud-speed]').textContent = String(Math.round(snapshot.speedKph));
       this.#query<HTMLElement>('[data-hud-vehicle-name]').textContent = snapshot.vehicleName ?? 'Vehicle';
       this.#query<HTMLElement>('[data-hud-radio]').textContent = snapshot.radio ?? 'Radio off';
+      const health = clampPercent(snapshot.vehicleHealth ?? 100);
+      const healthMeter = this.#query<HTMLElement>('[data-hud-vehicle-health]');
+      healthMeter.style.setProperty('--vehicle-health', `${health}%`);
+      healthMeter.setAttribute('aria-valuenow', String(Math.round(health)));
+      this.#query<HTMLElement>('[data-hud-vehicle-health-label]').textContent = `ENGINE ${Math.round(health)}%`;
     }
+    this.#setTouchLayout(snapshot.speedKph !== undefined);
 
     const interaction = this.#query<HTMLElement>('[data-interaction]');
     interaction.hidden = !snapshot.interaction;
@@ -550,28 +558,36 @@ export class GameUI {
 
           <div class="vehicle-card" data-hud-vehicle hidden>
             <span><strong data-hud-speed>0</strong><small>KM/H</small></span>
-            <div><b data-hud-vehicle-name>Vehicle</b><small data-hud-radio>Radio off</small></div>
+            <div>
+              <b data-hud-vehicle-name>Vehicle</b><small data-hud-radio>Radio off</small>
+              <span class="vehicle-condition" data-hud-vehicle-health role="progressbar" aria-label="Vehicle engine health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><i></i></span>
+              <small data-hud-vehicle-health-label>ENGINE 100%</small>
+            </div>
           </div>
 
           <div class="interaction-prompt" data-interaction hidden><kbd>E</kbd><span></span></div>
           <div class="dialogue-box" data-dialogue hidden><strong data-dialogue-speaker>Alex</strong><p data-dialogue-text></p></div>
           <div class="toast" data-toast hidden role="status"></div>
 
-          <div class="touch-controls" aria-label="Touch controls">
-            <div class="touch-stick" data-touch-stick><span></span></div>
+          <div class="touch-controls" data-touch-layout="on-foot" aria-label="On-foot touch controls">
+            <div class="touch-stick" data-touch-stick role="group" aria-label="Movement stick">
+              <span></span><small data-touch-stick-label>MOVE</small>
+            </div>
             <div class="touch-camera" data-touch-camera></div>
             <button data-touch-action="interact" aria-label="Interact">E</button>
             <button data-touch-action="sprint" aria-label="Sprint">RUN</button>
-            <button data-touch-action="jump" aria-label="Jump or handbrake">JUMP</button>
-            <button data-touch-action="crouch" aria-label="Crouch or camera">CROUCH</button>
+            <button data-touch-action="jump" aria-label="Jump">JUMP</button>
+            <button data-touch-action="crouch" aria-label="Crouch">CROUCH</button>
             <button data-touch-action="aim" aria-label="Aim">AIM</button>
             <button data-touch-action="fire" aria-label="Fire or attack">FIRE</button>
+            <button data-touch-action="reload" aria-label="Reload">RELOAD</button>
           </div>
 
           <nav class="quick-nav" aria-label="Game panels">
             <button data-open-panel="map">Map <kbd>M</kbd></button>
             <button data-open-panel="inventory">Inventory <kbd>I</kbd></button>
             <button data-open-panel="skills">Skills</button>
+            <button data-open-panel="garage">Garage</button>
             <button data-action="pause">Pause <kbd>Esc</kbd></button>
           </nav>
         </section>
@@ -585,6 +601,7 @@ export class GameUI {
               <button class="button" data-open-panel="map">Map</button>
               <button class="button" data-open-panel="inventory">Inventory</button>
               <button class="button" data-open-panel="skills">Skills</button>
+              <button class="button" data-open-panel="garage">Garage</button>
               <button class="button" data-open-panel="settings">Settings</button>
               <button class="button button--danger" data-action="quit-menu">Save and quit to menu</button>
             </nav>
@@ -686,6 +703,50 @@ export class GameUI {
     });
   }
 
+  #setTouchLayout(vehicleMode: boolean): void {
+    if (this.#touchVehicleMode === vehicleMode) return;
+    this.#touchVehicleMode = vehicleMode;
+
+    const controls = this.#query<HTMLElement>('.touch-controls');
+    controls.dataset.touchLayout = vehicleMode ? 'vehicle' : 'on-foot';
+    controls.setAttribute('aria-label', vehicleMode ? 'Vehicle touch controls' : 'On-foot touch controls');
+
+    const stick = this.#query<HTMLElement>('[data-touch-stick]');
+    stick.setAttribute('aria-label', vehicleMode ? 'Steering and throttle stick' : 'Movement stick');
+    this.#query<HTMLElement>('[data-touch-stick-label]').textContent = vehicleMode ? 'DRIVE' : 'MOVE';
+
+    const layouts: Readonly<Record<string, readonly [string, string, boolean]>> = vehicleMode
+      ? {
+        interact: ['Exit vehicle', 'EXIT', false],
+        sprint: ['Sprint', 'RUN', true],
+        jump: ['Handbrake', 'BRAKE', false],
+        crouch: ['Vehicle camera', 'CAM', false],
+        aim: ['Vehicle aim', 'AIM', false],
+        fire: ['Vehicle action or siren', 'ACTION', false],
+        reload: ['Vehicle reset', 'RESET', false],
+      }
+      : {
+        interact: ['Interact', 'E', false],
+        sprint: ['Sprint', 'RUN', false],
+        jump: ['Jump', 'JUMP', false],
+        crouch: ['Crouch', 'CROUCH', false],
+        aim: ['Aim', 'AIM', false],
+        fire: ['Fire or attack', 'FIRE', false],
+        reload: ['Reload', 'RELOAD', false],
+      };
+
+    for (const [action, [label, text, hidden]] of Object.entries(layouts)) {
+      const button = this.#query<HTMLButtonElement>(`[data-touch-action="${action}"]`);
+      if (button.classList.contains('is-active')) {
+        this.#callbacks.onTouchAction(action, false);
+        button.classList.remove('is-active');
+      }
+      button.hidden = hidden;
+      button.setAttribute('aria-label', label);
+      button.textContent = text;
+    }
+  }
+
   #handleAction(action: string): void {
     switch (action) {
       case 'enter-menu':
@@ -752,6 +813,9 @@ export class GameUI {
     }
     if (panel === 'skills') {
       return `<div class="skill-columns"><article><h3>Combat</h3><p>Steady Hands · Fast Hands · Thick Skin</p></article><article><h3>Driving</h3><p>Road Grip · Gearhead · Handbrake Ace</p></article><article><h3>Streetcraft</h3><p>Silver Tongue · Side Hustle · Light Fingers</p></article></div>`;
+    }
+    if (panel === 'garage') {
+      return `<div class="list-panel"><p>Enter Moreno Garage in Arroyo Heights to register, repair, and upgrade vehicles.</p></div>`;
     }
     if (panel === 'properties') {
       return `<div class="list-panel"><p>Breakwater Warehouse</p><p>Neon Strand Club</p><p>Alta Vista Print Shop</p><p>Arroyo Diner</p><p>Coastline Car Wash</p></div>`;

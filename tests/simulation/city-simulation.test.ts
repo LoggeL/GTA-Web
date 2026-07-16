@@ -137,6 +137,22 @@ describe('CitySimulation integration surface', () => {
     simulation.dispose();
   });
 
+  it('turns an ambient vehicle claim into a theft report while preserving the pool', () => {
+    const crimes: CrimeEvent[] = [];
+    const simulation = new CitySimulation({
+      seed: 'traffic-theft',
+      quality: 'low',
+      seedCombatants: false,
+      onCrime: (event) => crimes.push(event),
+    });
+    const target = simulation.getSnapshot().traffic[0];
+    if (!target) throw new Error('Missing traffic vehicle');
+    expect(simulation.claimTrafficVehicle(target.id)).toEqual(target);
+    expect(simulation.getSnapshot().traffic).toHaveLength(10);
+    expect(crimes.at(-1)).toMatchObject({ kind: 'vehicle-theft', sourceId: 'player' });
+    simulation.dispose();
+  });
+
   it('routes explicit crimes to witness callbacks', () => {
     const reports: WitnessReportEvent[] = [];
     const simulation = new CitySimulation({

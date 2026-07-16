@@ -1,3 +1,6 @@
+import type { VehicleClassId } from '../data/types';
+import type { VehicleIntegrityState } from './vehicleIntegrity';
+
 export type DistrictId = 'neon-strand' | 'alta-vista' | 'arroyo-heights' | 'breakwater';
 
 export type WorldQuality = 'low' | 'high';
@@ -20,6 +23,22 @@ export interface Vec3Data {
   z: number;
 }
 
+export interface VehicleUpgradeLevels {
+  engine: number;
+  brakes: number;
+  grip: number;
+  armor: number;
+}
+
+export interface WorldVehicleInitialization {
+  instanceId: string;
+  classId: VehicleClassId;
+  registered: boolean;
+  paint?: string;
+  integrity?: VehicleIntegrityState;
+  upgrades?: VehicleUpgradeLevels;
+}
+
 export interface WorldInputState {
   /** -1 is backwards, 1 is forwards. */
   moveForward: number;
@@ -32,6 +51,12 @@ export interface WorldInputState {
   /** One-shot camera shoulder toggle request. */
   shoulderSwap: boolean;
   handbrake: boolean;
+  /** Held contextual action while driving, including the police-cruiser siren. */
+  vehiclePrimaryAction: boolean;
+  /** One-shot request to toggle between the two vehicle chase distances. */
+  vehicleCameraToggle: boolean;
+  /** One-shot request to upright or move the occupied vehicle to nearby safe ground. */
+  vehicleReset: boolean;
   /** One-shot interaction/vehicle toggle request. */
   interact: boolean;
   /** Radians to add during this simulation update. */
@@ -70,6 +95,16 @@ export interface WorldSnapshot {
   dayPhase: DayPhase;
   rainIntensity: number;
   vehicleHealth: number | null;
+  vehicleInstanceId: string;
+  vehicleClassId: VehicleClassId;
+  vehicleName: string;
+  vehicleRegistered: boolean;
+  vehiclePosition: Vec3Data;
+  vehicleIntegrity: VehicleIntegrityState;
+  vehicleUpgrades: VehicleUpgradeLevels;
+  vehiclePaint: string;
+  vehicleSirenActive: boolean;
+  vehicleCameraView: 'chase' | 'close';
   prompt: string | null;
 }
 
@@ -97,6 +132,8 @@ export interface WorldViewOptions {
   seed?: number | string;
   initialPosition?: Vec3Data;
   initialHeading?: number;
+  initialVehicle?: WorldVehicleInitialization;
+  reservedVehicleInstanceIds?: readonly string[];
   quality?: WorldQuality;
   timeOfDay?: number;
   rainIntensity?: number;
@@ -120,6 +157,9 @@ export function createWorldInputState(): WorldInputState {
     aim: false,
     shoulderSwap: false,
     handbrake: false,
+    vehiclePrimaryAction: false,
+    vehicleCameraToggle: false,
+    vehicleReset: false,
     interact: false,
     cameraYawDelta: 0,
     cameraPitchDelta: 0,

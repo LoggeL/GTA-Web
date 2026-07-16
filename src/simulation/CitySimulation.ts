@@ -17,6 +17,7 @@ import type {
   EnemyDamageEvent,
   SimulationQuality,
   SimulationVec3,
+  TrafficVehicleSnapshot,
   WeaponFireResult,
   WeaponType,
 } from './types';
@@ -228,6 +229,23 @@ export class CitySimulation {
     this.assertAlive();
     this.traffic.triggerPanic(position, Math.max(0, radius), Math.max(0, duration));
     this.pedestrians.triggerPanic(position, Math.max(0, radius), Math.max(0, duration));
+  }
+
+  public claimTrafficVehicle(id: string): TrafficVehicleSnapshot | null {
+    this.assertAlive();
+    const claimed = this.traffic.claimVehicle(id);
+    if (!claimed) {
+      return null;
+    }
+    this.reportCrime({
+      kind: 'vehicle-theft',
+      sourceId: 'player',
+      position: claimed.position,
+      severity: claimed.classId === 'police-cruiser' ? 4 : 2,
+    });
+    this.triggerPanic(claimed.position, 18, 2.5);
+    this.visuals?.update(this.getSnapshot());
+    return claimed;
   }
 
   public spawnEnemy(role: CombatRole, position: Readonly<SimulationVec3>): string | null {

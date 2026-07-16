@@ -194,6 +194,26 @@ export type VehicleClassId =
   | 'police-cruiser'
   | 'motorcycle';
 
+export interface VehicleArcadeHandlingDefinition {
+  /** Maximum authored reverse speed. Forward speed remains `topSpeedKph`. */
+  readonly reverseSpeedKph: number;
+  readonly brakeDecelerationMetersPerSecondSquared: number;
+  readonly handbrakeDecelerationMetersPerSecondSquared: number;
+  /** Rate at which steering input approaches the requested value. */
+  readonly steeringResponsePerSecond: number;
+  readonly turnRateRadiansPerSecond: number;
+  /** Steering authority retained at maximum speed, in the range (0, 1]. */
+  readonly highSpeedSteeringFactor: number;
+  readonly handbrakeTurnMultiplier: number;
+  readonly collisionRadiusMeters: number;
+  readonly collisionWidthMeters: number;
+  readonly collisionLengthMeters: number;
+  readonly wheelbaseMeters: number;
+  readonly trackWidthMeters: number;
+  readonly rideHeightMeters: number;
+  readonly suspensionTravelMeters: number;
+}
+
 export interface VehicleDefinition {
   readonly id: VehicleClassId;
   readonly name: string;
@@ -204,6 +224,7 @@ export interface VehicleDefinition {
   readonly grip: number;
   readonly turnResponse: number;
   readonly durability: number;
+  readonly arcadeHandling: VehicleArcadeHandlingDefinition;
   readonly cargoGrid: { readonly columns: number; readonly rows: number };
   readonly seats: number;
   readonly registerable: boolean;

@@ -1,5 +1,8 @@
 import type { Scene } from 'three';
 
+import type { VehicleClassId } from '../data/types';
+import type { DistrictId } from '../game/types';
+
 export type SimulationQuality = 'low' | 'high';
 
 /**
@@ -21,6 +24,7 @@ export interface SimulationVec3 {
 
 export interface SimulationRoadRecipe {
   id: string;
+  district?: DistrictId;
   position: SimulationVec3;
   width: number;
   depth: number;
@@ -33,10 +37,11 @@ export interface SimulationObstacle {
   radius: number;
 }
 
-export type TrafficBehavior = 'cruise' | 'yield' | 'recover' | 'panic' | 'siren-yield';
+export type TrafficBehavior = 'cruise' | 'yield' | 'intersection-yield' | 'recover' | 'panic' | 'siren-yield';
 
 export interface TrafficVehicleSnapshot {
   id: string;
+  classId: VehicleClassId;
   position: SimulationVec3;
   heading: number;
   speed: number;
@@ -202,6 +207,7 @@ export interface CitySimulationApi {
   setVisible(visible: boolean): void;
   setQuality(quality: SimulationQuality): void;
   setActorLimits(limits: Readonly<ActorPopulationLimits>): ActorPopulationLimits;
+  claimTrafficVehicle(id: string): TrafficVehicleSnapshot | null;
   tick(context: CitySimulationTick): CitySimulationTickResult;
   getSnapshot(): CitySimulationSnapshot;
   dispose(): void;

@@ -13,7 +13,9 @@ import {
   WorldView,
   createWorldInputState,
   type WorldSnapshot,
+  type WorldVehicleInitialization,
 } from '../game';
+import { VEHICLES, getVehicle } from '../data';
 import { CityStreamingController } from '../game/CityStreamingController';
 import {
   DomInputAdapter,
@@ -36,7 +38,23 @@ import { IndexedDbSaveAdapter } from '../storage/IndexedDbSaveAdapter';
 import { GameUI, type AlexPreset, type HudSnapshot, type OverlayPanel, type SaveSlotSummary } from '../ui/GameUI';
 import { MapRenderer, type MapRenderModel } from '../ui/MapRenderer';
 import { MinimapRenderer } from '../ui/MinimapRenderer';
+import {
+  GaragePanel,
+  parseGaragePanelAction,
+  type NearbyUnregisteredVehicle,
+} from '../ui/GaragePanel';
 import { AudioEngine } from '../audio/AudioEngine';
+import {
+  applyVehicleUpgrade,
+  createVehicleTrunk,
+  isGaragePaint,
+  registerVehicle,
+  repaintVehicle,
+  repairVehicle,
+  retrieveVehicleFromGarage,
+  type GarageState,
+  type GarageTransactionResult,
+} from '../systems';
 
 const DISTRICT_LABELS: Record<WorldSnapshot['district'], string> = {
   'neon-strand': 'Neon Strand',
@@ -50,6 +68,16 @@ type MapFilterKind = 'mission' | 'property' | 'activity' | 'shop' | 'safehouse' 
 interface HeatlineQaApi {
   teleport(x: number, z: number): WorldSnapshot;
   snapshot(): WorldSnapshot | null;
+  trafficVehicles(): readonly {
+    id: string;
+    classId: string;
+    behavior: string;
+    x: number;
+    z: number;
+  }[];
+  setMoney(value: number): number;
+  setActiveVehicleClass(classId: string): WorldSnapshot;
+  setActiveVehicleCondition(bodyHealth: number, engineHealth: number): WorldSnapshot;
 }
 
 type QaGlobal = typeof globalThis & {
@@ -90,6 +118,7 @@ export class App {
   readonly #closedStreamEdgeIds = new Set<string>();
   #navigationDriveWaypointSet = false;
   #mapRenderer: MapRenderer | null = null;
+  #garagePanel: GaragePanel | null = null;
   #mapModel: MapRenderModel | null = null;
   readonly #mapMarkerFilters: Record<MapFilterKind, boolean> = {
     mission: true,
@@ -173,6 +202,7 @@ export class App {
       completedObjectives: [],
     };
     save.player.money = 850;
+    ensureStarterVehicle(save);
     await this.#saveService.saveSlot(save);
     await this.#loadGame(save, true);
   }
@@ -196,6 +226,7 @@ export class App {
 
   async #loadGame(save: SaveGameV1, isNew: boolean): Promise<void> {
     this.#teardownWorld();
+    ensureStarterVehicle(save);
     this.#currentSave = save;
     this.#activeSlot = save.slot.id;
     this.#lastSnapshotAt = performance.now();
@@ -218,6 +249,8 @@ export class App {
         quality,
         initialPosition: position,
         initialHeading: save.player.transform.rotation.y,
+        initialVehicle: worldVehicleFromSave(save),
+        reservedVehicleInstanceIds: save.ownedVehicles.map(({ instanceId }) => instanceId),
         timeOfDay: save.clock.timeOfDayMinutes / 1_440,
         rainIntensity: save.clock.weather === 'rain' ? 0.62 : 0,
         reducedMotion: this.#settings.accessibility.reducedMotion,
@@ -296,6 +329,12 @@ export class App {
       worldMount.dataset.crouching = String(snapshot.crouching);
       worldMount.dataset.interiorId = snapshot.interiorId ?? '';
       worldMount.dataset.interiorPhase = snapshot.interiorPhase;
+      worldMount.dataset.vehicleInstanceId = snapshot.vehicleInstanceId;
+      worldMount.dataset.vehicleClassId = snapshot.vehicleClassId;
+      worldMount.dataset.vehicleRegistered = String(snapshot.vehicleRegistered);
+      worldMount.dataset.vehiclePaint = snapshot.vehiclePaint;
+      worldMount.dataset.vehicleSirenActive = String(snapshot.vehicleSirenActive);
+      worldMount.dataset.vehicleCameraView = snapshot.vehicleCameraView;
     }
     if (this.#currentSave) {
       const delta = Math.max(0, Math.min(1, (now - this.#lastSnapshotAt) / 1_000));
@@ -307,6 +346,21 @@ export class App {
       this.#currentSave.activeDistrict = snapshot.district;
       this.#currentSave.clock.timeOfDayMinutes = Math.round(snapshot.timeOfDay * 1_440) % 1_440;
       this.#currentSave.clock.weather = snapshot.rainIntensity > 0.15 ? 'rain' : 'clear';
+      if (snapshot.vehicleRegistered) {
+        const savedVehicle = this.#currentSave.ownedVehicles.find(
+          (vehicle) => vehicle.instanceId === snapshot.vehicleInstanceId,
+        );
+        if (savedVehicle) {
+          savedVehicle.bodyHealth = snapshot.vehicleIntegrity.bodyHealth;
+          savedVehicle.engineHealth = snapshot.vehicleIntegrity.engineHealth;
+          savedVehicle.tireHealth = [...snapshot.vehicleIntegrity.tireHealth] as [number, number, number, number];
+          savedVehicle.upgrades.engine = snapshot.vehicleUpgrades.engine;
+          savedVehicle.upgrades.brakes = snapshot.vehicleUpgrades.brakes;
+          savedVehicle.upgrades.grip = snapshot.vehicleUpgrades.grip;
+          savedVehicle.upgrades.armor = snapshot.vehicleUpgrades.armor;
+          savedVehicle.upgrades.paint = snapshot.vehiclePaint;
+        }
+      }
     }
     this.#lastSnapshotAt = now;
 
@@ -336,8 +390,11 @@ export class App {
       ammoReserve: 0,
       weapon: 'Unarmed',
       speedKph: snapshot.mode === 'vehicle' ? snapshot.speedKph : undefined,
-      vehicleName: snapshot.mode === 'vehicle' ? 'Moreno Rook' : undefined,
-      radio: snapshot.mode === 'vehicle' ? this.#radioStation : undefined,
+      vehicleName: snapshot.mode === 'vehicle' ? snapshot.vehicleName : undefined,
+      vehicleHealth: snapshot.mode === 'vehicle' ? snapshot.vehicleIntegrity.engineHealth : undefined,
+      radio: snapshot.mode === 'vehicle'
+        ? snapshot.vehicleSirenActive ? 'SIREN ACTIVE' : this.#radioStation
+        : undefined,
       interaction: snapshot.prompt?.replace('Press E to ', ''),
     };
     this.#ui.updateHud(hud);
@@ -386,14 +443,187 @@ export class App {
           : this.#lastWorldSnapshot,
       );
     }
+    if (_panel === 'garage') {
+      this.#renderGaragePanel();
+    }
   }
 
   #closePanel(): void {
     this.#panelOpen = false;
+    this.#garagePanel = null;
     if (this.#world && !this.#paused) {
       this.#world.resume();
       this.#world.focus();
     }
+  }
+
+  #renderGaragePanel(): void {
+    const host = this.#root.querySelector<HTMLElement>('[data-panel-body]');
+    const save = this.#currentSave;
+    const snapshot = this.#lastWorldSnapshot;
+    if (!host || !save) return;
+    if (snapshot?.interiorId !== 'moreno-garage') {
+      this.#garagePanel = null;
+      host.innerHTML = `
+        <div class="garage-panel garage-panel--away">
+          <p class="eyebrow">Service unavailable</p>
+          <h3>Visit Moreno Garage</h3>
+          <p>Park beside the purple service doorway in Arroyo Heights, enter on foot, then open this panel.</p>
+        </div>
+      `;
+      return;
+    }
+    this.#garagePanel = new GaragePanel(host);
+    this.#garagePanel.draw(this.#garageState(save), this.#nearbyRegistrationCandidate(snapshot));
+  }
+
+  #garageState(save: Readonly<SaveGameV1>): GarageState {
+    return {
+      cash: save.player.money,
+      trunkRowBonus: save.player.unlockedSkills.includes('driving-trunk-master') ? 1 : 0,
+      ownedVehicles: save.ownedVehicles,
+      trunks: save.trunks,
+    };
+  }
+
+  #nearbyRegistrationCandidate(
+    snapshot: Readonly<WorldSnapshot>,
+  ): NearbyUnregisteredVehicle | null {
+    if (snapshot.vehicleRegistered) return null;
+    const distanceToServiceBay = Math.hypot(
+      snapshot.vehiclePosition.x - VEHICLE_SPAWN.x,
+      snapshot.vehiclePosition.z - VEHICLE_SPAWN.z,
+    );
+    if (distanceToServiceBay > 18) return null;
+    return {
+      instanceId: snapshot.vehicleInstanceId,
+      definitionId: snapshot.vehicleClassId,
+    };
+  }
+
+  readonly #onGaragePanelClick = (event: Event): void => {
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (!this.#panelOpen || panel?.dataset.panel !== 'garage') return;
+    const action = parseGaragePanelAction(event.target);
+    if (!action) return;
+    const save = this.#currentSave;
+    const snapshot = this.#lastWorldSnapshot;
+    if (!save || snapshot?.interiorId !== 'moreno-garage') {
+      this.#ui.toast('Vehicle service is available inside Moreno Garage.', 'warning');
+      return;
+    }
+    const state = this.#garageState(save);
+    let result: GarageTransactionResult;
+    let successLabel: string;
+    switch (action.type) {
+      case 'register': {
+        const candidate = this.#nearbyRegistrationCandidate(snapshot);
+        if (
+          !candidate
+          || candidate.instanceId !== action.vehicleInstanceId
+          || candidate.definitionId !== action.vehicleDefinitionId
+        ) {
+          this.#ui.toast('That vehicle is no longer in the service bay.', 'warning');
+          this.#renderGaragePanel();
+          return;
+        }
+        result = registerVehicle(state, VEHICLES, {
+          instanceId: candidate.instanceId,
+          definitionId: candidate.definitionId,
+          bodyHealth: snapshot.vehicleIntegrity.bodyHealth,
+          engineHealth: snapshot.vehicleIntegrity.engineHealth,
+          tireHealth: snapshot.vehicleIntegrity.tireHealth,
+          paint: isGaragePaint(snapshot.vehiclePaint) ? snapshot.vehiclePaint : 'factory',
+        });
+        successLabel = 'Vehicle registered';
+        break;
+      }
+      case 'upgrade':
+        result = applyVehicleUpgrade(state, VEHICLES, {
+          instanceId: action.vehicleInstanceId,
+          upgrade: action.upgrade,
+          targetTier: action.targetTier,
+        });
+        successLabel = `${action.upgrade} upgraded`;
+        break;
+      case 'repair-all':
+        result = repairVehicle(state, VEHICLES, {
+          instanceId: action.vehicleInstanceId,
+          scope: 'all',
+        });
+        successLabel = 'Vehicle repaired';
+        break;
+      case 'paint':
+        result = repaintVehicle(
+          state,
+          VEHICLES,
+          action.vehicleInstanceId,
+          action.paint,
+        );
+        successLabel = 'Paint applied';
+        break;
+      case 'retrieve':
+        result = retrieveVehicleFromGarage(state, action.vehicleInstanceId);
+        successLabel = 'Vehicle retrieved';
+        break;
+    }
+    this.#commitGarageTransaction(
+      result,
+      successLabel,
+      action.type === 'retrieve' ? action.vehicleInstanceId : undefined,
+    );
+  };
+
+  #commitGarageTransaction(
+    result: Readonly<GarageTransactionResult>,
+    successLabel: string,
+    retrievedVehicleInstanceId?: string,
+  ): void {
+    const save = this.#currentSave;
+    if (!save) return;
+    if (!result.success) {
+      this.#ui.toast(result.reason, 'warning');
+      this.#renderGaragePanel();
+      return;
+    }
+    save.player.money = result.state.cash;
+    save.ownedVehicles = result.state.ownedVehicles;
+    save.trunks = result.state.trunks;
+    const activeSnapshot = this.#lastWorldSnapshot;
+    const activeVehicle = retrievedVehicleInstanceId
+      ? save.ownedVehicles.find((vehicle) => vehicle.instanceId === retrievedVehicleInstanceId)
+      : activeSnapshot
+        ? save.ownedVehicles.find((vehicle) => vehicle.instanceId === activeSnapshot.vehicleInstanceId)
+        : undefined;
+    const definition = activeVehicle ? getVehicle(activeVehicle.definitionId) : undefined;
+    if (activeVehicle && definition) {
+      const record: WorldVehicleInitialization = {
+        instanceId: activeVehicle.instanceId,
+        classId: definition.id,
+        registered: activeVehicle.registered,
+        integrity: {
+          bodyHealth: activeVehicle.bodyHealth,
+          engineHealth: activeVehicle.engineHealth,
+          tireHealth: [...activeVehicle.tireHealth] as [number, number, number, number],
+        },
+        upgrades: {
+          engine: activeVehicle.upgrades.engine,
+          brakes: activeVehicle.upgrades.brakes,
+          grip: activeVehicle.upgrades.grip,
+          armor: activeVehicle.upgrades.armor,
+        },
+        paint: activeVehicle.upgrades.paint,
+      };
+      if (retrievedVehicleInstanceId) {
+        this.#world?.selectActiveVehicleRecord(record);
+      } else {
+        this.#world?.applyActiveVehicleRecord(record);
+      }
+    }
+    const costLabel = result.cost > 0 ? ` · $${result.cost.toLocaleString('en-US')}` : '';
+    this.#ui.toast(`${successLabel}${costLabel}`, 'success');
+    this.#renderGaragePanel();
+    void this.#saveNow(false);
   }
 
   async #quitToMenu(): Promise<void> {
@@ -489,6 +719,7 @@ export class App {
   }
 
   #bindGlobalEvents(): void {
+    this.#root.addEventListener('click', this.#onGaragePanelClick);
     globalThis.addEventListener('keydown', (event) => {
       if (!this.#world || event.repeat) return;
       if (event.code === 'Escape') {
@@ -653,6 +884,79 @@ export class App {
         return world.getSnapshot();
       },
       snapshot: () => this.#world?.getSnapshot() ?? null,
+      trafficVehicles: () => world.getCitySimulationSnapshot().traffic.map((vehicle) => ({
+        id: vehicle.id,
+        classId: vehicle.classId,
+        behavior: vehicle.behavior,
+        x: vehicle.position.x,
+        z: vehicle.position.z,
+      })),
+      setMoney: (value) => {
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new RangeError('QA money must be a non-negative safe integer');
+        }
+        if (!this.#currentSave) throw new Error('QA money requires an active save');
+        this.#currentSave.player.money = value;
+        this.#onWorldSnapshot(world.getSnapshot());
+        return value;
+      },
+      setActiveVehicleClass: (classId) => {
+        const definition = getVehicle(classId);
+        if (!definition) throw new Error(`Unknown QA vehicle class: ${classId}`);
+        const snapshot = world.getSnapshot();
+        world.applyActiveVehicleRecord({
+          instanceId: snapshot.vehicleInstanceId,
+          classId: definition.id,
+          registered: false,
+          paint: 'factory',
+          integrity: {
+            bodyHealth: 100,
+            engineHealth: 100,
+            tireHealth: [100, 100, 100, 100],
+          },
+          upgrades: { engine: 0, brakes: 0, grip: 0, armor: 0 },
+        });
+        return world.getSnapshot();
+      },
+      setActiveVehicleCondition: (bodyHealth, engineHealth) => {
+        if (
+          !Number.isFinite(bodyHealth)
+          || bodyHealth < 0
+          || bodyHealth > 100
+          || !Number.isFinite(engineHealth)
+          || engineHealth < 0
+          || engineHealth > 100
+        ) {
+          throw new RangeError('QA vehicle condition must stay between 0 and 100');
+        }
+        const snapshot = world.getSnapshot();
+        const record = this.#currentSave?.ownedVehicles.find(
+          (vehicle) => vehicle.instanceId === snapshot.vehicleInstanceId,
+        );
+        const definition = record ? getVehicle(record.definitionId) : undefined;
+        if (!record || !definition) {
+          throw new Error('QA vehicle condition requires a registered active vehicle');
+        }
+        record.bodyHealth = bodyHealth;
+        record.engineHealth = engineHealth;
+        world.applyActiveVehicleRecord({
+          instanceId: record.instanceId,
+          classId: definition.id,
+          registered: record.registered,
+          integrity: {
+            bodyHealth,
+            engineHealth,
+            tireHealth: [...record.tireHealth] as [number, number, number, number],
+          },
+          upgrades: {
+            engine: record.upgrades.engine,
+            brakes: record.upgrades.brakes,
+            grip: record.upgrades.grip,
+            armor: record.upgrades.armor,
+          },
+        });
+        return world.getSnapshot();
+      },
     };
     (globalThis as QaGlobal).__HEATLINE_QA__ = api;
   }
@@ -995,6 +1299,67 @@ export class App {
     mount.dataset.activeTraffic = String(population.traffic.length);
     mount.dataset.activePedestrians = String(population.pedestrians.length);
   }
+}
+
+function ensureStarterVehicle(save: SaveGameV1): void {
+  if (save.worldFlags['starter-vehicle-granted']) return;
+  if (save.ownedVehicles.length > 0) {
+    save.worldFlags['starter-vehicle-granted'] = true;
+    return;
+  }
+  const definition = getVehicle('compact');
+  if (!definition) {
+    throw new Error('Missing compact starter vehicle definition');
+  }
+  const instanceId = 'moreno-rook';
+  save.ownedVehicles.push({
+    instanceId,
+    definitionId: definition.id,
+    registered: true,
+    garageSlot: 0,
+    bodyHealth: 100,
+    engineHealth: 100,
+    tireHealth: [100, 100, 100, 100],
+    upgrades: {
+      engine: 0,
+      brakes: 0,
+      grip: 0,
+      armor: 0,
+      paint: 'factory',
+    },
+  });
+  save.trunks[instanceId] = createVehicleTrunk(definition, 0);
+  save.worldFlags['starter-vehicle-granted'] = true;
+}
+
+function worldVehicleFromSave(save: Readonly<SaveGameV1>): WorldVehicleInitialization {
+  const vehicle = [...save.ownedVehicles]
+    .sort((left, right) => left.garageSlot - right.garageSlot || left.instanceId.localeCompare(right.instanceId))
+    .find((candidate) => getVehicle(candidate.definitionId) !== undefined);
+  if (!vehicle) {
+    throw new Error('Save has no valid garage vehicle');
+  }
+  const definition = getVehicle(vehicle.definitionId);
+  if (!definition) {
+    throw new Error(`Unknown saved vehicle definition: ${vehicle.definitionId}`);
+  }
+  return {
+    instanceId: vehicle.instanceId,
+    classId: definition.id,
+    registered: vehicle.registered,
+    paint: vehicle.upgrades.paint,
+    integrity: {
+      bodyHealth: vehicle.bodyHealth,
+      engineHealth: vehicle.engineHealth,
+      tireHealth: [...vehicle.tireHealth] as [number, number, number, number],
+    },
+    upgrades: {
+      engine: vehicle.upgrades.engine,
+      brakes: vehicle.upgrades.brakes,
+      grip: vehicle.upgrades.grip,
+      armor: vehicle.upgrades.armor,
+    },
+  };
 }
 
 const TOUCH_CONTROL_ACTIONS = new Set<TouchControlAction>([

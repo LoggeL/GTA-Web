@@ -11,6 +11,7 @@ import {
 } from 'three';
 import type { BufferGeometry, Material, Scene } from 'three';
 
+import type { VehicleClassId } from '../data/types';
 import { COMBAT_CAPACITY } from './combat';
 import { PEDESTRIAN_CAPACITY } from './pedestrians';
 import { TRAFFIC_CAPACITY } from './traffic';
@@ -24,6 +25,23 @@ const ROLE_COLORS: Readonly<Record<CombatRole, number>> = Object.freeze({
   flanker: 0xa66eb0,
   heavy: 0x5d686e,
   marksman: 0xd0a23b,
+});
+
+interface TrafficVisualProfile {
+  readonly bodyScale: readonly [number, number, number];
+  readonly cabinScale: readonly [number, number, number];
+  readonly cabinHeight: number;
+}
+
+const TRAFFIC_VISUAL_PROFILES: Readonly<Record<VehicleClassId, TrafficVisualProfile>> = Object.freeze({
+  compact: { bodyScale: [0.86, 0.92, 0.86], cabinScale: [0.88, 0.96, 0.9], cabinHeight: 1.01 },
+  sedan: { bodyScale: [1, 1, 1], cabinScale: [1, 1, 1], cabinHeight: 1.04 },
+  muscle: { bodyScale: [1.08, 0.9, 1.06], cabinScale: [1.02, 0.84, 0.86], cabinHeight: 0.99 },
+  sports: { bodyScale: [0.98, 0.76, 1.08], cabinScale: [0.92, 0.68, 0.84], cabinHeight: 0.88 },
+  van: { bodyScale: [1.1, 1.34, 1.16], cabinScale: [1.08, 1.42, 1.12], cabinHeight: 1.23 },
+  pickup: { bodyScale: [1.1, 1.08, 1.2], cabinScale: [1.04, 1.04, 0.72], cabinHeight: 1.08 },
+  'police-cruiser': { bodyScale: [1.04, 1.05, 1.08], cabinScale: [1.02, 1.04, 1], cabinHeight: 1.07 },
+  motorcycle: { bodyScale: [0.34, 0.74, 0.66], cabinScale: [0.25, 0.45, 0.38], cabinHeight: 0.88 },
 });
 
 function markInstancesUpdated(mesh: InstancedMesh): void {
@@ -126,13 +144,18 @@ export class SimulationVisualLayer {
         this.setHidden(this.trafficCabins, index);
         continue;
       }
+      const profile = TRAFFIC_VISUAL_PROFILES[vehicle.classId];
       this.dummy.position.set(vehicle.position.x, 0.48, vehicle.position.z);
       this.dummy.rotation.set(0, vehicle.heading, 0);
-      this.dummy.scale.set(1, 1, 1);
+      this.dummy.scale.set(...profile.bodyScale);
       this.dummy.updateMatrix();
       this.trafficBodies.setMatrixAt(index, this.dummy.matrix);
-      this.trafficBodies.setColorAt(index, new Color(TRAFFIC_COLORS[index % TRAFFIC_COLORS.length] ?? 0xffffff));
-      this.dummy.position.y = 1.04;
+      const bodyColor = vehicle.classId === 'police-cruiser'
+        ? 0xe7edf2
+        : TRAFFIC_COLORS[index % TRAFFIC_COLORS.length] ?? 0xffffff;
+      this.trafficBodies.setColorAt(index, new Color(bodyColor));
+      this.dummy.position.y = profile.cabinHeight;
+      this.dummy.scale.set(...profile.cabinScale);
       this.dummy.updateMatrix();
       this.trafficCabins.setMatrixAt(index, this.dummy.matrix);
     }

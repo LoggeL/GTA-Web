@@ -109,6 +109,58 @@ describe('save validation and format', () => {
 });
 
 describe('CoreSaveService', () => {
+  it('round-trips a nonempty owned-vehicle trunk without losing cargo placement', async () => {
+    const service = new CoreSaveService(new InMemorySaveAdapter());
+    const save = createInitialSaveGame(2, 'masculine', { timestamp: 42 });
+    save.ownedVehicles.push({
+      instanceId: 'save-trunk-car',
+      definitionId: 'compact',
+      registered: true,
+      garageSlot: 0,
+      bodyHealth: 83,
+      engineHealth: 71,
+      tireHealth: [100, 90, 80, 70],
+      upgrades: { engine: 1, brakes: 2, grip: 0, armor: 1, paint: 'coastal-teal' },
+    });
+    save.trunks['save-trunk-car'] = {
+      gridWidth: 6,
+      gridHeight: 4,
+      maxWeightKg: 192,
+      items: [{
+        instanceId: 'trunk-ammo-001',
+        definitionId: 'ammo-handgun',
+        quantity: 24,
+        durability: 100,
+        x: 2,
+        y: 1,
+        rotated: false,
+      }],
+    };
+
+    await service.saveSlot(save);
+    save.trunks['save-trunk-car']!.items[0]!.quantity = 1;
+    const loaded = await service.loadSlot(2);
+
+    expect(loaded?.save.ownedVehicles[0]).toEqual(expect.objectContaining({
+      instanceId: 'save-trunk-car',
+      upgrades: expect.objectContaining({ paint: 'coastal-teal' }),
+    }));
+    expect(loaded?.save.trunks['save-trunk-car']).toEqual({
+      gridWidth: 6,
+      gridHeight: 4,
+      maxWeightKg: 192,
+      items: [{
+        instanceId: 'trunk-ammo-001',
+        definitionId: 'ammo-handgun',
+        quantity: 24,
+        durability: 100,
+        x: 2,
+        y: 1,
+        rotated: false,
+      }],
+    });
+  });
+
   it('persists defensive copies and retains the previous good snapshot', async () => {
     const adapter = new InMemorySaveAdapter();
     const service = new CoreSaveService(adapter);

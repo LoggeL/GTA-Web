@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 17:50 CEST
+Last updated: 2026-07-16 18:00 CEST
 Plan status: Active  
-Current focus: M3 implementation
+Current focus: M4 implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -232,15 +232,17 @@ Completion evidence and implemented scope:
 - The production e2e command rebuilds before previewing, and the QA bridge is available only behind `?qa=1`. Acceptance coverage exercises four-district traversal, bounded GPU/collision residency, live populations, Moreno Garage round trip, cross-city GPS arrival, and forced failure Retry/Return in the applicable desktop and compact-mobile projects.
 - The Preview 1 pre-publication gate passed: `npm run check` completed 40 test files / 244 tests; the full Playwright suite completed 14 passed / 8 intentional project-specific skips; visual QA passed at 1280×720 and 844×390, including the full map and Moreno Garage; the production artifact is 0.83 MiB total / 0.31 MiB compressed.
 
-### M3 — Vehicles, traffic, ownership, and garage — `PENDING`
+### M3 — Vehicles, traffic, ownership, and garage — `COMPLETE`
 
-- [ ] Eight vehicle classes, arcade handling/damage/camera, enter/exit/theft, touch layouts.
-- [ ] Lane traffic, yielding/panic/police interaction, vehicle pooling.
-- [ ] Ownership, garage slots, registration, upgrades, repair, trunk inventory.
+- [x] Eight vehicle classes, arcade handling/damage/camera, enter/exit/theft, touch layouts.
+- [x] Lane traffic, yielding/panic/police interaction, vehicle pooling.
+- [x] Ownership, garage slots, registration, upgrades, repair, trunk inventory.
 
 Acceptance: each class is distinct and driveable; traffic does not deadlock during a five-minute route; owned/upgraded/damaged vehicles survive save/load.
 
-### M4 — Combat, stealth, NPC AI, and wanted system — `PENDING`
+Completion evidence: all eight silhouettes and handling profiles are hot-swappable and driveable; the live lane graph maintains its fixed pool across district seams and completed a deterministic 300-second generated-city route without deadlock; police sirens cause live traffic to yield; the eight-slot garage rejects police vehicles and persists civilian identity, class, upgrades, paint, trunk contents, damage, repair, and retrieval across reloads. The 1280×720 desktop browser pass covered driving, garage controls, paint, and exterior rendering. The 844×390 compact-mobile browser course covered touch entry, throttle/steering, camera drag, handbrake, vehicle camera, recovery, exit, and portrait blocking. `npm run check` passed 48 test files / 301 tests, the full Playwright matrix passed 16 tests / 10 intentional project-specific skips, and the production artifact is 0.96 MiB total / 0.34 MiB compressed.
+
+### M4 — Combat, stealth, NPC AI, and wanted system — `IN PROGRESS`
 
 - [ ] Five weapon classes/tiers, simple melee, soft cover, aim assist, durability/ammo/armor.
 - [ ] Pedestrians and five combat roles with nav, perception, reactions, pooling.
@@ -322,6 +324,8 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 17:00 | M1 | Completed the unified desktop/touch input, rebinding, traversal, camera, interaction, pause/focus, settings, accessibility, unsupported-browser, and landscape/portrait UI acceptance scope. Desktop and compact browser validation found no stuck-input, scaling, or overlay regression. | M1 checklist and completion evidence above; included in 40 files / 244 passing tests and the full Playwright gate |
 | 2026-07-16 17:00 | M2 | Completed the four-district streamed city: canonical chunk integrity, active/resident/LRU safety boundaries, real lazy GPU creation/eviction/disposal, active-cell collision, five interiors, Moreno Garage round trip, A*/GPS/map/discovery/custom waypoint navigation, day/night and rain grip, adaptive real traffic/pedestrian populations, road-closure collision/routing, and accessible forced-failure recovery. | `npm run check`: 40 files / 244 tests; Playwright: 14 passed / 8 intentional skips; 1280×720 and 844×390 visual QA including map and Moreno Garage; 0.83 MiB artifact / 0.31 MiB compressed |
 | 2026-07-16 17:50 | Preview 1 | Published the complete M1/M2 four-district streaming/navigation build through GitHub Pages. Live smoke passed through splash/menu, an existing save into gameplay, vehicle entry, and the full map at desktop 1280×720 and compact 844×390; repository-base assets loaded successfully. | Source `0ba4478c7bc08a34f1f9ffbd83d7a36db119decd`; tag `preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29503687202); [live preview](https://loggel.github.io/GTA-Web/); 0.83 MiB uploaded artifact / 0.31 MiB compressed shell; `npm run check` 40 files / 244 tests; Playwright 14 passed / 8 intentional skips |
+| 2026-07-16 17:55 | M3 | Began the vehicle/traffic/ownership/garage milestone with parallel implementation of the eight-class arcade handling and integrity registry plus the pure ownership, finite-slot garage, upgrade, repair, and trunk domain. | M3 marked `IN PROGRESS`; acceptance remains open until runtime, UI, persistence, touch, and soak gates pass |
+| 2026-07-16 18:00 | M3 | Completed the vehicle, traffic, ownership, garage, and vehicle-specific touch scope and advanced the active implementation focus to M4. | `npm run check`: 48 files / 301 tests; Playwright: 16 passed / 10 intentional project-specific skips; deterministic 300-second generated-city traffic route; desktop 1280×720 visual QA; compact-mobile 844×390 touch course; 0.96 MiB artifact / 0.34 MiB compressed |
 
 ## Release record
 

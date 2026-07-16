@@ -260,17 +260,26 @@ describe('world input adapter', () => {
     controller.keyDown('KeyA');
     controller.keyDown('Space');
     controller.keyDown('KeyE');
+    controller.keyDown('KeyR');
+    controller.keyDown('KeyC');
+    controller.mouseButtonDown(0);
     controller.mouseButtonDown(2);
 
-    expect(toWorldInputState(controller.consumeFrame())).toMatchObject({
+    const first = toWorldInputState(controller.consumeFrame());
+    expect(first).toMatchObject({
       moveForward: -1,
       moveRight: -1,
       aim: true,
       handbrake: true,
+      vehiclePrimaryAction: true,
+      vehicleCameraToggle: true,
+      vehicleReset: true,
       interact: true,
       jump: false,
       crouch: false,
       sprint: false,
     });
+    expect(toWorldInputState(controller.consumeFrame()).vehicleReset).toBe(false);
+    expect(toWorldInputState(controller.consumeFrame()).vehicleCameraToggle).toBe(false);
   });
 });
