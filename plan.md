@@ -1,6 +1,6 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 14:16 CEST  
+Last updated: 2026-07-16 14:25 CEST  
 Plan status: Active  
 Current focus: M1 — integrate the verified input/player/camera/UI foundations into a complete interaction course  
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
@@ -302,14 +302,16 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 | M0 / M7 | Generated, inspected, optimized, and integrated the original text-free splash art through the built-in ImageGen workflow. | `public/assets/splash/heatline-splash.webp`; 1672×941 WebP; 119 KB; generated asset ledger |
 | 2026-07-16 14:16 | M0 | Bootstrap acceptance passed. The menu launches the deterministic Three.js city shell, Alex can move and enter/exit the starter vehicle, IndexedDB Continue works, and map/pause/touch/portrait behaviors were smoke-tested. | `npm run check`: 25 files / 132 tests; `npm run test:e2e`: 4 passed / 4 project-specific skips; desktop and 844×390 visual QA; 0.68 MiB artifact / 0.26 MiB compressed shell |
 | 2026-07-16 14:16 | M2 / M4 / M5 / M6 foundations | Added verified but not yet fully UI-integrated road A*/GPS and 256 m chunk streaming, pooled traffic/pedestrian/five-role combat simulations, progression/inventory/economy/campaign/wanted systems, 12-mission/60-collectible registries, and mission/dialogue runtimes. These do not mark later milestones complete until their end-to-end acceptance checks pass. | Unit/integration suite included in the 132 passing tests; `src/navigation`, `src/simulation`, `src/systems`, `src/data`, `src/runtime` |
-| 2026-07-16 14:21 | M0 | The first remote gate exposed two late-arriving restore validation cases. Dialogue restore now preserves its current line when earlier content is removed, and mission restore rejects malformed numeric objective/checkpoint progress without mutation. | Focused runtime tests: 14/14; full `npm run check`: 25 files / 132 tests; corrective deployment pending |
+| 2026-07-16 14:21 | M0 | The first remote gate exposed two late-arriving restore validation cases. Dialogue restore now preserves its current line when earlier content is removed, and mission restore rejects malformed numeric objective/checkpoint progress without mutation. | Focused runtime tests: 14/14; full `npm run check`: 25 files / 132 tests |
+| 2026-07-16 14:25 | Preview 0.1 | Published the corrected M0 build through the GitHub Pages workflow and smoke-tested the live repository-base URL through splash, save/preset selection, and rendered gameplay. Also visually checked the live 844×390 gameplay layout. | Source `159b4179d646204069668bad7d8ae74c0f8cba85`; tag `preview-0.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29497909734); [live preview](https://loggel.github.io/GTA-Web/) |
 
 ## Release record
 
-- Repository: `https://github.com/LoggeL/GTA-Web` (creation/push pending)
-- GitHub Pages URL: `https://loggel.github.io/GTA-Web/` (deployment pending)
-- Release commit: pending
+- Repository: `https://github.com/LoggeL/GTA-Web`
+- GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
+- Current preview: Preview 0.1 (`preview-0.1`)
+- Release commit: `159b4179d646204069668bad7d8ae74c0f8cba85`
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
 - Published artifact size: 0.68 MiB at Preview 0 gate
 - Final `npm run check`: pending; Preview 0 gate passed with 132 tests
-- Final browser smoke test: pending; Preview 0 local browser smoke passed on desktop and mobile landscape
+- Final browser smoke test: pending; Preview 0 local browser smoke and live desktop/844×390 smoke passed without uncaught errors
