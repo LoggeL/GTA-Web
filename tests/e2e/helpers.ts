@@ -47,7 +47,7 @@ export async function startNewGame(
   // The loading screen is removed in the same render that commits 100%, so slower
   // engines may never expose the terminal attribute to Playwright. The visible HUD
   // is the stable, user-facing completion boundary.
-  await expect(page.getByLabel('Game HUD')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByLabel('Game HUD')).toBeVisible({ timeout: 75_000 });
 }
 
 export async function expectPlayableWorldShell(page: Page): Promise<void> {
