@@ -273,7 +273,22 @@ type QaGlobal = typeof globalThis & {
   __HEATLINE_QA__?: HeatlineQaApi;
 };
 
-const nextAnimationFrame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+const nextAnimationFrame = (): Promise<void> => new Promise((resolve) => {
+  let settled = false;
+  let frameId: number | null = null;
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
+    resolve();
+  };
+  // Firefox and power-saving browsers may suspend rAF while a loading screen is
+  // occluded. Loading must still advance; the world loop itself remains rAF-driven.
+  timeoutId = globalThis.setTimeout(finish, 120);
+  frameId = requestAnimationFrame(finish);
+});
 
 export class App {
   readonly #root: HTMLElement;
