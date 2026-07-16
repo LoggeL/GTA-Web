@@ -186,7 +186,9 @@ export function tickWanted(
     : { ...state };
   const decayRate = context.insideSearchArea ? 1 : 1.5;
   const remaining = Math.max(0, searching.searchSecondsRemaining - deltaSeconds * decayRate);
-  if (remaining === 0) {
+  // Police may exhaust their local sweep while Alex remains inside the search
+  // perimeter, but heat only clears after Alex is also outside it.
+  if (remaining === 0 && !context.insideSearchArea) {
     return clearWanted();
   }
   return {

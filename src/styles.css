@@ -1500,6 +1500,16 @@ kbd {
     bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 1.8rem);
   }
 
+  [data-touch-action='melee'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 13.2rem);
+    bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 5.8rem);
+  }
+
+  [data-touch-action='weaponRadial'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 17.3rem);
+    bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 1.8rem);
+  }
+
   [data-touch-layout='vehicle'] .touch-stick {
     width: 8.2rem;
     height: 8.2rem;

@@ -22,6 +22,7 @@ export interface HudSnapshot {
   stamina: number;
   wantedLevel: number;
   wantedSearching: boolean;
+  wantedSearchRadius?: number;
   objective: string;
   objectiveDetail?: string;
   district: string;
@@ -140,6 +141,40 @@ export interface KeyboardBindingSwap {
   settings: GameSettings;
   previousCode: string;
   swappedAction?: InputAction;
+}
+
+export type TouchControlLayout = Readonly<Record<
+  string,
+  readonly [ariaLabel: string, text: string, hidden: boolean]
+>>;
+
+const ON_FOOT_TOUCH_CONTROL_LAYOUT: TouchControlLayout = {
+  interact: ['Interact', 'E', false],
+  sprint: ['Sprint', 'RUN', false],
+  jump: ['Jump', 'JUMP', false],
+  crouch: ['Crouch', 'CROUCH', false],
+  aim: ['Aim', 'AIM', false],
+  fire: ['Fire or attack', 'FIRE', false],
+  melee: ['Charge heavy attack', 'HEAVY', false],
+  reload: ['Reload', 'RELOAD', false],
+  weaponRadial: ['Cycle weapon', 'SWAP', false],
+};
+
+const VEHICLE_TOUCH_CONTROL_LAYOUT: TouchControlLayout = {
+  interact: ['Exit vehicle', 'EXIT', false],
+  sprint: ['Sprint', 'RUN', true],
+  jump: ['Handbrake', 'BRAKE', false],
+  crouch: ['Vehicle camera', 'CAM', false],
+  aim: ['Vehicle aim', 'AIM', false],
+  fire: ['Vehicle action or siren', 'ACTION', false],
+  melee: ['Charge heavy attack', 'HEAVY', true],
+  reload: ['Vehicle reset', 'RESET', false],
+  weaponRadial: ['Cycle weapon', 'SWAP', true],
+};
+
+/** Returns the complete touch action contract for the active player mode. */
+export function getTouchControlLayout(vehicleMode: boolean): TouchControlLayout {
+  return vehicleMode ? VEHICLE_TOUCH_CONTROL_LAYOUT : ON_FOOT_TOUCH_CONTROL_LAYOUT;
 }
 
 /** Returns a readable, layout-independent label for a KeyboardEvent.code value. */
@@ -326,8 +361,18 @@ export class GameUI {
       const active = index < snapshot.wantedLevel;
       return `<span class="wanted-star ${active ? 'is-active' : ''}" aria-hidden="true">★</span>`;
     }).join('');
-    this.#query<HTMLElement>('[data-hud-wanted-label]').textContent =
-      snapshot.wantedLevel === 0 ? '' : snapshot.wantedSearching ? 'SEARCHING' : 'PURSUIT';
+    const wanted = this.#query<HTMLElement>('.wanted');
+    const searchRadius = Math.max(0, Math.round(snapshot.wantedSearchRadius ?? 0));
+    const wantedMode = snapshot.wantedSearching ? 'SEARCH' : 'PURSUIT';
+    this.#query<HTMLElement>('[data-hud-wanted-label]').textContent = snapshot.wantedLevel === 0
+      ? ''
+      : `${wantedMode}${searchRadius > 0 ? ` · ${searchRadius}M` : ''}`;
+    wanted.setAttribute(
+      'aria-label',
+      snapshot.wantedLevel === 0
+        ? 'Wanted level 0, clear'
+        : `Wanted level ${snapshot.wantedLevel}, ${wantedMode.toLowerCase()}, search radius ${searchRadius} meters`,
+    );
 
     const vehicle = this.#query<HTMLElement>('[data-hud-vehicle]');
     vehicle.hidden = snapshot.speedKph === undefined;
@@ -580,7 +625,9 @@ export class GameUI {
             <button data-touch-action="crouch" aria-label="Crouch">CROUCH</button>
             <button data-touch-action="aim" aria-label="Aim">AIM</button>
             <button data-touch-action="fire" aria-label="Fire or attack">FIRE</button>
+            <button data-touch-action="melee" aria-label="Charge heavy attack">HEAVY</button>
             <button data-touch-action="reload" aria-label="Reload">RELOAD</button>
+            <button data-touch-action="weaponRadial" aria-label="Cycle weapon">SWAP</button>
           </div>
 
           <nav class="quick-nav" aria-label="Game panels">
@@ -715,25 +762,7 @@ export class GameUI {
     stick.setAttribute('aria-label', vehicleMode ? 'Steering and throttle stick' : 'Movement stick');
     this.#query<HTMLElement>('[data-touch-stick-label]').textContent = vehicleMode ? 'DRIVE' : 'MOVE';
 
-    const layouts: Readonly<Record<string, readonly [string, string, boolean]>> = vehicleMode
-      ? {
-        interact: ['Exit vehicle', 'EXIT', false],
-        sprint: ['Sprint', 'RUN', true],
-        jump: ['Handbrake', 'BRAKE', false],
-        crouch: ['Vehicle camera', 'CAM', false],
-        aim: ['Vehicle aim', 'AIM', false],
-        fire: ['Vehicle action or siren', 'ACTION', false],
-        reload: ['Vehicle reset', 'RESET', false],
-      }
-      : {
-        interact: ['Interact', 'E', false],
-        sprint: ['Sprint', 'RUN', false],
-        jump: ['Jump', 'JUMP', false],
-        crouch: ['Crouch', 'CROUCH', false],
-        aim: ['Aim', 'AIM', false],
-        fire: ['Fire or attack', 'FIRE', false],
-        reload: ['Reload', 'RELOAD', false],
-      };
+    const layouts = getTouchControlLayout(vehicleMode);
 
     for (const [action, [label, text, hidden]] of Object.entries(layouts)) {
       const button = this.#query<HTMLButtonElement>(`[data-touch-action="${action}"]`);

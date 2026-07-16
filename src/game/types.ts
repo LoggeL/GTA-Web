@@ -1,4 +1,11 @@
-import type { VehicleClassId } from '../data/types';
+import type { VehicleClassId, WeaponClassId, WeaponTier } from '../data/types';
+import type {
+  CrimeEvent,
+  EnemyDamageEvent,
+  PlayerDamageEvent,
+  WitnessReportEvent,
+} from '../simulation/types';
+import type { PoliceResponseVisualSnapshot } from './PoliceResponseVisual';
 import type { VehicleIntegrityState } from './vehicleIntegrity';
 
 export type DistrictId = 'neon-strand' | 'alta-vista' | 'arroyo-heights' | 'breakwater';
@@ -48,6 +55,20 @@ export interface WorldInputState {
   jump: boolean;
   crouch: boolean;
   aim: boolean;
+  /** Held primary attack input; firearm cadence is enforced by the combat runtime. */
+  fire: boolean;
+  /** One-shot heavy melee/context attack request. */
+  melee: boolean;
+  /** Held charge state for the heavy melee/context action. */
+  heavyAttackHeld: boolean;
+  /** One-shot release that commits the accumulated heavy attack charge. */
+  heavyAttackReleased: boolean;
+  /** One-shot reload request. */
+  reload: boolean;
+  /** One-shot request to cycle the quick weapon loadout. */
+  weaponCycle: boolean;
+  /** One-shot evasive step requested while blocking/aiming. */
+  dodge: boolean;
   /** One-shot camera shoulder toggle request. */
   shoulderSwap: boolean;
   handbrake: boolean;
@@ -105,6 +126,23 @@ export interface WorldSnapshot {
   vehiclePaint: string;
   vehicleSirenActive: boolean;
   vehicleCameraView: 'chase' | 'close';
+  activeWeaponId: string;
+  activeWeaponName: string;
+  activeWeaponClassId: WeaponClassId;
+  activeWeaponTier: WeaponTier;
+  weaponAmmo: number;
+  weaponAmmoReserve: number;
+  weaponDurability: number;
+  weaponReloading: boolean;
+  meleeStamina: number;
+  meleeBlocking: boolean;
+  softCoverEngaged: boolean;
+  softCoverPeeking: boolean;
+  softCoverExposure: number;
+  aimTargetId: string | null;
+  activeCombatants: number;
+  policeResponse: PoliceResponseVisualSnapshot;
+  policePhase: 'clear' | 'investigating' | 'pursuit' | 'search';
   prompt: string | null;
 }
 
@@ -143,8 +181,15 @@ export interface WorldViewOptions {
   inputProvider?: () => Partial<WorldInputState>;
   reducedMotion?: boolean;
   resolutionScale?: number;
+  aimAssistLevel?: 'off' | 'low' | 'medium' | 'high';
+  aimAssistDevice?: 'desktop' | 'mobile';
+  desktopSoftLockEnabled?: boolean;
   onFrame?: (frameMilliseconds: number) => void;
   onSnapshot?: (snapshot: WorldSnapshot) => void;
+  onCrime?: (event: CrimeEvent) => void;
+  onWitnessReport?: (event: WitnessReportEvent) => void;
+  onEnemyDamage?: (event: EnemyDamageEvent) => void;
+  onPlayerDamage?: (event: PlayerDamageEvent) => void;
 }
 
 export function createWorldInputState(): WorldInputState {
@@ -155,6 +200,13 @@ export function createWorldInputState(): WorldInputState {
     jump: false,
     crouch: false,
     aim: false,
+    fire: false,
+    melee: false,
+    heavyAttackHeld: false,
+    heavyAttackReleased: false,
+    reload: false,
+    weaponCycle: false,
+    dodge: false,
     shoulderSwap: false,
     handbrake: false,
     vehiclePrimaryAction: false,

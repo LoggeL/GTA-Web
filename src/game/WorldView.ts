@@ -20,8 +20,15 @@ import { CitySimulation } from '../simulation';
 import type {
   ActorPopulationLimits,
   CitySimulationSnapshot,
+  CombatNpcSnapshot,
+  PlayerDamageEvent,
+  WeaponDefinition as SimulationWeaponDefinition,
 } from '../simulation';
+import { directionFromHeading, headingFromDirection } from '../simulation/math';
+import { SimulationRandom } from '../simulation/random';
+import type { PoliceResponseSnapshot } from '../systems/policeResponse';
 import { computeCameraPlacement, oppositeShoulder } from './camera';
+import { cameraSafeFraction } from './collision';
 import type { DrawDensityLimits } from './CityStreamingController';
 import { PLAYER_SPAWN, VEHICLE_SPAWN, districtAt, generateCity } from './city';
 import type { CityLayout, CollisionRect } from './city';
@@ -41,7 +48,12 @@ import { InteriorPortalVisual } from './InteriorPortalVisual';
 import { InteriorRuntime } from './InteriorRuntime';
 import type { InteriorActorState, InteriorTransform } from './InteriorRuntime';
 import { InteriorSceneVisual } from './InteriorSceneVisual';
+import { resolveAimAssist, resolveSoftCover } from './combatDomain';
+import type { SoftCoverResult } from './combatDomain';
+import { PoliceResponseVisual } from './PoliceResponseVisual';
+import type { PoliceVisualLevel, PoliceVisualPhase } from './PoliceResponseVisual';
 import { RoadClosureVisual } from './RoadClosureVisual';
+import { WorldCombatRuntime } from './WorldCombatRuntime';
 import { createWorldInputState } from './types';
 import type {
   EnvironmentUpdate,
@@ -98,6 +110,27 @@ function copyInput(target: WorldInputState, source: Partial<WorldInputState>): v
   if (source.aim !== undefined) {
     target.aim = source.aim;
   }
+  if (source.fire !== undefined) {
+    target.fire = source.fire;
+  }
+  if (source.melee !== undefined) {
+    target.melee ||= source.melee;
+  }
+  if (source.heavyAttackHeld !== undefined) {
+    target.heavyAttackHeld = source.heavyAttackHeld;
+  }
+  if (source.heavyAttackReleased !== undefined) {
+    target.heavyAttackReleased ||= source.heavyAttackReleased;
+  }
+  if (source.reload !== undefined) {
+    target.reload ||= source.reload;
+  }
+  if (source.weaponCycle !== undefined) {
+    target.weaponCycle ||= source.weaponCycle;
+  }
+  if (source.dodge !== undefined) {
+    target.dodge ||= source.dodge;
+  }
   if (source.shoulderSwap !== undefined) {
     target.shoulderSwap ||= source.shoulderSwap;
   }
@@ -153,10 +186,17 @@ export class WorldView {
   private readonly externalInput = createWorldInputState();
   private readonly cityVisuals: CityVisualBundle;
   private readonly citySimulation: CitySimulation;
+  private readonly combatRuntime: WorldCombatRuntime;
+  private readonly combatRandom: SimulationRandom;
+  private readonly aimAssistLevel: 'off' | 'low' | 'medium' | 'high';
+  private readonly aimAssistDevice: 'desktop' | 'mobile';
+  private readonly desktopSoftLockEnabled: boolean;
+  private readonly onPlayerDamage: ((event: PlayerDamageEvent) => void) | null;
   private readonly interiorRuntime: InteriorRuntime;
   private readonly interiorSceneVisual: InteriorSceneVisual;
   private readonly interiorPortalVisual: InteriorPortalVisual;
   private readonly roadClosureVisual: RoadClosureVisual;
+  private readonly policeResponseVisual: PoliceResponseVisual;
   private readonly avatarVisual: AvatarVisual;
   private readonly vehicleVisual: VehicleVisual;
   private readonly rainField: RainField;
@@ -174,6 +214,19 @@ export class WorldView {
   private cameraYaw = DEFAULT_CAMERA_YAW;
   private cameraPitch = DEFAULT_CAMERA_PITCH;
   private currentAim = false;
+  private aimTargetId: string | null = null;
+  private softCover: SoftCoverResult = {
+    engaged: false,
+    coverId: null,
+    coverHeight: null,
+    distanceMeters: Number.POSITIVE_INFINITY,
+    normal: null,
+    corner: null,
+    peeking: false,
+    exposure: 1,
+    incomingDamageMultiplier: 1,
+    positionCorrection: null,
+  };
   private shoulderSide: ShoulderSide = 'right';
   private running = false;
   private paused = false;
@@ -185,6 +238,9 @@ export class WorldView {
   private elapsedSeconds = 0;
   private interiorTransitionPending = false;
   private exteriorCollisions: readonly CollisionRect[];
+  private policeResponseLevel: PoliceVisualLevel = 0;
+  private policeResponsePhase: PoliceVisualPhase = 'clear';
+  private policeResponsePlan: Readonly<PoliceResponseSnapshot> | null = null;
 
   public constructor(options: WorldViewOptions) {
     this.mount = options.mount;
@@ -195,6 +251,12 @@ export class WorldView {
     this.onSnapshot = options.onSnapshot ?? null;
     this.onFrame = options.onFrame ?? null;
     this.layout = generateCity(options.seed ?? 'heatline-solara-world-v1', quality);
+    this.combatRuntime = new WorldCombatRuntime();
+    this.combatRandom = new SimulationRandom(`${this.layout.seed}:player-combat`);
+    this.aimAssistLevel = options.aimAssistLevel ?? 'medium';
+    this.aimAssistDevice = options.aimAssistDevice ?? 'desktop';
+    this.desktopSoftLockEnabled = options.desktopSoftLockEnabled ?? true;
+    this.onPlayerDamage = options.onPlayerDamage ?? null;
     this.exteriorCollisions = this.layout.collisions;
     this.player = createPlayerState(options.initialPosition ?? PLAYER_SPAWN);
     this.player.heading = options.initialHeading ?? 0;
@@ -268,11 +330,16 @@ export class WorldView {
       quality,
       roads: this.layout.roads,
       seedCombatants: false,
+      onCrime: options.onCrime,
+      onWitnessReport: options.onWitnessReport,
+      onEnemyDamage: options.onEnemyDamage,
+      onPlayerDamage: (event) => this.handleIncomingPlayerDamage(event),
     });
     this.interiorRuntime = new InteriorRuntime();
     this.interiorSceneVisual = new InteriorSceneVisual();
     this.interiorPortalVisual = new InteriorPortalVisual(this.interiorRuntime.definitions);
     this.roadClosureVisual = new RoadClosureVisual();
+    this.policeResponseVisual = new PoliceResponseVisual();
     this.avatarVisual = new AvatarVisual();
     this.vehicleVisual = new VehicleVisual();
     this.rainField = new RainField(this.layout.seed, quality);
@@ -281,6 +348,7 @@ export class WorldView {
       this.interiorSceneVisual.root,
       this.interiorPortalVisual.root,
       this.roadClosureVisual.root,
+      this.policeResponseVisual.root,
       this.avatarVisual.root,
       this.vehicleVisual.root,
       this.rainField.points,
@@ -391,6 +459,44 @@ export class WorldView {
     return this.citySimulation.getSnapshot();
   }
 
+  public getCombatNpcSnapshot(): readonly CombatNpcSnapshot[] {
+    this.assertAlive();
+    return this.citySimulation.getCombatNpcSnapshot();
+  }
+
+  /** Spawns one of every authored role around a bounded encounter center. */
+  public seedCombatEncounter(center: Readonly<{ x: number; z: number }>): readonly string[] {
+    this.assertAlive();
+    if (!Number.isFinite(center.x) || !Number.isFinite(center.z)) {
+      throw new TypeError('combat encounter center must contain finite coordinates');
+    }
+    const roles = ['brawler', 'gunner', 'flanker', 'heavy', 'marksman'] as const;
+    const spawned: string[] = [];
+    roles.forEach((role, index) => {
+      const angle = (index / roles.length) * Math.PI * 2;
+      const radius = 8 + index * 1.3;
+      const id = this.citySimulation.spawnEnemy(role, {
+        x: center.x + Math.cos(angle) * radius,
+        y: 0,
+        z: center.z + Math.sin(angle) * radius,
+      });
+      if (id) spawned.push(id);
+    });
+    return spawned;
+  }
+
+  public selectCombatWeapon(weaponId: string): WorldSnapshot {
+    this.assertAlive();
+    this.combatRuntime.selectWeapon(weaponId);
+    this.emitSnapshot(true);
+    return this.getSnapshot();
+  }
+
+  public damageCombatant(targetId: string, amount: number): boolean {
+    this.assertAlive();
+    return this.citySimulation.damageEnemy(targetId, amount, 'player') !== null;
+  }
+
   public applyActiveVehicleRecord(
     record: Readonly<WorldVehicleInitialization>,
   ): boolean {
@@ -434,7 +540,9 @@ export class WorldView {
   }
 
   public get activeCollisionCount(): number {
-    return this.exteriorCollisions.length + this.roadClosureVisual.collisions.length;
+    return this.exteriorCollisions.length
+      + this.roadClosureVisual.collisions.length
+      + this.policeResponseVisual.collisions.length;
   }
 
   public setRoadClosures(
@@ -442,6 +550,21 @@ export class WorldView {
   ): void {
     this.assertAlive();
     this.roadClosureVisual.setClosures(closures);
+  }
+
+  public setPoliceResponse(level: PoliceVisualLevel, phase: PoliceVisualPhase): void {
+    this.assertAlive();
+    this.policeResponseLevel = level;
+    this.policeResponsePhase = phase;
+    this.updatePoliceResponseVisual();
+    this.emitSnapshot(true);
+  }
+
+  /** Updates moving deployments without recursively forcing an App snapshot. */
+  public setPoliceResponsePlan(plan: Readonly<PoliceResponseSnapshot> | null): void {
+    this.assertAlive();
+    this.policeResponsePlan = plan;
+    this.updatePoliceResponseVisual();
   }
 
   public recoverToSafePosition(position: Readonly<{ x: number; z: number }>): void {
@@ -468,6 +591,42 @@ export class WorldView {
         heading: this.player.heading,
       });
     }
+    this.updateCamera(1);
+    this.emitSnapshot(true);
+  }
+
+  public orientPlayerToward(position: Readonly<{ x: number; z: number }>): WorldSnapshot {
+    this.assertAlive();
+    if (!Number.isFinite(position.x) || !Number.isFinite(position.z)) {
+      throw new TypeError('orientation target must contain finite coordinates');
+    }
+    const actor = this.vehicle.occupied ? this.vehicle : this.player;
+    const heading = headingFromDirection(
+      position.x - actor.position.x,
+      position.z - actor.position.z,
+    );
+    actor.heading = heading;
+    this.cameraYaw = heading;
+    this.updateCamera(1);
+    this.emitSnapshot(true);
+    return this.getSnapshot();
+  }
+
+  /** Forces an on-foot, upright respawn after death or arrest. */
+  public respawnPlayer(position: Readonly<{ x: number; z: number }>, heading = 0): void {
+    this.assertAlive();
+    if (!Number.isFinite(position.x) || !Number.isFinite(position.z) || !Number.isFinite(heading)) {
+      throw new TypeError('respawn transform must contain finite values');
+    }
+    this.clearInput();
+    this.vehicle.occupied = false;
+    this.vehicleSirenActive = false;
+    this.avatarVisual.root.visible = true;
+    this.applyPlayerTransform({
+      position: { x: position.x, y: 0, z: position.z },
+      heading,
+    });
+    this.cameraYaw = heading;
     this.updateCamera(1);
     this.emitSnapshot(true);
   }
@@ -748,6 +907,7 @@ export class WorldView {
       return;
     }
     const input = this.consumeInput();
+    const aimJustStarted = input.aim && !this.currentAim;
     this.currentAim = input.aim;
     if (input.shoulderSwap) {
       this.shoulderSide = oppositeShoulder(this.shoulderSide);
@@ -762,6 +922,7 @@ export class WorldView {
       this.toggleVehicle();
     }
 
+    let playerThreatening = false;
     if (this.vehicle.occupied) {
       this.vehicleSirenActive = this.vehicle.vehicleClassId === 'police-cruiser'
         && input.vehiclePrimaryAction;
@@ -773,21 +934,46 @@ export class WorldView {
       });
       this.updateVehicleRecovery(dt);
       this.vehicleVisual.sync(this.vehicle, dt);
+      this.stepCombatRuntime(dt, input, false);
     } else {
       this.vehicleSirenActive = false;
       stepPlayer(this.player, input, this.cameraYaw, this.activeCollisions(), dt);
       this.avatarVisual.sync(this.player);
+      playerThreatening = this.stepCombatRuntime(dt, input, aimJustStarted);
     }
 
     if (this.interiorRuntime.phase === 'exterior') {
       const actor = this.vehicle.occupied ? this.vehicle : this.player;
+      const simulationInput = this.vehicleSirenActive || playerThreatening || this.currentAim
+        ? {
+            ...(this.vehicleSirenActive ? { sirenActive: true } : {}),
+            ...(playerThreatening || this.currentAim ? { threatening: true } : {}),
+          }
+        : undefined;
       this.citySimulation.tick({
         deltaSeconds: dt,
         playerPosition: { ...actor.position },
         playerHeading: actor.heading,
-        input: this.vehicleSirenActive ? { sirenActive: true } : undefined,
+        playerCrouching: !this.vehicle.occupied && this.player.crouching,
+        playerLightLevel: dayPhaseAt(this.environment.timeOfDay) === 'night' ? 0.34 : 1,
+        playerCoverExposure: this.vehicle.occupied ? 1 : this.softCover.exposure,
+        playerMovement: this.vehicle.occupied
+          ? Math.min(1, Math.abs(this.vehicle.speed) / 18)
+          : Math.min(1, Math.hypot(this.player.velocity.x, this.player.velocity.z) / 5.8),
+        playerNoise: playerThreatening
+          ? 1
+          : this.vehicle.occupied
+            ? Math.min(1, Math.abs(this.vehicle.speed) / 14)
+            : this.player.sprinting ? 0.68 : this.player.crouching ? 0.08 : 0.24,
+        input: simulationInput,
+        obstructions: this.activeCollisions().map((collision) => ({
+          x: (collision.minX + collision.maxX) / 2,
+          z: (collision.minZ + collision.maxZ) / 2,
+          radius: Math.max(collision.maxX - collision.minX, collision.maxZ - collision.minZ) / 2,
+        })),
       });
     }
+    this.updatePoliceResponseVisual();
 
     advanceEnvironment(this.environment, dt);
     this.applyEnvironmentVisuals();
@@ -847,6 +1033,8 @@ export class WorldView {
   }
 
   public getSnapshot(): WorldSnapshot {
+    const combat = this.combatRuntime.snapshot();
+    const combatants = this.citySimulation.getSnapshot().combatants;
     const position = this.vehicle.occupied ? this.vehicle.position : this.player.position;
     const heading = this.vehicle.occupied ? this.vehicle.heading : this.player.heading;
     const speed = this.vehicle.occupied
@@ -915,6 +1103,23 @@ export class WorldView {
       vehiclePaint: this.activeVehiclePaint,
       vehicleSirenActive: this.vehicleSirenActive,
       vehicleCameraView: this.vehicleCloseCamera ? 'close' : 'chase',
+      activeWeaponId: combat.weapon.id,
+      activeWeaponName: combat.weapon.name,
+      activeWeaponClassId: combat.weapon.classId,
+      activeWeaponTier: combat.weapon.tier,
+      weaponAmmo: combat.weaponState.roundsInMagazine,
+      weaponAmmoReserve: combat.weaponState.reserveAmmo,
+      weaponDurability: combat.weaponState.durability,
+      weaponReloading: combat.weaponState.reloadRemaining > 0,
+      meleeStamina: combat.melee.stamina,
+      meleeBlocking: combat.melee.blocking,
+      softCoverEngaged: this.softCover.engaged,
+      softCoverPeeking: this.softCover.peeking,
+      softCoverExposure: this.softCover.exposure,
+      aimTargetId: this.aimTargetId,
+      activeCombatants: combatants.length,
+      policeResponse: this.policeResponseVisual.snapshot(),
+      policePhase: this.policeResponsePhase,
       prompt,
     };
   }
@@ -931,6 +1136,7 @@ export class WorldView {
     this.interiorSceneVisual.dispose();
     this.interiorPortalVisual.dispose();
     this.roadClosureVisual.dispose();
+    this.policeResponseVisual.dispose();
     this.avatarVisual.dispose();
     this.vehicleVisual.dispose();
     this.rainField.dispose();
@@ -970,6 +1176,13 @@ export class WorldView {
     input.jump ||= this.externalInput.jump;
     input.crouch ||= this.externalInput.crouch;
     input.aim ||= this.externalInput.aim;
+    input.fire ||= this.externalInput.fire;
+    input.melee ||= this.externalInput.melee;
+    input.heavyAttackHeld ||= this.externalInput.heavyAttackHeld;
+    input.heavyAttackReleased ||= this.externalInput.heavyAttackReleased;
+    input.reload ||= this.externalInput.reload;
+    input.weaponCycle ||= this.externalInput.weaponCycle;
+    input.dodge ||= this.externalInput.dodge;
     input.shoulderSwap ||= this.externalInput.shoulderSwap;
     input.handbrake ||= this.externalInput.handbrake;
     input.vehiclePrimaryAction ||= this.externalInput.vehiclePrimaryAction;
@@ -979,6 +1192,11 @@ export class WorldView {
     input.cameraYawDelta += this.externalInput.cameraYawDelta;
     input.cameraPitchDelta += this.externalInput.cameraPitchDelta;
     this.externalInput.interact = false;
+    this.externalInput.melee = false;
+    this.externalInput.heavyAttackReleased = false;
+    this.externalInput.reload = false;
+    this.externalInput.weaponCycle = false;
+    this.externalInput.dodge = false;
     this.externalInput.vehicleReset = false;
     this.externalInput.vehicleCameraToggle = false;
     this.externalInput.shoulderSwap = false;
@@ -1030,6 +1248,163 @@ export class WorldView {
     ) {
       this.lastSafeVehicleTransform = transform;
     }
+  }
+
+  private updatePoliceResponseVisual(): void {
+    const actor = this.vehicle.occupied ? this.vehicle : this.player;
+    this.policeResponseVisual.update({
+      playerPosition: actor.position,
+      level: this.interiorRuntime.phase === 'exterior' ? this.policeResponseLevel : 0,
+      phase: this.policeResponsePhase,
+      elapsedSeconds: this.elapsedSeconds,
+      reducedMotion: this.reducedMotion,
+      responsePlan: this.policeResponsePlan,
+    });
+  }
+
+  private stepCombatRuntime(
+    deltaSeconds: number,
+    input: Readonly<WorldInputState>,
+    aimJustStarted: boolean,
+  ): boolean {
+    this.updateSoftCover(input);
+    const saveSpreadMultiplier = 1;
+    const frame = this.combatRuntime.tick(deltaSeconds, {
+      fire: !this.vehicle.occupied && input.fire,
+      heavyAttackHeld: !this.vehicle.occupied && input.heavyAttackHeld,
+      heavyAttackReleased: !this.vehicle.occupied && input.heavyAttackReleased,
+      reload: !this.vehicle.occupied && input.reload,
+      cycleWeapon: input.weaponCycle,
+      blocking: !this.vehicle.occupied && input.aim,
+      dodge: !this.vehicle.occupied && input.dodge,
+    }, {
+      reliabilityRoll: this.combatRandom.next(),
+      spreadMultiplier: saveSpreadMultiplier * (input.aim ? 0.76 : 1.18),
+    });
+    const aimDirection = this.resolveCombatAim(aimJustStarted || frame.weaponChanged);
+    let attacked = false;
+    if (frame.shot?.fired) {
+      const handling = frame.shot.handling;
+      const weapon = this.combatRuntime.snapshot().weapon;
+      const definition: SimulationWeaponDefinition = {
+        type: weapon.classId,
+        damage: handling.damagePerPellet,
+        range: handling.rangeMeters,
+        cooldownSeconds: 0,
+        spreadRadians: handling.spreadRadians,
+        pellets: handling.pelletCount,
+      };
+      this.citySimulation.fireResolvedWeapon(
+        definition,
+        { ...this.player.position, y: this.player.position.y + 1.24 },
+        aimDirection,
+        handling.noiseRadiusMeters,
+      );
+      attacked = true;
+    }
+    if (frame.meleeAttack?.performed) {
+      const stealth = this.player.crouching
+        ? this.citySimulation.tryStealthTakedown(this.player.position)
+        : null;
+      if (!stealth) {
+        const definition: SimulationWeaponDefinition = {
+          type: 'melee',
+          damage: frame.meleeAttack.damage,
+          range: 2.45,
+          cooldownSeconds: 0,
+          spreadRadians: 0.3,
+          pellets: 1,
+        };
+        this.citySimulation.fireResolvedWeapon(
+          definition,
+          { ...this.player.position, y: this.player.position.y + 1.05 },
+          aimDirection,
+          12,
+        );
+      }
+      attacked = true;
+    }
+    if (attacked || this.currentAim) {
+      this.player.heading = this.cameraYaw;
+    }
+    return attacked;
+  }
+
+  private resolveCombatAim(allowTargetSnap: boolean): { x: number; y: number; z: number } {
+    const direction = directionFromHeading(this.cameraYaw);
+    const origin = {
+      x: this.player.position.x,
+      y: this.player.position.y + 1.24,
+      z: this.player.position.z,
+    };
+    const weapon = this.combatRuntime.snapshot().weapon;
+    const assisted = resolveAimAssist({
+      device: this.aimAssistDevice,
+      level: this.currentAim || this.aimAssistDevice === 'mobile' ? this.aimAssistLevel : 'off',
+      origin,
+      inputDirection: direction,
+      maximumRangeMeters: Math.max(3, weapon.rangeMeters),
+      currentTargetId: this.aimTargetId,
+      desktopSoftLockEnabled: this.desktopSoftLockEnabled,
+      allowTargetSnap,
+      targets: this.citySimulation.getSnapshot().combatants.map((combatant) => {
+        const targetPosition = {
+          x: combatant.position.x,
+          y: combatant.position.y + 0.92,
+          z: combatant.position.z,
+        };
+        return {
+          id: combatant.id,
+          position: targetPosition,
+          radiusMeters: combatant.role === 'heavy' ? 0.76 : 0.54,
+          active: combatant.health > 0 && combatant.behavior !== 'defeated',
+          hostile: true,
+          visible: cameraSafeFraction(origin, targetPosition, this.activeCollisions(), 0.08) >= 0.985,
+        };
+      }),
+    });
+    this.aimTargetId = assisted.targetId;
+    return assisted.direction;
+  }
+
+  private updateSoftCover(input: Readonly<WorldInputState>): void {
+    const forward = directionFromHeading(this.cameraYaw);
+    const nearby = this.activeCollisions()
+      .filter((collision) => {
+        const x = (collision.minX + collision.maxX) / 2;
+        const z = (collision.minZ + collision.maxZ) / 2;
+        return Math.hypot(x - this.player.position.x, z - this.player.position.z) < 8;
+      })
+      .map((collision, index) => ({
+        id: collision.id ?? `soft-cover-${index}`,
+        minX: collision.minX,
+        maxX: collision.maxX,
+        minZ: collision.minZ,
+        maxZ: collision.maxZ,
+        heightMeters: collision.height,
+      }));
+    this.softCover = resolveSoftCover({
+      position: this.player.position,
+      surfaces: nearby,
+      crouching: !this.vehicle.occupied && this.player.crouching,
+      aiming: !this.vehicle.occupied && input.aim,
+      shoulder: this.shoulderSide,
+      requestPeek: input.aim,
+      threatDirection: { x: forward.x, z: forward.z },
+      maximumCoverDistanceMeters: 1.2,
+    });
+  }
+
+  private handleIncomingPlayerDamage(event: Readonly<PlayerDamageEvent>): void {
+    const defended = this.combatRuntime.resolveIncomingDamage(
+      event.amount,
+      event.attack,
+      this.softCover.incomingDamageMultiplier,
+    );
+    this.onPlayerDamage?.({
+      ...event,
+      amount: defended.damageAfterDefenseAndCover,
+    });
   }
 
   private updateCamera(deltaSeconds: number): void {
@@ -1100,7 +1475,11 @@ export class WorldView {
 
   private activeCollisions(): readonly CollisionRect[] {
     return this.interiorRuntime.currentDefinition?.scene.collisions
-      ?? [...this.exteriorCollisions, ...this.roadClosureVisual.collisions];
+      ?? [
+        ...this.exteriorCollisions,
+        ...this.roadClosureVisual.collisions,
+        ...this.policeResponseVisual.collisions,
+      ];
   }
 
   private interiorActorState(): InteriorActorState {

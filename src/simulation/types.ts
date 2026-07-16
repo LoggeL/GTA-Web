@@ -163,6 +163,12 @@ export interface CitySimulationTick {
   deltaSeconds: number;
   playerPosition: SimulationVec3;
   playerHeading: number;
+  /** Perception inputs for the authored NPC AI. Omitted values use visible, standing defaults. */
+  playerCrouching?: boolean;
+  playerLightLevel?: number;
+  playerCoverExposure?: number;
+  playerMovement?: number;
+  playerNoise?: number;
   input?: SimulationPlayerInput;
   obstructions?: readonly SimulationObstacle[];
 }

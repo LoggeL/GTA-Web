@@ -1,7 +1,7 @@
 import { SeededRandom, type RandomSeed } from './random';
 
 export const GAME_STATE_VERSION = 1 as const;
-export const SAVE_GAME_VERSION = 1 as const;
+export const SAVE_GAME_VERSION = 2 as const;
 
 export type SaveSlotId = 1 | 2 | 3;
 export type AlexPreset = 'masculine' | 'feminine';
@@ -171,6 +171,7 @@ export interface SaveGameV1 {
   missions: Record<string, SavedMissionProgress>;
   contacts: Record<string, number>;
   ending: EndingChoice | null;
+  wanted: WantedState;
   properties: Record<string, SavedProperty>;
   activities: Record<string, SavedActivity>;
   collectibles: Record<string, string[]>;
@@ -303,6 +304,12 @@ export function createInitialSaveGame(
       priya: 0,
     },
     ending: null,
+    wanted: {
+      level: 0,
+      phase: 'clear',
+      heat: 0,
+      searchSecondsRemaining: 0,
+    },
     properties: {},
     activities: {},
     collectibles: {

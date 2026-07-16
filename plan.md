@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 18:10 CEST
+Last updated: 2026-07-16 18:11 CEST
 Plan status: Active  
-Current focus: M4 implementation
+Current focus: Preview 2 publication gate, then M5 implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -242,13 +242,15 @@ Acceptance: each class is distinct and driveable; traffic does not deadlock duri
 
 Completion evidence: all eight silhouettes and handling profiles are hot-swappable and driveable; the live lane graph maintains its fixed pool across district seams and completed a deterministic 300-second generated-city route without deadlock; police sirens cause live traffic to yield; the eight-slot garage rejects police vehicles and persists civilian identity, class, upgrades, paint, trunk contents, damage, repair, and retrieval across reloads. The 1280×720 desktop browser pass covered driving, garage controls, paint, and exterior rendering. The 844×390 compact-mobile browser course covered touch entry, throttle/steering, camera drag, handbrake, vehicle camera, recovery, exit, and portrait blocking. `npm run check` passed 48 test files / 301 tests, the full Playwright matrix passed 16 tests / 10 intentional project-specific skips, and the production artifact is 0.96 MiB total / 0.34 MiB compressed.
 
-### M4 — Combat, stealth, NPC AI, and wanted system — `IN PROGRESS`
+### M4 — Combat, stealth, NPC AI, and wanted system — `COMPLETE`
 
-- [ ] Five weapon classes/tiers, simple melee, soft cover, aim assist, durability/ammo/armor.
-- [ ] Pedestrians and five combat roles with nav, perception, reactions, pooling.
-- [ ] Witness reporting, five wanted levels, pursuit/search/roadblocks/tactical helicopter, death/arrest.
+- [x] Five weapon classes/tiers, simple melee, soft cover, aim assist, durability/ammo/armor.
+- [x] Pedestrians and five combat roles with nav, perception, reactions, pooling.
+- [x] Witness reporting, five wanted levels, pursuit/search/roadblocks/tactical helicopter, death/arrest.
 
 Acceptance: stealth and loud paths both resolve an encounter; each enemy role demonstrates its behavior; all wanted levels escalate and clear; content remains non-graphic.
+
+Completion evidence: all 15 authored weapons are selectable and use distinct tier handling, ammunition, reload, recoil, wear, reliability, and durability; melee supports light chains, charged heavy attacks, blocking, stamina, guard breaks, dodges, and crouch-context non-graphic takedowns; soft cover, shoulder peeking, hybrid desktop/mobile aim assist, armor absorption, and abstract impacts are active in the live world. The deterministic combat NPC runtime supplies the five role-specific tactics, navigation, vision/hearing/light/noise/cover perception, suspicion, engagement, repositioning, retreat/surrender, and bounded pooling. Crimes flow through real pedestrian witnesses into the persistent wanted runtime; pursuit/search clearing, road-graph-anchored physical roadblocks, response budgets, the AI-only tactical helicopter, and clinic/station defeat penalties are integrated. The tutorial safe zone remains free of ambient hostile fire. `npm run check` passed 62 files / 375 tests; the full Playwright matrix passed 18 tests / 12 intentional project-specific skips; focused desktop and 844×390 M4 courses passed stealth, loud combat, every weapon/role, wanted levels 1–5, roadblocks, helicopter, and arrest; desktop visual QA passed both clear and level-five response states; the production artifact is 1.03 MiB total / 0.36 MiB compressed.
 
 ### M5 — RPG, inventory, crafting, economy, and properties — `PENDING`
 
@@ -327,6 +329,7 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 17:55 | M3 | Began the vehicle/traffic/ownership/garage milestone with parallel implementation of the eight-class arcade handling and integrity registry plus the pure ownership, finite-slot garage, upgrade, repair, and trunk domain. | M3 marked `IN PROGRESS`; acceptance remains open until runtime, UI, persistence, touch, and soak gates pass |
 | 2026-07-16 18:00 | M3 | Completed the vehicle, traffic, ownership, garage, and vehicle-specific touch scope and advanced the active implementation focus to M4. | `npm run check`: 48 files / 301 tests; Playwright: 16 passed / 10 intentional project-specific skips; deterministic 300-second generated-city traffic route; desktop 1280×720 visual QA; compact-mobile 844×390 touch course; 0.96 MiB artifact / 0.34 MiB compressed |
 | 2026-07-16 18:10 | Preview 1.1 | Published the complete M3 vehicle/traffic/ownership/garage build through GitHub Pages. Live smoke passed through splash, menu, existing-save load, rendered gameplay, starter-vehicle entry, engine-health HUD, and the garage panel; deployed repository-base JS/CSS hashes matched the checked production build. | Source `89fbbb2ed2d01a060df2d3c0539bfdac3e4fa794`; tag `preview-1.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29509656104); [live preview](https://loggel.github.io/GTA-Web/?preview=1.1); 0.96 MiB artifact / 0.34 MiB compressed; `npm run check` 48 files / 301 tests; Playwright 16 passed / 10 intentional skips |
+| 2026-07-16 18:11 | M4 | Completed the live combat/stealth/NPC/wanted milestone: 15 weapons, brawling and takedowns, soft cover and aim assist, five-role perception/navigation/tactics, witness-driven heat, persistent pursuit/search, physical roadblocks, tactical helicopter, armor, and death/arrest recovery. The authored combat zone was moved away from the tutorial garage after the full matrix exposed unsafe hostile proximity. | `npm run check`: 62 files / 375 tests; Playwright: 18 passed / 12 intentional project-specific skips; M4 desktop/mobile course 2 passed / 2 intentional skips; deterministic 300-second NPC soak; desktop clear/level-five visual QA; 1.03 MiB artifact / 0.36 MiB compressed |
 
 ## Release record
 

@@ -137,6 +137,35 @@ describe('CitySimulation integration surface', () => {
     simulation.dispose();
   });
 
+  it('resolves a crouch-context stealth takedown only within unaware range', () => {
+    const crimes: CrimeEvent[] = [];
+    const simulation = new CitySimulation({
+      seed: 'stealth-takedown',
+      quality: 'low',
+      seedCombatants: false,
+      onCrime: (event) => crimes.push(event),
+    });
+    const id = simulation.spawnEnemy('gunner', { x: 20, y: 0, z: 20 });
+    if (!id) throw new Error('Missing stealth target');
+    const target = simulation.getCombatNpcSnapshot().find((candidate) => candidate.id === id);
+    if (!target) throw new Error('Missing detailed stealth target');
+    const behind = {
+      x: target.position.x + Math.sin(target.heading) * 1.4,
+      y: 0,
+      z: target.position.z + Math.cos(target.heading) * 1.4,
+    };
+    expect(simulation.tryStealthTakedown({ x: 40, y: 0, z: 40 })).toBeNull();
+    expect(simulation.tryStealthTakedown(behind)).toMatchObject({
+      targetId: id,
+      defeated: true,
+      effect: 'abstract-impact-flash',
+    });
+    expect(crimes.at(-1)).toMatchObject({ kind: 'assault', severity: 2 });
+    expect(simulation.getCombatNpcSnapshot().find((candidate) => candidate.id === id)?.state)
+      .toBe('incapacitated');
+    simulation.dispose();
+  });
+
   it('turns an ambient vehicle claim into a theft report while preserving the pool', () => {
     const crimes: CrimeEvent[] = [];
     const simulation = new CitySimulation({

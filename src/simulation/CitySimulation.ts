@@ -1,6 +1,7 @@
 import type { Scene } from 'three';
 
-import { COMBAT_CAPACITY, CombatSystem } from './combat';
+import { COMBAT_NPC_CAPACITY, CombatNpcSystem } from './combatNpcAi';
+import type { CombatNpcSnapshot } from './combatNpcAi';
 import { directionFromHeading } from './math';
 import { PEDESTRIAN_CAPACITY, PedestrianSystem } from './pedestrians';
 import { SimulationRandom, simulationSeed } from './random';
@@ -15,16 +16,19 @@ import type {
   CrimeEvent,
   CrimeReportInput,
   EnemyDamageEvent,
+  PlayerDamageEvent,
   SimulationQuality,
   SimulationVec3,
   TrafficVehicleSnapshot,
   WeaponFireResult,
+  WeaponDefinition,
   WeaponType,
 } from './types';
 import { SimulationVisualLayer } from './visuals';
 import {
   createWeaponRuntime,
   stepWeaponRuntime,
+  resolveWeaponHits,
   tryFireWeapon,
 } from './weapons';
 import type { WeaponRuntime } from './weapons';
@@ -46,18 +50,19 @@ function normalizedActorLimits(
       'pedestrian',
       PEDESTRIAN_CAPACITY.high,
     ),
-    combat: normalizedActorLimit(limits.combat, 'combat', COMBAT_CAPACITY.high),
+    combat: normalizedActorLimit(limits.combat, 'combat', COMBAT_NPC_CAPACITY.high),
   };
 }
 
 export class CitySimulation {
-  private readonly random: SimulationRandom;
   private readonly weaponRandom: SimulationRandom;
   private readonly traffic: TrafficSystem;
   private readonly pedestrians: PedestrianSystem;
-  private readonly combat: CombatSystem;
+  private readonly combat: CombatNpcSystem;
   private readonly weaponRuntime: WeaponRuntime;
   private readonly onCrime: (event: CrimeEvent) => void;
+  private readonly onEnemyDamage: (event: EnemyDamageEvent) => void;
+  private readonly onPlayerDamage: (event: PlayerDamageEvent) => void;
   private quality: SimulationQuality;
   private simulationTime = 0;
   private crimeSequence = 0;
@@ -68,9 +73,10 @@ export class CitySimulation {
   public constructor(options: CitySimulationOptions = {}) {
     const seed = simulationSeed(options.seed ?? 'solara-city-life-v1');
     this.quality = options.quality ?? 'high';
-    this.random = new SimulationRandom(seed ^ 0x71af0d);
     this.weaponRandom = new SimulationRandom(seed ^ 0xb34821);
     this.onCrime = options.onCrime ?? (() => undefined);
+    this.onEnemyDamage = options.onEnemyDamage ?? (() => undefined);
+    this.onPlayerDamage = options.onPlayerDamage ?? (() => undefined);
     this.traffic = new TrafficSystem(
       new SimulationRandom(seed ^ 0x4f219a),
       this.quality,
@@ -82,12 +88,11 @@ export class CitySimulation {
       this.traffic.roads,
       options.onWitnessReport ?? (() => undefined),
     );
-    this.combat = new CombatSystem(
-      this.random,
-      this.quality,
-      options.onEnemyDamage ?? (() => undefined),
-      options.onPlayerDamage ?? (() => undefined),
-    );
+    this.combat = new CombatNpcSystem({
+      seed: seed ^ 0x71af0d,
+      quality: this.quality,
+      navigationGraph: this.pedestrians.getNavigationGraph(),
+    });
     this.weaponRuntime = createWeaponRuntime();
     if (options.actorLimits) {
       this.setActorLimits(options.actorLimits);
@@ -159,13 +164,33 @@ export class CitySimulation {
       sirenRadius: 24,
       obstructions: context.obstructions ?? [],
     });
-    this.combat.tick({
+    const combatActions = this.combat.tick({
       deltaSeconds: dt,
-      playerPosition: context.playerPosition,
-      playerThreatening: Boolean(input?.threatening || weaponFire?.fired),
-      obstructions: context.obstructions ?? [],
+      player: {
+        id: 'player',
+        position: context.playerPosition,
+        crouching: context.playerCrouching,
+        lightLevel: context.playerLightLevel,
+        coverExposure: context.playerCoverExposure,
+        movement: context.playerMovement,
+        noise: context.playerNoise ?? (input?.threatening || weaponFire?.fired ? 1 : 0),
+        threatening: Boolean(input?.threatening || weaponFire?.fired),
+      },
+      obstacles: context.obstructions ?? [],
     });
-    this.pedestrians.tick(dt, this.simulationTime);
+    for (const action of combatActions) {
+      if (action.type !== 'melee-attack' && action.type !== 'projectile-attack') continue;
+      this.onPlayerDamage({
+        sourceId: action.sourceId,
+        role: action.role,
+        amount: action.damage,
+        attack: action.type === 'melee-attack' ? 'melee' : 'projectile',
+      });
+    }
+    this.combat.drainActions();
+    this.pedestrians.tick(dt, this.simulationTime, {
+      obstacles: context.obstructions ?? [],
+    });
     const snapshot = this.getSnapshot();
     this.visuals?.update(snapshot);
     return { snapshot, weaponFire };
@@ -182,29 +207,61 @@ export class CitySimulation {
       type,
       origin,
       aimDirection,
-      this.combat.getWeaponTargets(),
+      this.getWeaponTargets(),
       this.weaponRandom,
     );
+    return this.applyWeaponResult(result, origin);
+  }
+
+  public fireResolvedWeapon(
+    definition: Readonly<WeaponDefinition>,
+    origin: Readonly<SimulationVec3>,
+    aimDirection: Readonly<SimulationVec3>,
+    noiseRadius = definition.type === 'melee' ? 12 : 42,
+  ): WeaponFireResult {
+    this.assertAlive();
+    const result: WeaponFireResult = {
+      weapon: definition.type,
+      fired: true,
+      cooldownRemaining: definition.cooldownSeconds,
+      hits: resolveWeaponHits(
+        definition,
+        origin,
+        aimDirection,
+        this.getWeaponTargets(),
+        this.weaponRandom,
+      ),
+    };
+    return this.applyWeaponResult(result, origin, noiseRadius);
+  }
+
+  private applyWeaponResult(
+    result: Readonly<WeaponFireResult>,
+    origin: Readonly<SimulationVec3>,
+    noiseRadius = result.weapon === 'melee' ? 12 : 42,
+  ): WeaponFireResult {
     if (!result.fired) {
-      return result;
+      return { ...result, hits: [...result.hits] };
     }
 
     for (const hit of result.hits) {
-      this.combat.damage(hit.targetId, hit.damage, 'player');
+      this.damageEnemy(hit.targetId, hit.damage, 'player', origin);
     }
-    const witnessedAction = type !== 'melee' || result.hits.length > 0;
+    const witnessedAction = result.weapon !== 'melee' || result.hits.length > 0;
     if (witnessedAction) {
       this.reportCrime({
-        kind: type === 'melee' ? 'assault' : 'weapon-fire',
+        kind: result.weapon === 'melee' ? 'assault' : 'weapon-fire',
         sourceId: 'player',
         position: { ...origin },
-        severity: result.hits.length > 0 ? 3 : 1,
+        severity: result.hits.length > 0 ? 3 : 2,
       });
-      const panicRadius = type === 'melee' ? 12 : 28;
-      this.triggerPanic(origin, panicRadius, type === 'melee' ? 2 : 4);
-      this.combat.alertAt(origin, type === 'melee' ? 20 : 60);
+      const panicRadius = result.weapon === 'melee'
+        ? 12
+        : Math.max(18, Math.min(60, noiseRadius));
+      this.triggerPanic(origin, panicRadius, result.weapon === 'melee' ? 2 : 4);
+      this.combat.alertAt(origin, result.weapon === 'melee' ? 20 : Math.max(30, noiseRadius));
     }
-    return result;
+    return { ...result, hits: [...result.hits] };
   }
 
   public reportCrime(input: CrimeReportInput): CrimeEvent {
@@ -253,9 +310,63 @@ export class CitySimulation {
     return this.combat.spawn(role, position);
   }
 
-  public damageEnemy(targetId: string, amount: number, sourceId = 'player'): EnemyDamageEvent | null {
+  public damageEnemy(
+    targetId: string,
+    amount: number,
+    sourceId = 'player',
+    sourcePosition?: Readonly<SimulationVec3>,
+  ): EnemyDamageEvent | null {
     this.assertAlive();
-    return this.combat.damage(targetId, amount, sourceId);
+    const result = this.combat.damage(targetId, amount, sourcePosition);
+    if (!result) return null;
+    const event: EnemyDamageEvent = {
+      targetId: result.targetId,
+      sourceId,
+      amount: result.appliedDamage,
+      remainingHealth: result.remainingHealth,
+      defeated: result.incapacitated,
+      effect: 'abstract-impact-flash',
+    };
+    this.onEnemyDamage(event);
+    return event;
+  }
+
+  /** Silent contextual takedown for a nearby unaware target while Alex is crouched. */
+  public tryStealthTakedown(
+    position: Readonly<SimulationVec3>,
+    maximumDistance = 2.25,
+  ): EnemyDamageEvent | null {
+    this.assertAlive();
+    const target = this.combat.getSnapshot()
+      .filter((candidate) => (
+        (candidate.state === 'patrol' || candidate.state === 'investigate')
+        && candidate.perception.awareness < 0.6
+      ))
+      .map((candidate) => ({
+        candidate,
+        distance: Math.hypot(
+          position.x - candidate.position.x,
+          position.z - candidate.position.z,
+        ),
+      }))
+      .filter(({ distance }) => distance <= maximumDistance)
+      .sort((left, right) => left.distance - right.distance)[0]?.candidate;
+    if (!target) return null;
+    const result = this.damageEnemy(target.id, target.health, 'player', position);
+    if (result) {
+      this.reportCrime({
+        kind: 'assault',
+        sourceId: 'player',
+        position: { ...target.position },
+        severity: 2,
+      });
+    }
+    return result;
+  }
+
+  public getCombatNpcSnapshot(): readonly CombatNpcSnapshot[] {
+    this.assertAlive();
+    return this.combat.getSnapshot();
   }
 
   public getSnapshot(): CitySimulationSnapshot {
@@ -264,12 +375,12 @@ export class CitySimulation {
       quality: this.quality,
       traffic: this.traffic.getSnapshot(),
       pedestrians: this.pedestrians.getSnapshot(),
-      combatants: this.combat.getSnapshot(),
+      combatants: this.combat.getLegacySnapshot(),
       actorLimits: this.getActorLimits(),
       poolCapacity: {
         traffic: TRAFFIC_CAPACITY.high,
         pedestrians: PEDESTRIAN_CAPACITY.high,
-        combatants: COMBAT_CAPACITY.high,
+        combatants: COMBAT_NPC_CAPACITY.high,
       },
       lastCrimeId: this.lastCrimeId,
     };
@@ -295,5 +406,14 @@ export class CitySimulation {
       pedestrians: this.pedestrians.getActorLimit(),
       combat: this.combat.getActorLimit(),
     };
+  }
+
+  private getWeaponTargets() {
+    return this.combat.getAimTargets().map((target) => ({
+      id: target.id,
+      position: { ...target.position },
+      radius: target.radiusMeters,
+      active: target.active && target.hostile && target.visible,
+    }));
   }
 }

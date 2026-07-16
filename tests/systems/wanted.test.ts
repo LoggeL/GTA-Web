@@ -104,6 +104,20 @@ describe('wanted system', () => {
       insideSearchArea: false,
     }, BASE_MODIFIERS);
     expect(cleared).toEqual(clearWanted());
+
+    const exhaustedInside = tickWanted(searching, 60, {
+      isVisible: false,
+      insideSearchArea: true,
+    }, BASE_MODIFIERS);
+    expect(exhaustedInside).toEqual(expect.objectContaining({
+      level: 2,
+      phase: 'search',
+      searchSecondsRemaining: 0,
+    }));
+    expect(tickWanted(exhaustedInside, 0, {
+      isVisible: false,
+      insideSearchArea: false,
+    }, BASE_MODIFIERS)).toEqual(clearWanted());
   });
 
   it('reduces search duration after the Expose ending', () => {

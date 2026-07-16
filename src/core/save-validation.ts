@@ -52,6 +52,7 @@ export function validateSaveGame(
   if (value.ending !== null) {
     validateOneOf(value.ending, ['rule', 'expose'], 'ending', errors);
   }
+  validateWanted(value.wanted, errors);
   validateRecord(value.properties, 'properties', errors, (entry, path, id) => {
     validateRegistryId(id, registry.propertyIds, path, errors);
     validateProperty(entry, path, errors);
@@ -72,6 +73,34 @@ export function validateSaveGame(
     return { valid: false, errors };
   }
   return { valid: true, save: value as unknown as SaveGameV1, errors: [] };
+}
+
+function validateWanted(value: unknown, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push('wanted must be an object');
+    return;
+  }
+  validateInteger(value.level, 'wanted.level', errors, 0, 5);
+  validateOneOf(
+    value.phase,
+    ['clear', 'investigating', 'pursuit', 'search'],
+    'wanted.phase',
+    errors,
+  );
+  validateNumber(value.heat, 'wanted.heat', errors, 0, Number.MAX_SAFE_INTEGER);
+  validateNumber(
+    value.searchSecondsRemaining,
+    'wanted.searchSecondsRemaining',
+    errors,
+    0,
+    10_000,
+  );
+  if (value.level === 0 && value.phase !== 'clear') {
+    errors.push('wanted.phase must be clear at level zero');
+  }
+  if (typeof value.level === 'number' && value.level > 0 && value.phase === 'clear') {
+    errors.push('wanted.phase cannot be clear above level zero');
+  }
 }
 
 function validateSlot(value: unknown, errors: string[]): void {

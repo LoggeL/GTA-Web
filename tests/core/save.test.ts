@@ -87,6 +87,26 @@ describe('save validation and format', () => {
     }
   });
 
+  it('migrates Preview 1 schema saves with a clear wanted snapshot', () => {
+    const current = createInitialSaveGame(2, 'feminine');
+    const legacy: Record<string, unknown> = { ...current, schemaVersion: 1 };
+    delete legacy.wanted;
+
+    const migrated = migrateSaveGame(legacy);
+
+    expect(migrated.success).toBe(true);
+    if (migrated.success) {
+      expect(migrated.migratedFrom).toBe(1);
+      expect(migrated.save.schemaVersion).toBe(2);
+      expect(migrated.save.wanted).toEqual({
+        level: 0,
+        phase: 'clear',
+        heat: 0,
+        searchSecondsRemaining: 0,
+      });
+    }
+  });
+
   it('verifies legacy envelopes before migration', () => {
     const current = createInitialSaveGame(1, 'masculine');
     const legacy = { ...current, schemaVersion: 0 };

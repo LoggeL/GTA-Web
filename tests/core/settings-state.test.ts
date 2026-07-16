@@ -51,7 +51,7 @@ describe('initial serializable state', () => {
       label: 'Night run',
     });
 
-    expect(save.schemaVersion).toBe(1);
+    expect(save.schemaVersion).toBe(2);
     expect(save.slot).toEqual({
       id: 2,
       label: 'Night run',

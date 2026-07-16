@@ -15,6 +15,13 @@ export function toWorldInputState(frame: InputFrame): WorldInputState {
     input.jump = frame.commands.jump.pressed;
     input.crouch = frame.commands.crouch.pressed;
     input.aim = frame.commands.aim.pressed;
+    input.fire = frame.commands.fireOrLightAttack.pressed;
+    input.melee = frame.commands.meleeContext.justPressed;
+    input.heavyAttackHeld = frame.commands.meleeContext.pressed;
+    input.heavyAttackReleased = frame.commands.meleeContext.justReleased;
+    input.reload = frame.commands.reload.justPressed;
+    input.weaponCycle = frame.commands.weaponRadial.justPressed;
+    input.dodge = frame.commands.jump.justPressed && frame.commands.aim.pressed;
     input.shoulderSwap = frame.commands.shoulderSwap.justPressed;
     input.interact = frame.commands.interact.justPressed;
     return input;

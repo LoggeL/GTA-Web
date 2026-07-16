@@ -12,10 +12,11 @@ import {
   VEHICLE_SPAWN,
   WorldView,
   createWorldInputState,
+  resolveCombatDamage,
   type WorldSnapshot,
   type WorldVehicleInitialization,
 } from '../game';
-import { VEHICLES, getVehicle } from '../data';
+import { ITEMS, VEHICLES, getVehicle } from '../data';
 import { CityStreamingController } from '../game/CityStreamingController';
 import {
   DomInputAdapter,
@@ -44,6 +45,12 @@ import {
   type NearbyUnregisteredVehicle,
 } from '../ui/GaragePanel';
 import { AudioEngine } from '../audio/AudioEngine';
+import type {
+  CrimeEvent,
+  EnemyDamageEvent,
+  PlayerDamageEvent,
+  WitnessReportEvent,
+} from '../simulation';
 import {
   applyVehicleUpgrade,
   createVehicleTrunk,
@@ -52,8 +59,11 @@ import {
   repaintVehicle,
   repairVehicle,
   retrieveVehicleFromGarage,
+  WantedRuntime,
   type GarageState,
   type GarageTransactionResult,
+  type RoadblockCandidate,
+  type WantedRuntimeSnapshot,
 } from '../systems';
 
 const DISTRICT_LABELS: Record<WorldSnapshot['district'], string> = {
@@ -67,6 +77,7 @@ type MapFilterKind = 'mission' | 'property' | 'activity' | 'shop' | 'safehouse' 
 
 interface HeatlineQaApi {
   teleport(x: number, z: number): WorldSnapshot;
+  face(x: number, z: number): WorldSnapshot;
   snapshot(): WorldSnapshot | null;
   trafficVehicles(): readonly {
     id: string;
@@ -75,9 +86,34 @@ interface HeatlineQaApi {
     x: number;
     z: number;
   }[];
+  pedestrians(): readonly {
+    id: string;
+    behavior: string;
+    x: number;
+    z: number;
+  }[];
   setMoney(value: number): number;
   setActiveVehicleClass(classId: string): WorldSnapshot;
   setActiveVehicleCondition(bodyHealth: number, engineHealth: number): WorldSnapshot;
+  combatants(): readonly {
+    id: string;
+    role: string;
+    behavior: string;
+    state: string;
+    tactic: string;
+    awareness: number;
+    health: number;
+    heading: number;
+    x: number;
+    z: number;
+  }[];
+  seedCombatEncounter(x: number, z: number): readonly string[];
+  selectWeapon(weaponId: string): WorldSnapshot;
+  damageCombatant(targetId: string, amount: number): boolean;
+  setWantedLevel(level: number): SaveGameV1['wanted'];
+  advanceWanted(seconds: number, isVisible?: boolean, insideSearchArea?: boolean): SaveGameV1['wanted'];
+  setPlayerCondition(health: number, armor: number): { health: number; armor: number };
+  defeat(outcome: 'death' | 'arrest'): Promise<{ health: number; money: number; wantedLevel: number }>;
 }
 
 type QaGlobal = typeof globalThis & {
@@ -130,6 +166,11 @@ export class App {
   };
   #lastWorldSnapshot: WorldSnapshot | null = null;
   #lastExteriorSnapshot: WorldSnapshot | null = null;
+  readonly #pendingCrimes = new Map<string, CrimeEvent>();
+  #wantedRuntime: WantedRuntime | null = null;
+  #wantedSnapshot: WantedRuntimeSnapshot | null = null;
+  #policeVisibleSeconds = 0;
+  #defeatResolving = false;
 
   private constructor(root: HTMLElement, saveService: SaveService, settings: GameSettings) {
     this.#root = root;
@@ -240,6 +281,14 @@ export class App {
     if (!mount) throw new Error('Missing 3D world mount');
     const quality = this.#resolveQuality();
     const position = save.player.transform.position;
+    this.#wantedRuntime = new WantedRuntime({
+      seed: `${save.trafficSeed}:wanted-runtime`,
+      modifiers: {
+        nerve: save.player.attributes.nerve,
+        ending: save.ending,
+      },
+    });
+    this.#wantedSnapshot = this.#wantedRuntime.restoreState(save.wanted, position);
     this.#inputMode = 'on-foot';
     this.#inputController = this.#createInputController();
     try {
@@ -255,10 +304,17 @@ export class App {
         rainIntensity: save.clock.weather === 'rain' ? 0.62 : 0,
         reducedMotion: this.#settings.accessibility.reducedMotion,
         resolutionScale: this.#settings.video.resolutionScale,
+        aimAssistLevel: this.#settings.controls.aimAssist,
+        aimAssistDevice: matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
+        desktopSoftLockEnabled: this.#settings.controls.softLock,
         enableDefaultControls: false,
         inputProvider: () => this.#consumeWorldInput(),
         onFrame: (frameMilliseconds) => this.#onWorldFrame(frameMilliseconds),
         onSnapshot: (snapshot) => this.#onWorldSnapshot(snapshot),
+        onCrime: (event) => this.#onCrime(event),
+        onWitnessReport: (event) => this.#onWitnessReport(event),
+        onEnemyDamage: (event) => this.#onEnemyDamage(event),
+        onPlayerDamage: (event) => this.#onPlayerDamage(event),
       });
     } catch (error) {
       console.error(error);
@@ -268,9 +324,21 @@ export class App {
       return;
     }
 
+    this.#world.setPoliceResponse(save.wanted.level, save.wanted.phase);
+    this.#world.seedCombatEncounter({
+      x: 360,
+      z: -320,
+    });
+
     this.#domInput = new DomInputAdapter(this.#world.renderer.domElement, this.#inputController);
     this.#touchInput = new TouchInput(this.#root, this.#inputController);
     this.#initializeNavigation(this.#world);
+    this.#wantedSnapshot = this.#wantedRuntime.restoreState(
+      save.wanted,
+      position,
+      this.#roadblockCandidates(),
+    );
+    this.#applyWantedSnapshot(this.#wantedSnapshot, true);
     this.#installQaApi(this.#world);
 
     this.#ui.updateLoading('Starting traffic radio…', 82);
@@ -296,6 +364,7 @@ export class App {
 
   #onWorldSnapshot(snapshot: WorldSnapshot): void {
     const now = performance.now();
+    const deltaSeconds = Math.max(0, Math.min(1, (now - this.#lastSnapshotAt) / 1_000));
     this.#lastWorldSnapshot = snapshot;
     if (snapshot.interiorId === null) this.#lastExteriorSnapshot = snapshot;
     if (this.#inputMode !== snapshot.mode) {
@@ -335,10 +404,29 @@ export class App {
       worldMount.dataset.vehiclePaint = snapshot.vehiclePaint;
       worldMount.dataset.vehicleSirenActive = String(snapshot.vehicleSirenActive);
       worldMount.dataset.vehicleCameraView = snapshot.vehicleCameraView;
+      worldMount.dataset.wantedLevel = String(this.#currentSave?.wanted.level ?? 0);
+      worldMount.dataset.wantedPhase = this.#currentSave?.wanted.phase ?? 'clear';
+      worldMount.dataset.policeRoadblock = String(snapshot.policeResponse.roadblock);
+      worldMount.dataset.policeHelicopter = String(snapshot.policeResponse.helicopter);
+      worldMount.dataset.policeRoadblockCount = String(
+        this.#wantedSnapshot?.police.roadblocks.length ?? 0,
+      );
+      worldMount.dataset.policeHelicopterMode =
+        this.#wantedSnapshot?.police.helicopter.mode ?? 'inactive';
+      worldMount.dataset.wantedSearchRadius = String(this.#wantedSnapshot?.searchRadius ?? 0);
+      worldMount.dataset.activeWeaponId = snapshot.activeWeaponId;
+      worldMount.dataset.activeWeaponClass = snapshot.activeWeaponClassId;
+      worldMount.dataset.activeWeaponTier = String(snapshot.activeWeaponTier);
+      worldMount.dataset.weaponDurability = snapshot.weaponDurability.toFixed(2);
+      worldMount.dataset.weaponReloading = String(snapshot.weaponReloading);
+      worldMount.dataset.meleeBlocking = String(snapshot.meleeBlocking);
+      worldMount.dataset.softCover = String(snapshot.softCoverEngaged);
+      worldMount.dataset.softCoverPeeking = String(snapshot.softCoverPeeking);
+      worldMount.dataset.aimTargetId = snapshot.aimTargetId ?? '';
+      worldMount.dataset.activeCombatants = String(snapshot.activeCombatants);
     }
     if (this.#currentSave) {
-      const delta = Math.max(0, Math.min(1, (now - this.#lastSnapshotAt) / 1_000));
-      this.#currentSave.playtimeSeconds += delta;
+      this.#currentSave.playtimeSeconds += deltaSeconds;
       if (snapshot.interiorId === null) {
         this.#currentSave.player.transform.position = { ...snapshot.position };
         this.#currentSave.player.transform.rotation.y = snapshot.heading;
@@ -362,15 +450,19 @@ export class App {
         }
       }
     }
+    this.#tickWantedRuntime(snapshot, deltaSeconds, now);
     this.#lastSnapshotAt = now;
 
     const hud: HudSnapshot = {
       health: this.#currentSave?.player.health ?? 100,
       maxHealth: 100 + Math.max(0, (this.#currentSave?.player.attributes.grit ?? 1) - 1) * 10,
       armor: this.#currentSave?.player.armor ?? 0,
-      stamina: snapshot.sprinting ? 72 : 100,
-      wantedLevel: 0,
-      wantedSearching: false,
+      stamina: snapshot.activeWeaponClassId === 'melee'
+        ? snapshot.meleeStamina
+        : snapshot.sprinting ? 72 : 100,
+      wantedLevel: this.#currentSave?.wanted.level ?? 0,
+      wantedSearching: ['investigating', 'search'].includes(this.#currentSave?.wanted.phase ?? 'clear'),
+      wantedSearchRadius: this.#wantedSnapshot?.searchRadius ?? 0,
       objective: snapshot.interiorId
         ? `Explore ${snapshot.interiorLabel ?? 'the interior'}`
         : snapshot.mode === 'vehicle'
@@ -386,9 +478,9 @@ export class App {
       money: this.#currentSave?.player.money ?? 0,
       level: this.#currentSave?.player.level ?? 1,
       xpProgress: 0,
-      ammo: 0,
-      ammoReserve: 0,
-      weapon: 'Unarmed',
+      ammo: snapshot.activeWeaponClassId === 'melee' ? 0 : snapshot.weaponAmmo,
+      ammoReserve: snapshot.activeWeaponClassId === 'melee' ? 0 : snapshot.weaponAmmoReserve,
+      weapon: `${snapshot.activeWeaponName} · T${snapshot.activeWeaponTier} · ${Math.round(snapshot.weaponDurability)}%${snapshot.weaponReloading ? ' · RELOADING' : ''}`,
       speedKph: snapshot.mode === 'vehicle' ? snapshot.speedKph : undefined,
       vehicleName: snapshot.mode === 'vehicle' ? snapshot.vehicleName : undefined,
       vehicleHealth: snapshot.mode === 'vehicle' ? snapshot.vehicleIntegrity.engineHealth : undefined,
@@ -408,6 +500,168 @@ export class App {
       this.#lastAutosaveAt = now;
       void this.#saveNow(false);
     }
+  }
+
+  #onCrime(event: CrimeEvent): void {
+    this.#pendingCrimes.set(event.id, event);
+    while (this.#pendingCrimes.size > 24) {
+      const oldest = this.#pendingCrimes.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.#pendingCrimes.delete(oldest);
+    }
+    this.#ui.toast('Crime noticed · witnesses may report Alex', 'warning');
+  }
+
+  #onWitnessReport(event: WitnessReportEvent): void {
+    const save = this.#currentSave;
+    const runtime = this.#wantedRuntime;
+    const crime = this.#pendingCrimes.get(event.crimeId);
+    if (!save || !runtime || !crime) return;
+    this.#pendingCrimes.delete(event.crimeId);
+    const result = runtime.reportWitness({
+      crimeId: event.crimeId,
+      witnessId: event.witnessId,
+      source: 'pedestrian',
+      severity: Math.max(1, Math.min(5, Math.round(crime.severity))) as 1 | 2 | 3 | 4 | 5,
+      confidence: event.confidence,
+      suspectIdentified: event.confidence >= 0.58,
+      position: { x: event.position.x, z: event.position.z },
+    });
+    if (!result.accepted) return;
+    this.#policeVisibleSeconds = result.state.phase === 'pursuit' ? 6.5 : 0;
+    const snapshot = runtime.tick(0, {
+      playerPosition: { x: event.position.x, z: event.position.z },
+      visibleToPolice: result.state.phase === 'pursuit',
+      roadblockCandidates: this.#roadblockCandidates(),
+    });
+    this.#applyWantedSnapshot(snapshot);
+    if (result.state.level === 0) {
+      this.#ui.toast('Witness report logged · no active police response', 'info');
+    } else {
+      this.#ui.toast(
+        result.state.phase === 'pursuit'
+          ? `Witness identified Alex · wanted level ${result.state.level}`
+          : `Police investigating · wanted level ${result.state.level}`,
+        'warning',
+      );
+    }
+  }
+
+  #onEnemyDamage(event: EnemyDamageEvent): void {
+    if (event.defeated) {
+      this.#ui.toast('Hostile incapacitated · non-graphic takedown', 'success');
+    }
+  }
+
+  #onPlayerDamage(event: PlayerDamageEvent): void {
+    const save = this.#currentSave;
+    if (!save || this.#defeatResolving) return;
+    const maximumHealth = 100 + Math.max(0, save.player.attributes.grit - 1) * 10;
+    const damage = resolveCombatDamage({
+      health: Math.min(maximumHealth, save.player.health),
+      maximumHealth,
+      armor: save.player.armor > 0
+        ? { points: save.player.armor, maximumPoints: 100, durability: save.player.armor }
+        : null,
+    }, {
+      amount: event.amount,
+      kind: event.attack,
+      armorPenetration: event.attack === 'projectile' ? 0.12 : 0.04,
+    });
+    save.player.health = damage.state.health;
+    save.player.armor = damage.state.armor?.points ?? 0;
+    if (damage.defeated) {
+      void this.#resolvePlayerDefeat(save.wanted.level > 0 ? 'arrest' : 'death');
+      return;
+    }
+    if (event.amount >= 12) {
+      this.#ui.toast(`${event.role} hit · ${Math.ceil(save.player.health)} health`, 'warning');
+    }
+  }
+
+  #tickWantedRuntime(snapshot: Readonly<WorldSnapshot>, deltaSeconds: number, _now: number): void {
+    const save = this.#currentSave;
+    const runtime = this.#wantedRuntime;
+    if (!save || !runtime || deltaSeconds <= 0) return;
+    const previous = runtime.getSnapshot();
+    const visibleToPolice = previous.state.phase === 'pursuit' && this.#policeVisibleSeconds > 0;
+    this.#policeVisibleSeconds = Math.max(0, this.#policeVisibleSeconds - deltaSeconds);
+    const next = runtime.tick(deltaSeconds, {
+      playerPosition: { x: snapshot.position.x, z: snapshot.position.z },
+      visibleToPolice,
+      roadblockCandidates: this.#roadblockCandidates(),
+    });
+    this.#applyWantedSnapshot(next);
+    if (previous.state.level !== next.state.level || previous.state.phase !== next.state.phase) {
+      if (next.state.level === 0) {
+        this.#ui.toast('Wanted level cleared', 'success');
+      } else if (next.state.phase === 'search') {
+        this.#ui.toast('Line of sight broken · leave the search area', 'info');
+      }
+    }
+  }
+
+  #applyWantedSnapshot(snapshot: Readonly<WantedRuntimeSnapshot>, forceVisual = false): void {
+    const save = this.#currentSave;
+    if (!save) return;
+    const responseChanged = save.wanted.level !== snapshot.state.level
+      || save.wanted.phase !== snapshot.state.phase;
+    this.#wantedSnapshot = snapshot;
+    save.wanted = { ...snapshot.state };
+    this.#world?.setPoliceResponsePlan(snapshot.police);
+    if (forceVisual || responseChanged) {
+      this.#world?.setPoliceResponse(snapshot.state.level, snapshot.state.phase);
+    }
+  }
+
+  #roadblockCandidates(): readonly RoadblockCandidate[] {
+    const graph = this.#roadGraph;
+    if (!graph) return [];
+    const nodes = new Map(graph.nodes.map((node) => [node.id, node.position]));
+    return graph.edges.flatMap((edge) => {
+      const from = nodes.get(edge.fromNodeId);
+      const to = nodes.get(edge.toNodeId);
+      if (!from || !to) return [];
+      return [{
+        id: `roadblock:${edge.id}`,
+        position: {
+          x: (from.x + to.x) / 2,
+          z: (from.z + to.z) / 2,
+        },
+        heading: Math.atan2(to.x - from.x, to.z - from.z),
+      }];
+    });
+  }
+
+  async #resolvePlayerDefeat(outcome: 'death' | 'arrest'): Promise<void> {
+    const save = this.#currentSave;
+    const world = this.#world;
+    const runtime = this.#wantedRuntime;
+    if (!save || !world || !runtime || this.#defeatResolving) return;
+    this.#defeatResolving = true;
+    const penalty = runtime.resolveDefeat({
+      cash: save.player.money,
+      inventory: save.inventory,
+    }, ITEMS, outcome);
+    save.player.money = penalty.cash;
+    save.inventory = penalty.inventory;
+    save.player.health = 100 + Math.max(0, save.player.attributes.grit - 1) * 10;
+    save.player.armor = 0;
+    this.#pendingCrimes.clear();
+    this.#policeVisibleSeconds = 0;
+    this.#applyWantedSnapshot(runtime.getSnapshot(), true);
+    world.respawnPlayer(
+      outcome === 'death' ? { x: -84, z: 102 } : { x: 96, z: -24 },
+      outcome === 'death' ? Math.PI * 0.25 : -Math.PI * 0.5,
+    );
+    const loss = `$${penalty.cashLost.toLocaleString()} lost`;
+    if (outcome === 'death') {
+      this.#ui.showDialogue('Solara Clinic', `Alex was stabilized. ${loss}; carried contraband was surrendered.`);
+    } else {
+      this.#ui.showDialogue('Solara Police', `Alex was released from booking. ${loss}; carried contraband was confiscated.`);
+    }
+    await this.#saveNow(false);
+    this.#defeatResolving = false;
   }
 
   #pause(): void {
@@ -775,6 +1029,11 @@ export class App {
     this.#roadGraph = null;
     this.#closedStreamEdgeIds.clear();
     this.#navigationDriveWaypointSet = false;
+    this.#pendingCrimes.clear();
+    this.#wantedRuntime = null;
+    this.#wantedSnapshot = null;
+    this.#policeVisibleSeconds = 0;
+    this.#defeatResolving = false;
     this.#ui.hideStreamFailure();
     this.#world?.dispose();
     this.#world = null;
@@ -883,6 +1142,7 @@ export class App {
         world.recoverToSafePosition({ x, z });
         return world.getSnapshot();
       },
+      face: (x, z) => world.orientPlayerToward({ x, z }),
       snapshot: () => this.#world?.getSnapshot() ?? null,
       trafficVehicles: () => world.getCitySimulationSnapshot().traffic.map((vehicle) => ({
         id: vehicle.id,
@@ -890,6 +1150,12 @@ export class App {
         behavior: vehicle.behavior,
         x: vehicle.position.x,
         z: vehicle.position.z,
+      })),
+      pedestrians: () => world.getCitySimulationSnapshot().pedestrians.map((pedestrian) => ({
+        id: pedestrian.id,
+        behavior: pedestrian.behavior,
+        x: pedestrian.position.x,
+        z: pedestrian.position.z,
       })),
       setMoney: (value) => {
         if (!Number.isSafeInteger(value) || value < 0) {
@@ -957,8 +1223,98 @@ export class App {
         });
         return world.getSnapshot();
       },
+      combatants: () => world.getCombatNpcSnapshot().map((combatant) => ({
+        id: combatant.id,
+        role: combatant.role,
+        behavior: combatant.state,
+        state: combatant.state,
+        tactic: combatant.tactic,
+        awareness: combatant.perception.awareness,
+        health: combatant.health,
+        heading: combatant.heading,
+        x: combatant.position.x,
+        z: combatant.position.z,
+      })),
+      seedCombatEncounter: (x, z) => world.seedCombatEncounter({ x, z }),
+      selectWeapon: (weaponId) => world.selectCombatWeapon(weaponId),
+      damageCombatant: (targetId, amount) => {
+        if (!Number.isFinite(amount) || amount < 0) {
+          throw new RangeError('QA combat damage must be finite and non-negative');
+        }
+        return world.damageCombatant(targetId, amount);
+      },
+      setWantedLevel: (value) => {
+        if (!Number.isSafeInteger(value) || value < 0 || value > 5) {
+          throw new RangeError('QA wanted level must be an integer from 0 through 5');
+        }
+        const save = this.#currentSave;
+        const runtime = this.#wantedRuntime;
+        if (!save || !runtime) throw new Error('QA wanted level requires an active save');
+        const level = value as 0 | 1 | 2 | 3 | 4 | 5;
+        const snapshot = world.getSnapshot();
+        const next = level === 0
+          ? runtime.clear()
+          : runtime.escalate(
+            level,
+            { x: snapshot.position.x, z: snapshot.position.z },
+            true,
+            this.#roadblockCandidates(),
+          );
+        this.#policeVisibleSeconds = level === 0 ? 0 : 6.5;
+        this.#applyWantedSnapshot(next, true);
+        return { ...next.state };
+      },
+      advanceWanted: (seconds, isVisible = false, insideSearchArea = false) => {
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 600) {
+          throw new RangeError('QA wanted advance must be between 0 and 600 seconds');
+        }
+        const save = this.#currentSave;
+        const runtime = this.#wantedRuntime;
+        if (!save || !runtime) throw new Error('QA wanted advance requires an active save');
+        const current = world.getSnapshot().position;
+        const radius = runtime.getSnapshot().searchRadius;
+        const playerPosition = insideSearchArea || isVisible
+          ? { x: current.x, z: current.z }
+          : { x: current.x + radius + 500, z: current.z + radius + 500 };
+        const next = runtime.tick(seconds, {
+          playerPosition,
+          visibleToPolice: isVisible,
+          roadblockCandidates: this.#roadblockCandidates(),
+        });
+        this.#policeVisibleSeconds = isVisible ? 6.5 : 0;
+        this.#applyWantedSnapshot(next, true);
+        return { ...next.state };
+      },
+      setPlayerCondition: (health, armor) => {
+        if (!Number.isFinite(health) || health < 0 || health > 150) {
+          throw new RangeError('QA health must stay between 0 and 150');
+        }
+        if (!Number.isFinite(armor) || armor < 0 || armor > 100) {
+          throw new RangeError('QA armor must stay between 0 and 100');
+        }
+        const save = this.#currentSave;
+        if (!save) throw new Error('QA player condition requires an active save');
+        save.player.health = health;
+        save.player.armor = armor;
+        this.#onWorldSnapshot(world.getSnapshot());
+        return { health: save.player.health, armor: save.player.armor };
+      },
+      defeat: async (outcome) => {
+        await this.#resolvePlayerDefeat(outcome);
+        const save = this.#currentSave;
+        if (!save) throw new Error('QA defeat requires an active save');
+        return {
+          health: save.player.health,
+          money: save.player.money,
+          wantedLevel: save.wanted.level,
+        };
+      },
     };
     (globalThis as QaGlobal).__HEATLINE_QA__ = api;
+    const wantedPreview = Number(parameters.get('wanted'));
+    if (Number.isSafeInteger(wantedPreview) && wantedPreview >= 1 && wantedPreview <= 5) {
+      api.setWantedLevel(wantedPreview);
+    }
   }
 
   #queueNavigationUpdate(snapshot: WorldSnapshot): void {

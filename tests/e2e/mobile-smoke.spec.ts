@@ -30,7 +30,24 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await expect(touchControls.getByRole('button', { name: 'Crouch', exact: true })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Aim' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Fire or attack' })).toBeVisible();
+    await expect(touchControls.getByRole('button', { name: 'Charge heavy attack' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Reload' })).toBeVisible();
+    await expect(touchControls.getByRole('button', { name: 'Cycle weapon' })).toBeVisible();
+
+    const world = page.getByLabel('3D game world');
+    const weaponBeforeSwap = await world.getAttribute('data-active-weapon-id');
+    const weaponSwap = touchControls.locator('[data-touch-action="weaponRadial"]');
+    await weaponSwap.dispatchEvent('pointerdown');
+    await expect(weaponSwap).toHaveClass(/is-active/);
+    await expect.poll(() => world.getAttribute('data-active-weapon-id')).not.toBe(weaponBeforeSwap);
+    await weaponSwap.dispatchEvent('pointerup');
+    await expect(weaponSwap).not.toHaveClass(/is-active/);
+
+    const heavyAttack = touchControls.locator('[data-touch-action="melee"]');
+    await heavyAttack.dispatchEvent('pointerdown');
+    await expect(heavyAttack).toHaveClass(/is-active/);
+    await heavyAttack.dispatchEvent('pointerup');
+    await expect(heavyAttack).not.toHaveClass(/is-active/);
 
     const sprint = touchControls.locator('[data-touch-action="sprint"]');
     await sprint.dispatchEvent('pointerdown');
@@ -40,7 +57,6 @@ test.describe('M0 mobile landscape browser smoke', () => {
 
     await page.waitForFunction(() => Boolean((window as QaWindow).__HEATLINE_QA__));
     await page.evaluate(() => (window as QaWindow).__HEATLINE_QA__?.teleport(-248, 243.5));
-    const world = page.getByLabel('3D game world');
     const interact = touchControls.locator('[data-touch-action="interact"]');
     await interact.dispatchEvent('pointerdown');
     await expect(world).toHaveAttribute('data-player-mode', 'vehicle');
@@ -53,6 +69,8 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await expect(touchControls.getByRole('button', { name: 'Vehicle camera' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Vehicle reset' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Sprint' })).toBeHidden();
+    await expect(touchControls.getByRole('button', { name: 'Charge heavy attack' })).toBeHidden();
+    await expect(touchControls.getByRole('button', { name: 'Cycle weapon' })).toBeHidden();
 
     const cameraToggle = touchControls.getByRole('button', { name: 'Vehicle camera' });
     await cameraToggle.dispatchEvent('pointerdown');
@@ -155,5 +173,25 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await page.setViewportSize({ width: 844, height: 390 });
     await expect(rotateMessage).toBeHidden();
     await expect(touchControls).toBeVisible();
+
+    const actionBounds = await touchControls.locator('[data-touch-action]:visible').evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const bounds = button.getBoundingClientRect();
+        return {
+          action: (button as HTMLElement).dataset.touchAction,
+          left: bounds.left,
+          top: bounds.top,
+          right: bounds.right,
+          bottom: bounds.bottom,
+        };
+      }),
+    );
+    expect(actionBounds).toHaveLength(9);
+    for (const bounds of actionBounds) {
+      expect(bounds.left, `${bounds.action} crosses the left viewport edge`).toBeGreaterThanOrEqual(0);
+      expect(bounds.top, `${bounds.action} crosses the top viewport edge`).toBeGreaterThanOrEqual(0);
+      expect(bounds.right, `${bounds.action} crosses the right viewport edge`).toBeLessThanOrEqual(844);
+      expect(bounds.bottom, `${bounds.action} crosses the bottom viewport edge`).toBeLessThanOrEqual(390);
+    }
   });
 });

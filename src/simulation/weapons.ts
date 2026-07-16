@@ -99,6 +99,24 @@ export function tryFireWeapon(
   }
 
   runtime.cooldowns[type] = definition.cooldownSeconds;
+  const hits = resolveWeaponHits(definition, origin, aimDirection, targets, random);
+
+  return {
+    weapon: type,
+    fired: true,
+    cooldownRemaining: definition.cooldownSeconds,
+    hits,
+  };
+}
+
+/** Resolves one caller-authorized shot without applying a second cooldown. */
+export function resolveWeaponHits(
+  definition: Readonly<WeaponDefinition>,
+  origin: Readonly<SimulationVec3>,
+  aimDirection: Readonly<SimulationVec3>,
+  targets: readonly WeaponTarget[],
+  random: SimulationRandom,
+): readonly WeaponHit[] {
   const direction = normalize2d(aimDirection);
   const aggregated = new Map<string, WeaponHit>();
   for (let pellet = 0; pellet < definition.pellets; pellet += 1) {
@@ -116,11 +134,5 @@ export function tryFireWeapon(
       : hit);
   }
 
-  return {
-    weapon: type,
-    fired: true,
-    cooldownRemaining: definition.cooldownSeconds,
-    hits: [...aggregated.values()],
-  };
+  return [...aggregated.values()];
 }
-
