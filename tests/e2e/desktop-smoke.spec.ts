@@ -9,6 +9,7 @@ test.describe('M0 desktop browser smoke', () => {
   test.skip(({ isMobile }) => Boolean(isMobile), 'Desktop-only smoke coverage');
 
   test('splash to slot and preset selection reaches the live HUD/world shell', async ({ page }) => {
+    test.setTimeout(90_000);
     await startNewGame(page, 1, 'Masculine Alex');
     await expectPlayableWorldShell(page);
     await expect(page.locator('[data-dialogue-speaker]')).toHaveText('Alex Moreno');

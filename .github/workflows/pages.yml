@@ -42,8 +42,13 @@ jobs:
           path: dist
 
   browser-smoke:
+    name: Browser smoke (${{ matrix.browser }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -57,11 +62,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Install release browsers
-        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Install release browser
+        run: npx playwright install --with-deps ${{ matrix.browser }}
 
-      - name: Verify Chromium mobile and cross-browser desktop startup
-        run: npm run test:e2e:release
+      - name: Verify browser startup and controls
+        run: npm run test:e2e:release:${{ matrix.browser }}
 
   deploy:
     environment:
