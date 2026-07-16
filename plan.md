@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 20:08 CEST
+Last updated: 2026-07-16 20:18 CEST
 Plan status: Active  
-Current focus: Preview 3 deployment and live desktop/mobile smoke test
+Current focus: M7 audio, social art, polish, and accessibility implementation
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -272,9 +272,10 @@ Acceptance: a clean save can finish every mission in valid open order, recover f
 
 Completion evidence: the schema-v4 mission and dialogue snapshots persist a fully data-driven 12-mission campaign, all 37 checkpoints, contact gates/reputation, 49 branch-safe reviewable dialogue entries, authored environment and wanted escalation, exact retry recovery, cleanup, both Rule and Expose endings, and postgame free roam. The Jobs board exposes every mission, objective, activity, discovery set, ending, and mission-log entry on desktop and touch. All five seeded repeatable activities track clears/cooldowns/bests and all 60 discoveries (30 salvage caches, 20 stunt jumps, 10 signal nodes) integrate map reveal, rewards, category completion, and saves. The clean-save browser course finished both endings, exercised checkpoint failure/retry, reached level gates through natural activities, completed all content, and survived save/quit/continue without state drift. `npm run check` passed 76 files / 480 tests; the fresh full Playwright matrix passed 23 applicable scenarios / 17 intentional device skips; focused M6 Rule/Expose/mobile acceptance passed 3 / 3 applicable scenarios; desktop and 844×390 Jobs-board visual/bounds QA passed; the production artifact is 1.21 MiB total / 0.41 MiB compressed.
 
-### M7 — Audio, generated art, polish, and accessibility — `PENDING`
+### M7 — Audio, generated art, polish, and accessibility — `IN PROGRESS`
 
-- [ ] Generate, inspect, optimize, and integrate the splash/social raster art through built-in image generation.
+- [x] Generate, inspect, optimize, and integrate the splash raster art through built-in image generation.
+- [ ] Generate, inspect, optimize, and integrate the social-preview raster art through built-in image generation.
 - [ ] Three stations/nine tracks, procedural SFX/ambience, radio persistence and mixer.
 - [ ] Final responsive HUD/menu/map/inventory/skills/property/dialogue presentation and accessibility pass.
 
@@ -341,16 +342,17 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 19:02 | M6 | Began the campaign/content milestone. Existing campaign, mission, dialogue, activity, and collectible foundations are being audited against the 12-mission, two-ending, five-activity, and 60-collectible acceptance matrix before live integration. | M6 marked `IN PROGRESS`; Preview 3 remains gated on a clean-save full-campaign browser course, checkpoint recovery, both endings, free-roam continuation, and content persistence |
 | 2026-07-16 20:05 | M6 | Integrated the complete campaign/content runtime and closed review blockers before release: authored wanted escalation, surrender accounting and encounter cleanup, full checkpoint player/vehicle/mission-item restore, non-leaking mission environment persistence, immediate ending modifiers, reputation bonuses, same-road-node GPS guidance, and responsive Jobs/mission-log UI. The focused Rule/Expose/mobile course is green; the final full browser regression rerun remains the only milestone gate. | `npm run check`: 76 files / 480 tests; focused M6 Playwright: 3 passed / 3 intentional device skips; 1.21 MiB artifact / 0.41 MiB compressed; M6 remains `IN PROGRESS` until the fresh complete Playwright matrix passes |
 | 2026-07-16 20:08 | M6 | Completed and accepted the entire campaign, branching dialogue, repeatable-activity, collectible, checkpoint, cleanup, and postgame milestone. The final regression gate covered every earlier preview plus the complete Rule/Expose campaign and compact-mobile Jobs board. | `npm run check`: 76 files / 480 tests; Playwright: 23 passed / 17 intentional device skips; focused M6: 3 passed / 3 intentional device skips; 1280×720 and 844×390 visual/bounds QA; 1.21 MiB artifact / 0.41 MiB compressed; M6 marked `COMPLETE` |
+| 2026-07-16 20:18 | Preview 3 / M7 | Published and tagged the complete M6 campaign/content build, then advanced the ground-truth focus to M7. Live desktop smoke reached a fresh save, rendered gameplay, and opened the complete Jobs board. A separate production-only Playwright course passed at 844×390 with touch emulation, nine bounded action buttons, the 12-mission/5-activity/3-collection Jobs board, portrait rotation recovery, exact deployed JS/CSS hashes, and zero console, page, or failed-request errors. | Source `238f29a0212c22c19253d3444ffefe50e7d0abcb`; tag `preview-3`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29522788866); [live preview](https://loggel.github.io/GTA-Web/?preview=3); checked JS `index-C7E-9w1U.js` / CSS `index-BSVQ3fo5.css`; live mobile smoke 1/1 in 3.5 s; 1.21 MiB artifact / 0.41 MiB compressed; `npm run check` 76 files / 480 tests; full Playwright 23 passed / 17 intentional skips |
 
 ## Release record
 
 - Repository: `https://github.com/LoggeL/GTA-Web`
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
-- Current preview: Preview 2.1 (`preview-2.1`)
-- Release commit: `5b4f8c0466045feb31220693ff3c8f622fc8b5ee`
-- Deployment workflow: [GitHub Pages run 29517799115 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29517799115)
+- Current preview: Preview 3 (`preview-3`)
+- Release commit: `238f29a0212c22c19253d3444ffefe50e7d0abcb`
+- Deployment workflow: [GitHub Pages run 29522788866 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29522788866)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.39 MiB at Preview 2.1 gate
-- Published artifact size: 1.12 MiB at Preview 2.1 gate
-- Final `npm run check`: pending for M8; Preview 2.1 gate passed with 69 files / 442 tests
-- Final browser smoke test: pending for M8; Preview 2.1 live smoke passed Preview-2-to-v3 save migration/load, starter inventory/loadout/nine recipes, checked repository-base JS/CSS hashes, and a fresh 844×390 mobile start with nine touch actions, all 48 inventory destinations in-bounds, and no page errors
+- Current compressed shell: 0.41 MiB at Preview 3 gate
+- Published artifact size: 1.21 MiB at Preview 3 gate
+- Final `npm run check`: pending for M8; Preview 3 gate passed with 76 files / 480 tests
+- Final browser smoke test: pending for M8; Preview 3 live smoke passed a fresh desktop start and complete Jobs-board review plus a production-only 844×390 touch course with nine bounded actions, complete campaign/content counts, portrait rotation recovery, checked repository-base JS/CSS hashes, and zero console, page, or failed-request errors
