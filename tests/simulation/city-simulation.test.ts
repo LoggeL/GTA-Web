@@ -25,6 +25,79 @@ describe('CitySimulation integration surface', () => {
     second.dispose();
   });
 
+  it('applies arbitrary streaming limits and restores the fixed pools deterministically', () => {
+    const simulation = new CitySimulation({
+      seed: 'adaptive-actor-limits',
+      quality: 'high',
+      seedCombatants: false,
+    });
+    const roles = ['brawler', 'gunner', 'flanker', 'heavy', 'marksman'] as const;
+    for (let index = 0; index < 20; index += 1) {
+      expect(simulation.spawnEnemy(roles[index % roles.length] ?? 'brawler', {
+        x: index * 2,
+        y: 0,
+        z: -index,
+      })).toBe(`combatant-${index.toString().padStart(2, '0')}`);
+    }
+
+    const full = simulation.getSnapshot();
+    expect(full.actorLimits).toEqual({ traffic: 24, pedestrians: 45, combat: 20 });
+    expect(full.poolCapacity).toEqual({ traffic: 24, pedestrians: 45, combatants: 20 });
+    expect([full.traffic.length, full.pedestrians.length, full.combatants.length]).toEqual([
+      24,
+      45,
+      20,
+    ]);
+
+    expect(simulation.setActorLimits({ traffic: 18, pedestrians: 33, combat: 15 })).toEqual({
+      traffic: 18,
+      pedestrians: 33,
+      combat: 15,
+    });
+    let throttled = simulation.getSnapshot();
+    expect([throttled.traffic.length, throttled.pedestrians.length, throttled.combatants.length]).toEqual([
+      18,
+      33,
+      15,
+    ]);
+
+    simulation.setQuality('low');
+    expect(simulation.getSnapshot().actorLimits).toEqual({
+      traffic: 10,
+      pedestrians: 18,
+      combat: 8,
+    });
+    simulation.setQuality('high');
+    expect(simulation.getSnapshot().actorLimits).toEqual({
+      traffic: 18,
+      pedestrians: 33,
+      combat: 15,
+    });
+
+    expect(simulation.setActorLimits({ traffic: 12, pedestrians: 22, combat: 10 })).toEqual({
+      traffic: 12,
+      pedestrians: 22,
+      combat: 10,
+    });
+    throttled = simulation.getSnapshot();
+    expect([throttled.traffic.length, throttled.pedestrians.length, throttled.combatants.length]).toEqual([
+      12,
+      22,
+      10,
+    ]);
+
+    expect(simulation.setActorLimits({ traffic: 24, pedestrians: 45, combat: 20 })).toEqual(
+      full.actorLimits,
+    );
+    const restored = simulation.getSnapshot();
+    expect(restored.traffic).toEqual(full.traffic);
+    expect(restored.pedestrians).toEqual(full.pedestrians);
+    expect(restored.combatants).toEqual(full.combatants);
+    expect(restored.poolCapacity).toEqual(full.poolCapacity);
+    expect(simulation.spawnEnemy('brawler', { x: 100, y: 0, z: 100 })).toBeNull();
+    simulation.dispose();
+  });
+
   it('turns accepted weapon fire into damage, crime, panic, and combat alerting', () => {
     const crimes: CrimeEvent[] = [];
     const damage: EnemyDamageEvent[] = [];

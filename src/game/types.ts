@@ -4,7 +4,13 @@ export type WorldQuality = 'low' | 'high';
 
 export type CameraMode = 'follow' | 'aim' | 'vehicle';
 
+export type ShoulderSide = 'left' | 'right';
+
+export type TraversalMode = 'grounded' | 'airborne' | 'stepping' | 'vaulting';
+
 export type PlayerMode = 'on-foot' | 'vehicle';
+
+export type WorldInteriorPhase = 'exterior' | 'loading-enter' | 'interior' | 'loading-exit';
 
 export type DayPhase = 'dawn' | 'day' | 'evening' | 'night';
 
@@ -23,6 +29,8 @@ export interface WorldInputState {
   jump: boolean;
   crouch: boolean;
   aim: boolean;
+  /** One-shot camera shoulder toggle request. */
+  shoulderSwap: boolean;
   handbrake: boolean;
   /** One-shot interaction/vehicle toggle request. */
   interact: boolean;
@@ -37,17 +45,42 @@ export interface WorldSnapshot {
   cameraMode: CameraMode;
   district: DistrictId;
   position: Vec3Data;
+  velocity: Vec3Data;
   heading: number;
   speedMetersPerSecond: number;
   speedKph: number;
   grounded: boolean;
   sprinting: boolean;
   crouching: boolean;
+  verticalSpeed: number;
+  traversalMode: TraversalMode;
+  cameraYaw: number;
+  cameraPitch: number;
+  shoulderSide: ShoulderSide;
+  paused: boolean;
+  focused: boolean;
+  running: boolean;
+  interactionTarget: WorldInteractionSnapshot | null;
+  canInteract: boolean;
+  canExitVehicle: boolean;
+  interiorId: string | null;
+  interiorLabel: string | null;
+  interiorPhase: WorldInteriorPhase;
   timeOfDay: number;
   dayPhase: DayPhase;
   rainIntensity: number;
   vehicleHealth: number | null;
   prompt: string | null;
+}
+
+export type WorldInteractionKind = 'vehicle' | 'world';
+
+export interface WorldInteractionSnapshot {
+  id: string;
+  kind: WorldInteractionKind;
+  prompt: string;
+  distanceMeters: number;
+  position: Vec3Data;
 }
 
 export interface EnvironmentUpdate {
@@ -69,7 +102,11 @@ export interface WorldViewOptions {
   rainIntensity?: number;
   clockRate?: number;
   enableDefaultControls?: boolean;
+  /** Optional app-owned input source consumed once per simulation update. */
+  inputProvider?: () => Partial<WorldInputState>;
   reducedMotion?: boolean;
+  resolutionScale?: number;
+  onFrame?: (frameMilliseconds: number) => void;
   onSnapshot?: (snapshot: WorldSnapshot) => void;
 }
 
@@ -81,6 +118,7 @@ export function createWorldInputState(): WorldInputState {
     jump: false,
     crouch: false,
     aim: false,
+    shoulderSwap: false,
     handbrake: false,
     interact: false,
     cameraYawDelta: 0,

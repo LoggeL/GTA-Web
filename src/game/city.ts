@@ -53,11 +53,19 @@ export interface PropRecipe {
 }
 
 export interface CollisionRect {
+  id?: string;
   minX: number;
   maxX: number;
   minZ: number;
   maxZ: number;
   height: number;
+  kind?: 'solid' | 'step' | 'vault';
+}
+
+export interface TraversalObstacleRecipe extends CollisionRect {
+  id: string;
+  kind: 'step' | 'vault';
+  color: number;
 }
 
 export interface CityLayout {
@@ -66,8 +74,33 @@ export interface CityLayout {
   buildings: readonly BuildingRecipe[];
   roads: readonly RoadRecipe[];
   props: readonly PropRecipe[];
+  traversalObstacles: readonly TraversalObstacleRecipe[];
   collisions: readonly CollisionRect[];
 }
+
+/** Small authored course beside the Arroyo Heights spawn. */
+export const TRAVERSAL_OBSTACLES: readonly TraversalObstacleRecipe[] = Object.freeze([
+  {
+    id: 'arroyo-course-step',
+    minX: -237,
+    maxX: -234,
+    minZ: 246,
+    maxZ: 250,
+    height: 0.34,
+    kind: 'step',
+    color: 0xe6b65f,
+  },
+  {
+    id: 'arroyo-course-vault',
+    minX: -227,
+    maxX: -224.8,
+    minZ: 245,
+    maxZ: 251,
+    height: 0.92,
+    kind: 'vault',
+    color: 0xef7048,
+  },
+]);
 
 export const DISTRICTS: readonly DistrictBounds[] = Object.freeze([
   {
@@ -300,12 +333,15 @@ export function generateCity(seed: number | string = 'solara-v1', quality: World
   );
 
   const collisions: CollisionRect[] = buildings.map((building) => ({
+    id: building.id,
     minX: building.position.x - building.width / 2,
     maxX: building.position.x + building.width / 2,
     minZ: building.position.z - building.depth / 2,
     maxZ: building.position.z + building.depth / 2,
     height: building.height,
+    kind: 'solid',
   }));
+  collisions.push(...TRAVERSAL_OBSTACLES.map((obstacle) => ({ ...obstacle })));
 
   return {
     seed: numericSeed,
@@ -313,6 +349,7 @@ export function generateCity(seed: number | string = 'solara-v1', quality: World
     buildings,
     roads,
     props,
+    traversalObstacles: TRAVERSAL_OBSTACLES.map((obstacle) => ({ ...obstacle })),
     collisions,
   };
 }

@@ -18,18 +18,91 @@ import {
 } from 'three';
 import type { Matrix4 } from 'three';
 
+import { cellIdAt, parseCellId } from '../navigation/cells';
+import type { CellId } from '../navigation/types';
 import { DISTRICTS, DISTRICT_SIZE } from './city';
-import type { CityLayout, PropRecipe } from './city';
+import type {
+  BuildingRecipe,
+  CityLayout,
+  PropRecipe,
+  TraversalObstacleRecipe,
+} from './city';
+import type { DrawDensityLimits } from './CityStreamingController';
 import type { PlayerSimulationState } from './player';
 import { SeededRandom } from './random';
 import type { Vec3Data, WorldQuality } from './types';
 import type { VehicleSimulationState } from './vehicle';
 
+export interface CityVisualInstanceCounts {
+  readonly visible: number;
+  readonly capacity: number;
+}
+
+export interface CityVisualStreamingSnapshot {
+  readonly activeCellIds: readonly CellId[];
+  /** Cells represented by the immutable CPU recipe index. */
+  readonly knownCellIds: readonly CellId[];
+  /** Requested resident cells that contain indexed visual recipes. */
+  readonly residentCellIds: readonly CellId[];
+  /** Payload roots allocated during this transition. */
+  readonly createdCellIds: readonly CellId[];
+  /** Payload roots released during this transition. */
+  readonly evictedCellIds: readonly CellId[];
+  readonly visibleCellIds: readonly CellId[];
+  readonly hiddenCellIds: readonly CellId[];
+  readonly density: DrawDensityLimits;
+  readonly structures: CityVisualInstanceCounts;
+  readonly props: CityVisualInstanceCounts;
+  readonly traversal: CityVisualInstanceCounts;
+  readonly shadowCastingInstances: number;
+}
+
 export interface CityVisualBundle {
   root: Group;
   buildingMaterials: readonly MeshStandardMaterial[];
   roadMaterial: MeshStandardMaterial;
+  applyStreamingState: (
+    renderableActiveCellIds: readonly CellId[],
+    residentCellIds: readonly CellId[],
+    drawDensity: Readonly<DrawDensityLimits>,
+  ) => CityVisualStreamingSnapshot;
   dispose: () => void;
+}
+
+interface DensityMeshRecord {
+  readonly mesh: InstancedMesh;
+  readonly capacity: number;
+  readonly shadowCaster: boolean;
+  readonly shadowKey: string;
+}
+
+interface CityCellVisualPayload {
+  readonly cellId: CellId;
+  readonly root: Group;
+  readonly structures: DensityMeshRecord[];
+  readonly props: DensityMeshRecord[];
+  readonly traversal: DensityMeshRecord[];
+}
+
+interface CityCellVisualRecipes {
+  readonly buildings: readonly BuildingRecipe[];
+  readonly props: readonly PropRecipe[];
+  readonly traversal: readonly TraversalObstacleRecipe[];
+}
+
+interface CityVisualSharedResources {
+  readonly buildingGeometry: BufferGeometry;
+  readonly buildingMaterials: readonly MeshStandardMaterial[];
+  readonly stemGeometry: BufferGeometry;
+  readonly stemMaterial: MeshStandardMaterial;
+  readonly foliageGeometry: BufferGeometry;
+  readonly foliageMaterial: MeshStandardMaterial;
+  readonly lightGeometry: BufferGeometry;
+  readonly lightMaterial: MeshStandardMaterial;
+  readonly containerGeometry: BufferGeometry;
+  readonly containerMaterial: MeshStandardMaterial;
+  readonly traversalGeometry: BufferGeometry;
+  readonly traversalMaterial: MeshStandardMaterial;
 }
 
 function composeMatrix(
@@ -58,6 +131,7 @@ function createDistrictGrounds(root: Group, geometries: BufferGeometry[], materi
       metalness: 0,
     });
     const ground = new Mesh(geometry, material);
+    ground.name = `city-ground:${district.id}`;
     ground.position.set(
       (district.minX + district.maxX) / 2,
       -0.08,
@@ -78,6 +152,7 @@ function createDistrictGrounds(root: Group, geometries: BufferGeometry[], materi
     opacity: 0.9,
   });
   const ocean = new Mesh(oceanGeometry, oceanMaterial);
+  ocean.name = 'city-ocean';
   ocean.rotation.x = -Math.PI / 2;
   ocean.position.set(-748, -0.18, 0);
   root.add(ocean);
@@ -98,6 +173,7 @@ function createRoads(
     metalness: 0.05,
   });
   const mesh = new InstancedMesh(geometry, material, layout.roads.length);
+  mesh.name = 'city-roads';
   const dummy = new Object3D();
   layout.roads.forEach((road, index) => {
     mesh.setMatrixAt(
@@ -122,6 +198,7 @@ function createRoads(
     roughness: 0.72,
   });
   const markings = new InstancedMesh(markingGeometry, markingMaterial, markingCount);
+  markings.name = 'city-road-markings';
   let markingIndex = 0;
   for (const road of layout.roads) {
     const vertical = road.depth > road.width;
@@ -144,27 +221,191 @@ function createRoads(
   return material;
 }
 
-function createBuildings(
-  root: Group,
-  layout: CityLayout,
-  quality: WorldQuality,
+function groupByCell<T>(
+  items: readonly T[],
+  positionFor: (item: T) => { readonly x: number; readonly z: number },
+): readonly (readonly [CellId, readonly T[]])[] {
+  const grouped = new Map<CellId, T[]>();
+  for (const item of items) {
+    const cellId = cellIdAt(positionFor(item));
+    const recipes = grouped.get(cellId) ?? [];
+    recipes.push(item);
+    grouped.set(cellId, recipes);
+  }
+  return [...grouped.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+}
+
+function indexCellRecipes(layout: CityLayout): ReadonlyMap<CellId, CityCellVisualRecipes> {
+  const recipes = new Map<CellId, {
+    buildings: BuildingRecipe[];
+    props: PropRecipe[];
+    traversal: TraversalObstacleRecipe[];
+  }>();
+  const ensure = (cellId: CellId) => {
+    const existing = recipes.get(cellId);
+    if (existing) {
+      return existing;
+    }
+    const cellRecipes = { buildings: [], props: [], traversal: [] };
+    recipes.set(cellId, cellRecipes);
+    return cellRecipes;
+  };
+
+  for (const [cellId, buildings] of groupByCell(
+    layout.buildings,
+    (building) => building.position,
+  )) {
+    ensure(cellId).buildings.push(...buildings);
+  }
+  for (const [cellId, props] of groupByCell(
+    layout.props,
+    (prop) => prop.position,
+  )) {
+    ensure(cellId).props.push(...props);
+  }
+  for (const [cellId, traversal] of groupByCell(
+    layout.traversalObstacles,
+    (obstacle) => ({
+      x: (obstacle.minX + obstacle.maxX) / 2,
+      z: (obstacle.minZ + obstacle.maxZ) / 2,
+    }),
+  )) {
+    ensure(cellId).traversal.push(...traversal);
+  }
+  return recipes;
+}
+
+function createSharedResources(
   geometries: BufferGeometry[],
   materials: MeshStandardMaterial[],
-): readonly MeshStandardMaterial[] {
-  const buildingMaterials: MeshStandardMaterial[] = [];
-  for (const district of DISTRICTS) {
-    const recipes = layout.buildings.filter((building) => building.district === district.id);
-    const geometry = new BoxGeometry(1, 1, 1);
-    const material = new MeshStandardMaterial({
+): CityVisualSharedResources {
+  const buildingGeometry = new BoxGeometry(1, 1, 1);
+  const buildingMaterials = DISTRICTS.map((district) =>
+    new MeshStandardMaterial({
       color: 0xffffff,
       emissive: district.emissiveColor,
       emissiveIntensity: 0.08,
       roughness: 0.72,
       metalness: district.id === 'alta-vista' ? 0.18 : 0.04,
-    });
-    const mesh = new InstancedMesh(geometry, material, recipes.length);
-    const dummy = new Object3D();
+    }),
+  );
+  const stemGeometry = new CylinderGeometry(0.5, 0.68, 1, 6);
+  const stemMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.88,
+  });
+  const foliageGeometry = new ConeGeometry(1, 1, 6);
+  const foliageMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.9,
+  });
+  const lightGeometry = new IcosahedronGeometry(0.32, 0);
+  const lightMaterial = new MeshStandardMaterial({
+    color: 0xfff2c3,
+    emissive: 0xffb74f,
+    emissiveIntensity: 2.2,
+  });
+  const containerGeometry = new BoxGeometry(1, 1, 1);
+  const containerMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.78,
+    metalness: 0.2,
+  });
+  const traversalGeometry = new BoxGeometry(1, 1, 1);
+  const traversalMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.72,
+  });
+  geometries.push(
+    buildingGeometry,
+    stemGeometry,
+    foliageGeometry,
+    lightGeometry,
+    containerGeometry,
+    traversalGeometry,
+  );
+  materials.push(
+    ...buildingMaterials,
+    stemMaterial,
+    foliageMaterial,
+    lightMaterial,
+    containerMaterial,
+    traversalMaterial,
+  );
+  return {
+    buildingGeometry,
+    buildingMaterials,
+    stemGeometry,
+    stemMaterial,
+    foliageGeometry,
+    foliageMaterial,
+    lightGeometry,
+    lightMaterial,
+    containerGeometry,
+    containerMaterial,
+    traversalGeometry,
+    traversalMaterial,
+  };
+}
 
+function createCellPayload(cellId: CellId): CityCellVisualPayload {
+  const cellRoot = new Group();
+  cellRoot.name = `city-payload:${cellId}`;
+  return {
+    cellId,
+    root: cellRoot,
+    structures: [],
+    props: [],
+    traversal: [],
+  };
+}
+
+function finalizeInstances(mesh: InstancedMesh): void {
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) {
+    mesh.instanceColor.needsUpdate = true;
+  }
+}
+
+function recordDensityMesh(
+  payload: CityCellVisualPayload,
+  kind: 'structures' | 'props' | 'traversal',
+  mesh: InstancedMesh,
+  shadowCaster: boolean,
+  shadowKey: string,
+): void {
+  payload.root.add(mesh);
+  payload[kind].push({
+    mesh,
+    capacity: mesh.count,
+    shadowCaster,
+    shadowKey: `${payload.cellId}:${shadowKey}`,
+  });
+}
+
+function createBuildings(
+  payload: CityCellVisualPayload,
+  buildings: readonly BuildingRecipe[],
+  quality: WorldQuality,
+  resources: CityVisualSharedResources,
+): void {
+  for (const [districtIndex, district] of DISTRICTS.entries()) {
+    const recipes = buildings.filter(
+      (building) => building.district === district.id,
+    );
+    const material = resources.buildingMaterials[districtIndex];
+    if (recipes.length === 0 || !material) {
+      continue;
+    }
+    const mesh = new InstancedMesh(
+      resources.buildingGeometry,
+      material,
+      recipes.length,
+    );
+    mesh.name = `city-buildings:${payload.cellId}:${district.id}`;
+    const dummy = new Object3D();
     recipes.forEach((building, index) => {
       mesh.setMatrixAt(
         index,
@@ -182,12 +423,15 @@ function createBuildings(
     });
     mesh.castShadow = quality === 'high';
     mesh.receiveShadow = true;
-    root.add(mesh);
-    geometries.push(geometry);
-    materials.push(material);
-    buildingMaterials.push(material);
+    finalizeInstances(mesh);
+    recordDensityMesh(
+      payload,
+      'structures',
+      mesh,
+      quality === 'high',
+      `buildings:${district.id}`,
+    );
   }
-  return buildingMaterials;
 }
 
 function propStemDimensions(prop: PropRecipe): readonly [number, number] {
@@ -206,92 +450,413 @@ function propStemDimensions(prop: PropRecipe): readonly [number, number] {
 }
 
 function createProps(
-  root: Group,
-  layout: CityLayout,
-  geometries: BufferGeometry[],
-  materials: MeshStandardMaterial[],
+  payload: CityCellVisualPayload,
+  cellProps: readonly PropRecipe[],
+  resources: CityVisualSharedResources,
 ): void {
-  const stems = layout.props.filter((prop) => prop.kind !== 'container');
-  const stemGeometry = new CylinderGeometry(0.5, 0.68, 1, 6);
-  const stemMaterial = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.88 });
-  const stemMesh = new InstancedMesh(stemGeometry, stemMaterial, stems.length);
   const dummy = new Object3D();
-  stems.forEach((prop, index) => {
-    const [radius, height] = propStemDimensions(prop);
-    stemMesh.setMatrixAt(
-      index,
-      composeMatrix(dummy, prop.position.x, height / 2, prop.position.z, radius, height, radius, prop.rotation),
+  const vegetation = cellProps.filter(
+    (prop) => prop.kind === 'palm' || prop.kind === 'tree',
+  );
+  if (vegetation.length > 0) {
+    const stemMesh = new InstancedMesh(
+      resources.stemGeometry,
+      resources.stemMaterial,
+      vegetation.length,
     );
-    const color = prop.kind === 'palm' || prop.kind === 'tree' ? 0x755235 : 0x46525a;
-    stemMesh.setColorAt(index, new Color(color));
-  });
-  stemMesh.castShadow = true;
-  root.add(stemMesh);
-  geometries.push(stemGeometry);
-  materials.push(stemMaterial);
-
-  const foliage = layout.props.filter((prop) => prop.kind === 'palm' || prop.kind === 'tree');
-  const foliageGeometry = new ConeGeometry(1, 1, 6);
-  const foliageMaterial = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
-  const foliageMesh = new InstancedMesh(foliageGeometry, foliageMaterial, foliage.length);
-  foliage.forEach((prop, index) => {
-    const palm = prop.kind === 'palm';
-    const radius = (palm ? 3.2 : 2.6) * prop.scale;
-    const height = (palm ? 4.2 : 4.8) * prop.scale;
-    const y = (palm ? 8.1 : 6.2) * prop.scale;
-    foliageMesh.setMatrixAt(
-      index,
-      composeMatrix(dummy, prop.position.x, y, prop.position.z, radius, height, radius, prop.rotation),
+    stemMesh.name = `city-vegetation-stems:${payload.cellId}`;
+    const foliageMesh = new InstancedMesh(
+      resources.foliageGeometry,
+      resources.foliageMaterial,
+      vegetation.length,
     );
-    foliageMesh.setColorAt(index, new Color(palm ? 0x2f9f6a : 0x4d8d50));
-  });
-  foliageMesh.castShadow = true;
-  root.add(foliageMesh);
-  geometries.push(foliageGeometry);
-  materials.push(foliageMaterial);
+    foliageMesh.name = `city-foliage:${payload.cellId}`;
+    vegetation.forEach((prop, index) => {
+      const [radius, height] = propStemDimensions(prop);
+      stemMesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          height / 2,
+          prop.position.z,
+          radius,
+          height,
+          radius,
+          prop.rotation,
+        ),
+      );
+      stemMesh.setColorAt(index, new Color(0x755235));
+      const palm = prop.kind === 'palm';
+      foliageMesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          (palm ? 8.1 : 6.2) * prop.scale,
+          prop.position.z,
+          (palm ? 3.2 : 2.6) * prop.scale,
+          (palm ? 4.2 : 4.8) * prop.scale,
+          (palm ? 3.2 : 2.6) * prop.scale,
+          prop.rotation,
+        ),
+      );
+      foliageMesh.setColorAt(index, new Color(palm ? 0x2f9f6a : 0x4d8d50));
+    });
+    stemMesh.castShadow = true;
+    foliageMesh.castShadow = true;
+    finalizeInstances(stemMesh);
+    finalizeInstances(foliageMesh);
+    recordDensityMesh(payload, 'props', stemMesh, true, 'vegetation-stems');
+    recordDensityMesh(payload, 'props', foliageMesh, true, 'foliage');
+  }
 
-  const lights = layout.props.filter((prop) => prop.kind === 'streetlight');
-  const lightGeometry = new IcosahedronGeometry(0.32, 0);
-  const lightMaterial = new MeshStandardMaterial({
-    color: 0xfff2c3,
-    emissive: 0xffb74f,
-    emissiveIntensity: 2.2,
-  });
-  const lightMesh = new InstancedMesh(lightGeometry, lightMaterial, lights.length);
-  lights.forEach((prop, index) => {
-    lightMesh.setMatrixAt(
-      index,
-      composeMatrix(dummy, prop.position.x, 6.25 * prop.scale, prop.position.z, 1, 1, 1),
+  const lights = cellProps.filter((prop) => prop.kind === 'streetlight');
+  if (lights.length > 0) {
+    const stemMesh = new InstancedMesh(
+      resources.stemGeometry,
+      resources.stemMaterial,
+      lights.length,
     );
-  });
-  root.add(lightMesh);
-  geometries.push(lightGeometry);
-  materials.push(lightMaterial);
+    stemMesh.name = `city-light-stems:${payload.cellId}`;
+    const lightMesh = new InstancedMesh(
+      resources.lightGeometry,
+      resources.lightMaterial,
+      lights.length,
+    );
+    lightMesh.name = `city-lights:${payload.cellId}`;
+    lights.forEach((prop, index) => {
+      const [radius, height] = propStemDimensions(prop);
+      stemMesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          height / 2,
+          prop.position.z,
+          radius,
+          height,
+          radius,
+          prop.rotation,
+        ),
+      );
+      stemMesh.setColorAt(index, new Color(0x46525a));
+      lightMesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          6.25 * prop.scale,
+          prop.position.z,
+          1,
+          1,
+          1,
+        ),
+      );
+    });
+    stemMesh.castShadow = true;
+    finalizeInstances(stemMesh);
+    finalizeInstances(lightMesh);
+    recordDensityMesh(payload, 'props', stemMesh, true, 'light-stems');
+    recordDensityMesh(payload, 'props', lightMesh, false, 'light-heads');
+  }
 
-  const containers = layout.props.filter((prop) => prop.kind === 'container');
-  const containerGeometry = new BoxGeometry(1, 1, 1);
-  const containerMaterial = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.78, metalness: 0.2 });
-  const containerMesh = new InstancedMesh(containerGeometry, containerMaterial, containers.length);
-  containers.forEach((prop, index) => {
-    containerMesh.setMatrixAt(
+  const bollards = cellProps.filter((prop) => prop.kind === 'bollard');
+  if (bollards.length > 0) {
+    const mesh = new InstancedMesh(
+      resources.stemGeometry,
+      resources.stemMaterial,
+      bollards.length,
+    );
+    mesh.name = `city-bollards:${payload.cellId}`;
+    bollards.forEach((prop, index) => {
+      const [radius, height] = propStemDimensions(prop);
+      mesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          height / 2,
+          prop.position.z,
+          radius,
+          height,
+          radius,
+          prop.rotation,
+        ),
+      );
+      mesh.setColorAt(index, new Color(0x46525a));
+    });
+    mesh.castShadow = true;
+    finalizeInstances(mesh);
+    recordDensityMesh(payload, 'props', mesh, true, 'bollards');
+  }
+
+  const containers = cellProps.filter((prop) => prop.kind === 'container');
+  if (containers.length > 0) {
+    const mesh = new InstancedMesh(
+      resources.containerGeometry,
+      resources.containerMaterial,
+      containers.length,
+    );
+    mesh.name = `city-containers:${payload.cellId}`;
+    containers.forEach((prop, index) => {
+      mesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          1.25 * prop.scale,
+          prop.position.z,
+          5.8 * prop.scale,
+          2.5 * prop.scale,
+          2.45 * prop.scale,
+          prop.rotation,
+        ),
+      );
+      mesh.setColorAt(index, new Color(prop.color));
+    });
+    mesh.castShadow = true;
+    finalizeInstances(mesh);
+    recordDensityMesh(payload, 'props', mesh, true, 'containers');
+  }
+}
+
+function createTraversalObstacles(
+  payload: CityCellVisualPayload,
+  obstacles: readonly TraversalObstacleRecipe[],
+  resources: CityVisualSharedResources,
+): void {
+  if (obstacles.length === 0) {
+    return;
+  }
+  const mesh = new InstancedMesh(
+    resources.traversalGeometry,
+    resources.traversalMaterial,
+    obstacles.length,
+  );
+  mesh.name = `city-traversal:${payload.cellId}`;
+  const dummy = new Object3D();
+  obstacles.forEach((obstacle, index) => {
+    const width = obstacle.maxX - obstacle.minX;
+    const depth = obstacle.maxZ - obstacle.minZ;
+    mesh.setMatrixAt(
       index,
       composeMatrix(
         dummy,
-        prop.position.x,
-        1.25 * prop.scale,
-        prop.position.z,
-        5.8 * prop.scale,
-        2.5 * prop.scale,
-        2.45 * prop.scale,
-        prop.rotation,
+        (obstacle.minX + obstacle.maxX) / 2,
+        obstacle.height / 2,
+        (obstacle.minZ + obstacle.maxZ) / 2,
+        width,
+        obstacle.height,
+        depth,
       ),
     );
-    containerMesh.setColorAt(index, new Color(prop.color));
+    mesh.setColorAt(index, new Color(obstacle.color));
   });
-  containerMesh.castShadow = true;
-  root.add(containerMesh);
-  geometries.push(containerGeometry);
-  materials.push(containerMaterial);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  finalizeInstances(mesh);
+  recordDensityMesh(payload, 'traversal', mesh, true, 'traversal');
+}
+
+function assertDrawDensity(drawDensity: Readonly<DrawDensityLimits>): void {
+  if (drawDensity.roads !== 1) {
+    throw new RangeError('road density must remain 1');
+  }
+  for (const [label, value] of [
+    ['structure', drawDensity.structures],
+    ['prop', drawDensity.props],
+    ['actor', drawDensity.actors],
+    ['shadow', drawDensity.shadows],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw new RangeError(`${label} density must be between 0 and 1`);
+    }
+  }
+}
+
+function densityCount(capacity: number, density: number): number {
+  return Math.min(capacity, Math.max(0, Math.floor(capacity * density)));
+}
+
+function shadowSample(key: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) / 0x1_0000_0000;
+}
+
+function applyDensity(
+  records: readonly DensityMeshRecord[],
+  density: number,
+  shadowDensity: number,
+  cellVisible: boolean,
+): { readonly visible: number; readonly capacity: number; readonly shadows: number } {
+  let visible = 0;
+  let capacity = 0;
+  let shadows = 0;
+  for (const record of records) {
+    const count = densityCount(record.capacity, density);
+    record.mesh.count = count;
+    record.mesh.visible = count > 0;
+    record.mesh.castShadow =
+      cellVisible
+      && count > 0
+      && record.shadowCaster
+      && (shadowDensity >= 1
+        || (shadowDensity > 0 && shadowSample(record.shadowKey) < shadowDensity));
+    capacity += record.capacity;
+    if (cellVisible) {
+      visible += count;
+      if (record.mesh.castShadow) {
+        shadows += count;
+      }
+    }
+  }
+  return { visible, capacity, shadows };
+}
+
+function instantiateCellPayload(
+  root: Group,
+  cellId: CellId,
+  recipes: CityCellVisualRecipes,
+  quality: WorldQuality,
+  resources: CityVisualSharedResources,
+): CityCellVisualPayload {
+  const payload = createCellPayload(cellId);
+  createBuildings(payload, recipes.buildings, quality, resources);
+  createProps(payload, recipes.props, resources);
+  createTraversalObstacles(payload, recipes.traversal, resources);
+  root.add(payload.root);
+  return payload;
+}
+
+function releaseCellPayload(payload: CityCellVisualPayload): void {
+  payload.root.traverse((object) => {
+    if (object instanceof InstancedMesh) {
+      object.dispose();
+    }
+  });
+  payload.root.removeFromParent();
+  payload.root.clear();
+}
+
+function applyStreamingState(
+  root: Group,
+  recipeIndex: ReadonlyMap<CellId, CityCellVisualRecipes>,
+  payloads: Map<CellId, CityCellVisualPayload>,
+  resources: CityVisualSharedResources,
+  quality: WorldQuality,
+  renderableActiveCellIds: readonly CellId[],
+  requestedResidentCellIds: readonly CellId[],
+  drawDensity: Readonly<DrawDensityLimits>,
+): CityVisualStreamingSnapshot {
+  assertDrawDensity(drawDensity);
+  for (const cellId of [
+    ...renderableActiveCellIds,
+    ...requestedResidentCellIds,
+  ]) {
+    parseCellId(cellId);
+  }
+  const activeCellIds = [...new Set(renderableActiveCellIds)].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const knownCellIds = [...recipeIndex.keys()].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const residentCellIds = [...new Set(requestedResidentCellIds)]
+    .filter((cellId) => recipeIndex.has(cellId))
+    .sort((left, right) => left.localeCompare(right));
+  const requestedResident = new Set(residentCellIds);
+  const evictedCellIds = [...payloads.keys()]
+    .filter((cellId) => !requestedResident.has(cellId))
+    .sort((left, right) => left.localeCompare(right));
+  for (const cellId of evictedCellIds) {
+    const payload = payloads.get(cellId);
+    if (payload) {
+      releaseCellPayload(payload);
+      payloads.delete(cellId);
+    }
+  }
+  const createdCellIds: CellId[] = [];
+  for (const cellId of residentCellIds) {
+    if (payloads.has(cellId)) {
+      continue;
+    }
+    const recipes = recipeIndex.get(cellId);
+    if (!recipes) {
+      continue;
+    }
+    payloads.set(
+      cellId,
+      instantiateCellPayload(root, cellId, recipes, quality, resources),
+    );
+    createdCellIds.push(cellId);
+  }
+  const active = new Set(activeCellIds);
+  const visibleCellIds: CellId[] = [];
+  const hiddenCellIds: CellId[] = [];
+  let structuresVisible = 0;
+  let structuresCapacity = 0;
+  let propsVisible = 0;
+  let propsCapacity = 0;
+  let traversalVisible = 0;
+  let traversalCapacity = 0;
+  let shadowCastingInstances = 0;
+
+  for (const cellId of residentCellIds) {
+    const payload = payloads.get(cellId);
+    if (!payload) {
+      continue;
+    }
+    const cellVisible = active.has(cellId);
+    payload.root.visible = cellVisible;
+    (cellVisible ? visibleCellIds : hiddenCellIds).push(cellId);
+
+    const structures = applyDensity(
+      payload.structures,
+      drawDensity.structures,
+      drawDensity.shadows,
+      cellVisible,
+    );
+    const props = applyDensity(
+      payload.props,
+      drawDensity.props,
+      drawDensity.shadows,
+      cellVisible,
+    );
+    const traversal = applyDensity(
+      payload.traversal,
+      1,
+      drawDensity.shadows,
+      cellVisible,
+    );
+    structuresVisible += structures.visible;
+    structuresCapacity += structures.capacity;
+    propsVisible += props.visible;
+    propsCapacity += props.capacity;
+    traversalVisible += traversal.visible;
+    traversalCapacity += traversal.capacity;
+    shadowCastingInstances +=
+      structures.shadows + props.shadows + traversal.shadows;
+  }
+
+  return {
+    activeCellIds,
+    knownCellIds,
+    residentCellIds,
+    createdCellIds,
+    evictedCellIds,
+    visibleCellIds,
+    hiddenCellIds,
+    density: { ...drawDensity },
+    structures: { visible: structuresVisible, capacity: structuresCapacity },
+    props: { visible: propsVisible, capacity: propsCapacity },
+    traversal: { visible: traversalVisible, capacity: traversalCapacity },
+    shadowCastingInstances,
+  };
 }
 
 export function createCityVisuals(layout: CityLayout): CityVisualBundle {
@@ -299,19 +864,52 @@ export function createCityVisuals(layout: CityLayout): CityVisualBundle {
   root.name = 'procedural-solara';
   const geometries: BufferGeometry[] = [];
   const materials: MeshStandardMaterial[] = [];
+  const recipeIndex = indexCellRecipes(layout);
+  const payloads = new Map<CellId, CityCellVisualPayload>();
   createDistrictGrounds(root, geometries, materials);
   const roadMaterial = createRoads(root, layout, geometries, materials);
-  const buildingMaterials = createBuildings(root, layout, layout.quality, geometries, materials);
-  createProps(root, layout, geometries, materials);
+  const resources = createSharedResources(geometries, materials);
+  let disposed = false;
 
   return {
     root,
-    buildingMaterials,
+    buildingMaterials: resources.buildingMaterials,
     roadMaterial,
+    applyStreamingState: (
+      renderableActiveCellIds,
+      residentCellIds,
+      drawDensity,
+    ) => {
+      if (disposed) {
+        throw new Error('City visuals are disposed');
+      }
+      return applyStreamingState(
+        root,
+        recipeIndex,
+        payloads,
+        resources,
+        layout.quality,
+        renderableActiveCellIds,
+        residentCellIds,
+        drawDensity,
+      );
+    },
     dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
       root.removeFromParent();
+      payloads.forEach((payload) => releaseCellPayload(payload));
+      payloads.clear();
+      root.traverse((object) => {
+        if (object instanceof InstancedMesh) {
+          object.dispose();
+        }
+      });
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((material) => material.dispose());
+      root.clear();
     },
   };
 }

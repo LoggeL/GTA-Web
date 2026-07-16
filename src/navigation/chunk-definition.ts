@@ -1,5 +1,6 @@
 import { districtAt } from '../game/city';
 import type { BuildingRecipe, CityLayout, PropRecipe, RoadRecipe } from '../game/city';
+import { AUTHORED_INTERIORS } from '../game/InteriorRuntime';
 import { boundsForCell, neighborCellIds, parseCellId } from './cells';
 import { buildRoadGraph } from './road-graph';
 import type {
@@ -24,6 +25,66 @@ function hashText(value: string): number {
 
 function hashHex(value: string): string {
   return hashText(value).toString(16).padStart(8, '0');
+}
+
+function canonicalSerialize(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new TypeError('Chunk hash payload numbers must be finite');
+    }
+    return JSON.stringify(Object.is(value, -0) ? 0 : value);
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalSerialize(entry)).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    const record = value as Readonly<Record<string, unknown>>;
+    return `{${Object.keys(record)
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => `${JSON.stringify(key)}:${canonicalSerialize(record[key])}`)
+      .join(',')}}`;
+  }
+  throw new TypeError(`Unsupported chunk hash payload value: ${typeof value}`);
+}
+
+function canonicalIdOrder<T extends { readonly id: string }>(values: readonly T[]): readonly T[] {
+  return [...values].sort((left, right) => {
+    const idOrder = left.id.localeCompare(right.id);
+    return idOrder === 0
+      ? canonicalSerialize(left).localeCompare(canonicalSerialize(right))
+      : idOrder;
+  });
+}
+
+/** Hashes all authored chunk content while deliberately excluding the hash field itself. */
+export function hashWorldChunkDefinition(definition: WorldChunkDefinition): string {
+  const payload = {
+    manifest: {
+      schemaVersion: definition.manifest.schemaVersion,
+      id: definition.manifest.id,
+      district: definition.manifest.district,
+      bounds: definition.manifest.bounds,
+      neighbors: [...definition.manifest.neighbors].sort((left, right) => left.localeCompare(right)),
+      seed: definition.manifest.seed,
+      requiredAssets: [...definition.manifest.requiredAssets].sort((left, right) => left.localeCompare(right)),
+      version: definition.manifest.version,
+    },
+    staticGeometryRecipes: canonicalIdOrder(definition.staticGeometryRecipes),
+    roads: canonicalIdOrder(definition.roads),
+    spawnZones: canonicalIdOrder(definition.spawnZones),
+    navNodes: canonicalIdOrder(definition.navNodes).map((node) => ({
+      ...node,
+      neighborIds: [...node.neighborIds].sort((left, right) => left.localeCompare(right)),
+    })),
+    interiors: canonicalIdOrder(definition.interiors),
+  };
+  return hashHex(canonicalSerialize(payload));
 }
 
 function pointInside(bounds: CellBounds, x: number, z: number): boolean {
@@ -154,15 +215,16 @@ export function buildWorldChunkDefinition(
       z: node.position.z,
       neighborIds: [...(graphEdges.get(node.id) ?? [])].sort(),
     }));
+  const interiors = AUTHORED_INTERIORS
+    .filter((definition) => definition.portal.cellId === id)
+    .map((definition) => ({
+      id: definition.portal.id,
+      interiorId: definition.id,
+      position: { ...definition.portal.position },
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
   const seed = hashText(`${layout.seed}:${coordinates.x}:${coordinates.z}`);
-  const contentIdentity = JSON.stringify({
-    id,
-    seed,
-    version,
-    geometry: staticGeometryRecipes.map((recipe) => recipe.id),
-    roads: roads.map((road) => road.id),
-    nav: navNodes.map((node) => node.id),
-  });
+  const chunkSpawnZones = spawnZones(id, bounds);
   const manifest: WorldChunkManifest = {
     schemaVersion: 1,
     id,
@@ -171,16 +233,22 @@ export function buildWorldChunkDefinition(
     neighbors: neighborCellIds(id),
     seed,
     requiredAssets: [],
-    hash: hashHex(contentIdentity),
+    hash: '',
     version,
   };
-
-  return {
+  const definition: WorldChunkDefinition = {
     manifest,
     staticGeometryRecipes,
     roads,
-    spawnZones: spawnZones(id, bounds),
+    spawnZones: chunkSpawnZones,
     navNodes,
-    interiors: [],
+    interiors,
+  };
+  return {
+    ...definition,
+    manifest: {
+      ...manifest,
+      hash: hashWorldChunkDefinition(definition),
+    },
   };
 }

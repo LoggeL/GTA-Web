@@ -14,6 +14,10 @@
   --yellow: #ffd56a;
   --danger: #ff4f5e;
   --ui-scale: 1;
+  --touch-control-scale: 1;
+  --touch-control-opacity: 0.75;
+  --subtitle-size: 0.9rem;
+  --subtitle-background: rgb(7 18 27 / 84%);
 }
 
 * {
@@ -725,7 +729,7 @@ kbd {
   width: min(88vw, 44rem);
   padding: 0.85rem 1rem;
   border-left: 0.24rem solid var(--teal);
-  background: rgb(7 18 27 / 84%);
+  background: var(--subtitle-background);
   box-shadow: 0 0.8rem 2rem rgb(0 0 0 / 25%);
   transform: translateX(-50%);
 }
@@ -739,7 +743,7 @@ kbd {
 
 .dialogue-box p {
   margin: 0.3rem 0 0;
-  font-size: 0.9rem;
+  font-size: var(--subtitle-size);
   line-height: 1.4;
 }
 
@@ -809,6 +813,55 @@ kbd {
   z-index: 22;
 }
 
+.stream-failure-overlay {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  padding:
+    max(0.75rem, env(safe-area-inset-top))
+    max(0.75rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom))
+    max(0.75rem, env(safe-area-inset-left));
+  place-items: center;
+  background: rgb(1 8 13 / 84%);
+  backdrop-filter: blur(16px);
+  pointer-events: auto;
+}
+
+.stream-failure-card {
+  width: min(92vw, 30rem);
+  max-height: calc(100dvh - 1.5rem);
+  overflow: auto;
+  padding: clamp(1.15rem, 3.5vw, 2rem);
+  border: 1px solid rgb(255 79 94 / 52%);
+  border-top: 0.22rem solid var(--danger);
+  border-radius: 0.7rem;
+  background: rgb(7 18 27 / 96%);
+  box-shadow: 0 2rem 8rem rgb(0 0 0 / 72%);
+}
+
+.stream-failure-card h2 {
+  margin: 0.35rem 0 0.75rem;
+  font-size: clamp(1.8rem, 6vw, 3rem);
+}
+
+.stream-failure-card > p:not(.eyebrow) {
+  margin-bottom: 1.25rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.stream-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.stream-failure-actions .button {
+  flex: 1 1 10rem;
+}
+
 .panel-card {
   width: min(96vw, 76rem);
   height: min(92vh, 50rem);
@@ -818,6 +871,92 @@ kbd {
 .panel-body {
   overflow: auto;
   height: calc(100% - 6rem);
+}
+
+.panel-body--map {
+  display: grid;
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+}
+
+.map-render-host {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.map-render-host > svg {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  cursor: crosshair;
+}
+
+.map-render-host > svg:focus-visible {
+  outline: 0.18rem solid var(--accent);
+  outline-offset: 0.15rem;
+}
+
+.map-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: rgb(4 15 23 / 88%);
+  font-size: 0.76rem;
+}
+
+.map-controls p {
+  flex: 1 1 12rem;
+  margin: 0;
+  color: var(--muted);
+}
+
+.map-controls__routes,
+.map-controls fieldset {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.map-controls button {
+  padding: 0.38rem 0.58rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 7%);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.map-controls button:hover,
+.map-controls button:focus-visible {
+  border-color: var(--accent);
+  background: rgb(80 215 207 / 14%);
+}
+
+.map-controls fieldset {
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+}
+
+.map-controls legend {
+  padding: 0 0.25rem;
+  color: var(--muted);
+}
+
+.map-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  white-space: nowrap;
 }
 
 .map-placeholder,
@@ -928,6 +1067,24 @@ kbd {
   border-bottom: 1px solid var(--line);
 }
 
+.settings-grid fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0.5rem 0.8rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: rgb(255 255 255 / 2.5%);
+}
+
+.settings-grid legend {
+  padding: 0 0.35rem;
+  color: var(--teal);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .settings-grid input[type='range'] {
   width: min(14rem, 45%);
   accent-color: var(--orange);
@@ -938,6 +1095,82 @@ kbd {
   border: 1px solid var(--line);
   color: var(--ink);
   background: #0d222c;
+}
+
+.settings-bindings {
+  grid-column: 1 / -1;
+}
+
+.binding-help {
+  margin: 0.2rem 0 0.65rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.keyboard-bindings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1rem;
+}
+
+.binding-row {
+  display: flex;
+  min-height: 3.15rem;
+  padding: 0.55rem 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.binding-row > span {
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+.binding-row__keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.binding-key {
+  min-width: 5.8rem;
+  min-height: 2.3rem;
+  padding: 0.42rem 0.65rem;
+  border: 1px solid rgb(83 223 208 / 42%);
+  border-radius: 0.28rem;
+  color: var(--teal);
+  background: rgb(83 223 208 / 8%);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.binding-key:hover,
+.binding-key:focus-visible {
+  border-color: var(--teal);
+  background: rgb(83 223 208 / 15%);
+  outline: 0.15rem solid rgb(83 223 208 / 24%);
+  outline-offset: 0.12rem;
+}
+
+.binding-key[data-capturing='true'] {
+  min-width: 8.4rem;
+  border-color: var(--orange);
+  color: #fff4d8;
+  background: rgb(255 106 61 / 18%);
+  animation: binding-capture-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes binding-capture-pulse {
+  to {
+    box-shadow: 0 0 0 0.28rem rgb(255 106 61 / 12%);
+  }
 }
 
 .touch-controls {
@@ -981,6 +1214,8 @@ kbd {
     background: rgb(7 18 27 / 30%);
     box-shadow: inset 0 0 2rem rgb(0 0 0 / 28%);
     pointer-events: auto;
+    opacity: var(--touch-control-opacity);
+    scale: var(--touch-control-scale);
     touch-action: none;
   }
 
@@ -1009,6 +1244,8 @@ kbd {
     background: rgb(7 18 27 / 48%);
     box-shadow: 0 0.5rem 1rem rgb(0 0 0 / 25%);
     pointer-events: auto;
+    opacity: var(--touch-control-opacity);
+    scale: var(--touch-control-scale);
     touch-action: none;
     font-size: 0.56rem;
     font-weight: 900;
@@ -1040,6 +1277,11 @@ kbd {
   [data-touch-action='sprint'] {
     right: calc(max(1.2rem, env(safe-area-inset-right)) + 5rem);
     bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 4.4rem);
+  }
+
+  [data-touch-action='crouch'] {
+    right: calc(max(1.2rem, env(safe-area-inset-right)) + 9.2rem);
+    bottom: calc(max(1.3rem, env(safe-area-inset-bottom)) + 5.8rem);
   }
 
   [data-touch-action='interact'] {
@@ -1110,7 +1352,8 @@ kbd {
   .inventory-layout,
   .skill-columns,
   .settings-grid,
-  .controls-grid {
+  .controls-grid,
+  .keyboard-bindings {
     grid-template-columns: 1fr;
   }
 
@@ -1136,6 +1379,41 @@ kbd {
   .quick-nav {
     display: none;
   }
+
+  .map-controls {
+    flex-wrap: wrap;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.66rem;
+  }
+
+  .map-controls p {
+    display: none;
+  }
+
+  .map-controls fieldset {
+    padding-block: 0.2rem;
+  }
+
+  .stream-failure-card {
+    width: min(92vw, 34rem);
+    padding: 0.85rem 1rem;
+  }
+
+  .stream-failure-card h2 {
+    margin-block: 0.2rem 0.45rem;
+    font-size: clamp(1.45rem, 7vh, 2rem);
+  }
+
+  .stream-failure-card > p:not(.eyebrow) {
+    margin-bottom: 0.65rem;
+    font-size: 0.82rem;
+    line-height: 1.35;
+  }
+
+  .stream-failure-actions .button {
+    min-height: 2.5rem;
+    padding-block: 0.52rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1147,6 +1425,15 @@ kbd {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+  scroll-behavior: auto !important;
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
 }
 
 body.high-contrast .objective-card,

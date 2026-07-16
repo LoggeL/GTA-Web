@@ -6,6 +6,7 @@ import { PEDESTRIAN_CAPACITY, PedestrianSystem } from './pedestrians';
 import { SimulationRandom, simulationSeed } from './random';
 import { TRAFFIC_CAPACITY, TrafficSystem } from './traffic';
 import type {
+  ActorPopulationLimits,
   CitySimulationOptions,
   CitySimulationSnapshot,
   CitySimulationTick,
@@ -26,6 +27,27 @@ import {
   tryFireWeapon,
 } from './weapons';
 import type { WeaponRuntime } from './weapons';
+
+function normalizedActorLimit(value: number, label: string, capacity: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${label} actor limit must be a non-negative safe integer`);
+  }
+  return Math.min(value, capacity);
+}
+
+function normalizedActorLimits(
+  limits: Readonly<ActorPopulationLimits>,
+): ActorPopulationLimits {
+  return {
+    traffic: normalizedActorLimit(limits.traffic, 'traffic', TRAFFIC_CAPACITY.high),
+    pedestrians: normalizedActorLimit(
+      limits.pedestrians,
+      'pedestrian',
+      PEDESTRIAN_CAPACITY.high,
+    ),
+    combat: normalizedActorLimit(limits.combat, 'combat', COMBAT_CAPACITY.high),
+  };
+}
 
 export class CitySimulation {
   private readonly random: SimulationRandom;
@@ -66,6 +88,9 @@ export class CitySimulation {
       options.onPlayerDamage ?? (() => undefined),
     );
     this.weaponRuntime = createWeaponRuntime();
+    if (options.actorLimits) {
+      this.setActorLimits(options.actorLimits);
+    }
     if (options.seedCombatants !== false) {
       const anchor = this.traffic.roads[0]?.position ?? { x: 0, y: 0, z: 0 };
       this.combat.seedEncounter(anchor);
@@ -84,6 +109,11 @@ export class CitySimulation {
     this.visuals = null;
   }
 
+  public setVisible(visible: boolean): void {
+    this.assertAlive();
+    this.visuals?.setVisible(visible);
+  }
+
   public setQuality(quality: SimulationQuality): void {
     this.assertAlive();
     this.quality = quality;
@@ -91,6 +121,19 @@ export class CitySimulation {
     this.pedestrians.setQuality(quality);
     this.combat.setQuality(quality);
     this.visuals?.update(this.getSnapshot());
+  }
+
+  public setActorLimits(
+    limits: Readonly<ActorPopulationLimits>,
+  ): ActorPopulationLimits {
+    this.assertAlive();
+    const normalized = normalizedActorLimits(limits);
+    this.traffic.setActorLimit(normalized.traffic);
+    this.pedestrians.setActorLimit(normalized.pedestrians);
+    this.combat.setActorLimit(normalized.combat);
+    const effective = this.getActorLimits();
+    this.visuals?.update(this.getSnapshot());
+    return effective;
   }
 
   public tick(context: CitySimulationTick): CitySimulationTickResult {
@@ -204,6 +247,7 @@ export class CitySimulation {
       traffic: this.traffic.getSnapshot(),
       pedestrians: this.pedestrians.getSnapshot(),
       combatants: this.combat.getSnapshot(),
+      actorLimits: this.getActorLimits(),
       poolCapacity: {
         traffic: TRAFFIC_CAPACITY.high,
         pedestrians: PEDESTRIAN_CAPACITY.high,
@@ -226,5 +270,12 @@ export class CitySimulation {
       throw new Error('CitySimulation has been disposed');
     }
   }
-}
 
+  private getActorLimits(): ActorPopulationLimits {
+    return {
+      traffic: this.traffic.getActorLimit(),
+      pedestrians: this.pedestrians.getActorLimit(),
+      combat: this.combat.getActorLimit(),
+    };
+  }
+}

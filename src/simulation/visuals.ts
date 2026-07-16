@@ -100,6 +100,10 @@ export class SimulationVisualLayer {
     this.updateCombatants(snapshot);
   }
 
+  public setVisible(visible: boolean): void {
+    this.root.visible = visible;
+  }
+
   public dispose(): void {
     this.root.removeFromParent();
     this.geometries.forEach((geometry) => geometry.dispose());
@@ -180,4 +184,3 @@ export class SimulationVisualLayer {
     markInstancesUpdated(this.combatantBodies);
   }
 }
-

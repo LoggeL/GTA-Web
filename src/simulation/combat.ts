@@ -118,6 +118,7 @@ export class CombatSystem {
   private readonly onEnemyDamage: (event: EnemyDamageEvent) => void;
   private readonly onPlayerDamage: (event: PlayerDamageEvent) => void;
   private quality: SimulationQuality;
+  private requestedActorLimit = COMBAT_CAPACITY.high;
   private spawnLimit: number;
 
   public constructor(
@@ -136,12 +137,20 @@ export class CombatSystem {
 
   public setQuality(quality: SimulationQuality): void {
     this.quality = quality;
-    this.spawnLimit = COMBAT_CAPACITY[quality];
-    this.agents.forEach((agent, index) => {
-      if (index >= this.spawnLimit) {
-        agent.active = false;
-      }
-    });
+    this.applyActorLimit();
+  }
+
+  public setActorLimit(limit: number): number {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new RangeError('combat actor limit must be a non-negative safe integer');
+    }
+    this.requestedActorLimit = Math.min(limit, COMBAT_CAPACITY.high);
+    this.applyActorLimit();
+    return this.getActorLimit();
+  }
+
+  public getActorLimit(): number {
+    return this.spawnLimit;
   }
 
   public seedEncounter(center: Readonly<SimulationVec3>): void {
@@ -181,7 +190,9 @@ export class CombatSystem {
   }
 
   public damage(targetId: string, amount: number, sourceId: string): EnemyDamageEvent | null {
-    const agent = this.agents.find((candidate) => candidate.id === targetId && candidate.active);
+    const agent = this.agents.find((candidate, index) => (
+      index < this.spawnLimit && candidate.id === targetId && candidate.active
+    ));
     if (!agent || agent.behavior === 'defeated' || amount <= 0) {
       return null;
     }
@@ -204,7 +215,10 @@ export class CombatSystem {
   }
 
   public alertAt(position: Readonly<SimulationVec3>, radius: number): void {
-    for (const agent of this.agents) {
+    for (const [index, agent] of this.agents.entries()) {
+      if (index >= this.spawnLimit) {
+        continue;
+      }
       if (!agent.active || agent.behavior === 'defeated' || distance2d(agent.position, position) > radius) {
         continue;
       }
@@ -218,7 +232,10 @@ export class CombatSystem {
 
   public tick(context: CombatTickContext): void {
     const dt = Math.min(0.1, Math.max(0, context.deltaSeconds));
-    for (const agent of this.agents) {
+    for (const [index, agent] of this.agents.entries()) {
+      if (index >= this.spawnLimit) {
+        continue;
+      }
       if (!agent.active) {
         continue;
       }
@@ -265,16 +282,17 @@ export class CombatSystem {
   }
 
   public getWeaponTargets(): readonly WeaponTarget[] {
-    return this.agents.map((agent) => ({
+    return this.agents.map((agent, index) => ({
       id: agent.id,
       position: { ...agent.position, y: 0.9 },
       radius: agent.role === 'heavy' ? 0.78 : 0.56,
-      active: agent.active && agent.behavior !== 'defeated',
+      active: index < this.spawnLimit && agent.active && agent.behavior !== 'defeated',
     }));
   }
 
   public getSnapshot(): readonly CombatantSnapshot[] {
     return this.agents
+      .slice(0, this.spawnLimit)
       .filter((agent) => agent.active)
       .map((agent) => ({
         id: agent.id,
@@ -286,6 +304,13 @@ export class CombatSystem {
         behavior: agent.behavior,
         alertness: agent.alertness,
       }));
+  }
+
+  private applyActorLimit(): void {
+    this.spawnLimit = Math.min(
+      this.requestedActorLimit,
+      COMBAT_CAPACITY[this.quality],
+    );
   }
 
   private createPoolAgent(index: number): CombatAgent {

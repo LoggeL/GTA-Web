@@ -4,6 +4,7 @@ import { circleIntersectsBuildings, moveCircleWithCollisions } from './collision
 import type { Vec3Data, WorldInputState } from './types';
 
 export const VEHICLE_RADIUS = 1.48;
+export const MAX_SAFE_EXIT_SPEED = 2.2;
 const MAX_FORWARD_SPEED = 31;
 const MAX_REVERSE_SPEED = 9;
 const DRIVE_ACCELERATION = 17;
@@ -16,6 +17,11 @@ export interface VehicleSimulationState {
   steering: number;
   health: number;
   occupied: boolean;
+}
+
+export interface VehicleSurfaceState {
+  /** Zero is dry and one is the authored maximum rain intensity. */
+  readonly rainIntensity?: number;
 }
 
 export function createVehicleState(position: Readonly<Vec3Data>): VehicleSimulationState {
@@ -41,9 +47,14 @@ export function stepVehicle(
   input: Readonly<WorldInputState>,
   collisions: readonly CollisionRect[],
   deltaSeconds: number,
+  surface: Readonly<VehicleSurfaceState> = {},
 ): void {
   const dt = Math.min(0.05, Math.max(0, deltaSeconds));
   const throttle = Math.min(1, Math.max(-1, input.moveForward));
+  const rainIntensity = Math.min(1, Math.max(0, surface.rainIntensity ?? 0));
+  // Rain is intentionally mild: enough to lengthen braking and soften turn-in,
+  // without making the arcade handling unpredictable on touch controls.
+  const roadGrip = 1 - rainIntensity * 0.14;
 
   if (throttle > 0) {
     state.speed = Math.min(MAX_FORWARD_SPEED, state.speed + DRIVE_ACCELERATION * throttle * dt);
@@ -56,12 +67,15 @@ export function stepVehicle(
   }
 
   if (input.handbrake) {
-    state.speed = moveTowards(state.speed, 0, 9.5 * dt);
+    state.speed = moveTowards(state.speed, 0, 9.5 * roadGrip * dt);
   }
 
   state.steering = moveTowards(state.steering, Math.min(1, Math.max(-1, input.moveRight)), 5.5 * dt);
   const speedRatio = Math.min(1, Math.abs(state.speed) / 12);
-  const steeringAuthority = (input.handbrake ? 1.48 : 1) * (0.36 + speedRatio * 0.64);
+  const steeringAuthority =
+    (input.handbrake ? 1.48 : 1)
+    * (0.36 + speedRatio * 0.64)
+    * roadGrip;
   const direction = state.speed >= 0 ? 1 : -1;
   state.heading += state.steering * direction * steeringAuthority * 1.55 * dt;
 
@@ -111,3 +125,6 @@ export function findVehicleExitPoint(
   return null;
 }
 
+export function vehicleCanExit(state: Readonly<VehicleSimulationState>): boolean {
+  return state.occupied && Math.abs(state.speed) <= MAX_SAFE_EXIT_SPEED;
+}

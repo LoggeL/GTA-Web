@@ -17,6 +17,7 @@ export const TRAFFIC_CAPACITY: Readonly<Record<SimulationQuality, number>> = Obj
 interface TrafficAgent {
   id: string;
   active: boolean;
+  hasActivated: boolean;
   position: SimulationVec3;
   heading: number;
   speed: number;
@@ -66,6 +67,7 @@ export class TrafficSystem {
   private readonly random: SimulationRandom;
   private readonly agents: TrafficAgent[];
   private quality: SimulationQuality;
+  private requestedActorLimit = TRAFFIC_CAPACITY.high;
 
   public constructor(
     random: SimulationRandom,
@@ -82,6 +84,19 @@ export class TrafficSystem {
   public setQuality(quality: SimulationQuality): void {
     this.quality = quality;
     this.applyActiveCount();
+  }
+
+  public setActorLimit(limit: number): number {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new RangeError('traffic actor limit must be a non-negative safe integer');
+    }
+    this.requestedActorLimit = Math.min(limit, TRAFFIC_CAPACITY.high);
+    this.applyActiveCount();
+    return this.getActorLimit();
+  }
+
+  public getActorLimit(): number {
+    return Math.min(this.requestedActorLimit, TRAFFIC_CAPACITY[this.quality]);
   }
 
   public triggerPanic(position: Readonly<SimulationVec3>, radius: number, duration: number): void {
@@ -163,6 +178,7 @@ export class TrafficSystem {
     const agent: TrafficAgent = {
       id: `traffic-${index.toString().padStart(2, '0')}`,
       active: false,
+      hasActivated: false,
       position: { x: 0, y: 0, z: 0 },
       heading: 0,
       speed: 0,
@@ -180,13 +196,16 @@ export class TrafficSystem {
   }
 
   private applyActiveCount(): void {
-    const count = TRAFFIC_CAPACITY[this.quality];
+    const count = this.getActorLimit();
     this.agents.forEach((agent, index) => {
       const shouldBeActive = index < count;
       if (shouldBeActive && !agent.active) {
         agent.active = true;
-        agent.speed = this.random.range(1, agent.cruiseSpeed * 0.65);
-        this.placeOnRoad(agent, this.random.range(-0.48, 0.48));
+        if (!agent.hasActivated) {
+          agent.hasActivated = true;
+          agent.speed = this.random.range(1, agent.cruiseSpeed * 0.65);
+          this.placeOnRoad(agent, this.random.range(-0.48, 0.48));
+        }
       } else if (!shouldBeActive) {
         agent.active = false;
       }
@@ -277,4 +296,3 @@ export class TrafficSystem {
     this.placeOnRoad(agent, this.random.range(-0.45, 0.45));
   }
 }
-

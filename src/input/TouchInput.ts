@@ -1,16 +1,29 @@
 import type { WorldInputState } from '../game';
 
+export interface UnifiedTouchInputSink {
+  setTouchMovement(moveRight: number, moveForward: number): void;
+  injectPointerDelta(deltaX: number, deltaY: number, source: 'touch'): void;
+}
+
+type LegacyTouchInputSink = (input: Partial<WorldInputState>) => void;
+
+function isUnifiedSink(
+  sink: LegacyTouchInputSink | UnifiedTouchInputSink,
+): sink is UnifiedTouchInputSink {
+  return typeof sink !== 'function';
+}
+
 export class TouchInput {
   readonly #stick: HTMLElement;
   readonly #knob: HTMLElement;
   readonly #camera: HTMLElement;
-  readonly #onInput: (input: Partial<WorldInputState>) => void;
+  readonly #sink: LegacyTouchInputSink | UnifiedTouchInputSink;
   #stickPointer: number | null = null;
   #cameraPointer: number | null = null;
   #cameraX = 0;
   #cameraY = 0;
 
-  constructor(root: HTMLElement, onInput: (input: Partial<WorldInputState>) => void) {
+  constructor(root: HTMLElement, sink: LegacyTouchInputSink | UnifiedTouchInputSink) {
     const stick = root.querySelector<HTMLElement>('[data-touch-stick]');
     const knob = stick?.querySelector<HTMLElement>('span');
     const camera = root.querySelector<HTMLElement>('[data-touch-camera]');
@@ -18,11 +31,17 @@ export class TouchInput {
     this.#stick = stick;
     this.#knob = knob;
     this.#camera = camera;
-    this.#onInput = onInput;
+    this.#sink = sink;
     this.#bind();
   }
 
   destroy(): void {
+    this.#stickPointer = null;
+    this.#cameraPointer = null;
+    this.#cameraX = 0;
+    this.#cameraY = 0;
+    this.#knob.style.transform = 'translate(-50%, -50%)';
+    this.#emitMovement(0, 0);
     this.#stick.removeEventListener('pointerdown', this.#onStickDown);
     this.#stick.removeEventListener('pointermove', this.#onStickMove);
     this.#stick.removeEventListener('pointerup', this.#onStickUp);
@@ -62,7 +81,7 @@ export class TouchInput {
     event.preventDefault();
     this.#stickPointer = null;
     this.#knob.style.transform = 'translate(-50%, -50%)';
-    this.#onInput({ moveForward: 0, moveRight: 0 });
+    this.#emitMovement(0, 0);
   };
 
   readonly #onCameraDown = (event: PointerEvent): void => {
@@ -80,7 +99,11 @@ export class TouchInput {
     const deltaY = event.clientY - this.#cameraY;
     this.#cameraX = event.clientX;
     this.#cameraY = event.clientY;
-    this.#onInput({ cameraYawDelta: -deltaX * 0.006, cameraPitchDelta: -deltaY * 0.006 });
+    if (isUnifiedSink(this.#sink)) {
+      this.#sink.injectPointerDelta(deltaX, deltaY, 'touch');
+    } else {
+      this.#sink({ cameraYawDelta: -deltaX * 0.006, cameraPitchDelta: -deltaY * 0.006 });
+    }
   };
 
   readonly #onCameraUp = (event: PointerEvent): void => {
@@ -99,6 +122,14 @@ export class TouchInput {
     const x = rawX * scale;
     const y = rawY * scale;
     this.#knob.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
-    this.#onInput({ moveRight: x / radius, moveForward: -y / radius });
+    this.#emitMovement(x / radius, -y / radius);
+  }
+
+  #emitMovement(moveRight: number, moveForward: number): void {
+    if (isUnifiedSink(this.#sink)) {
+      this.#sink.setTouchMovement(moveRight, moveForward);
+    } else {
+      this.#sink({ moveRight, moveForward });
+    }
   }
 }

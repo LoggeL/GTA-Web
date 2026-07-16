@@ -1,3 +1,6 @@
+import type { GameSettings, InputAction, InputBinding } from '../core';
+import { isValidKeyboardCode } from '../input';
+
 export type AlexPreset = 'masculine' | 'feminine';
 export type OverlayPanel = 'map' | 'inventory' | 'skills' | 'properties' | 'missions' | 'settings';
 
@@ -46,6 +49,9 @@ export interface GameUICallbacks {
   onOpenPanel(panel: OverlayPanel): void;
   onClosePanel(): void;
   onTouchAction(action: string, active: boolean): void;
+  onSettingsChange(settings: GameSettings): void;
+  onRetryStream?(): void;
+  onReturnFromStreamFailure?(): void;
 }
 
 const formatPlaytime = (seconds = 0): string => {
@@ -64,16 +70,165 @@ const formatDate = (timestamp?: number): string => {
 
 const clampPercent = (value: number): number => Math.max(0, Math.min(100, value));
 
+const INPUT_ACTION_LABELS: Readonly<Record<InputAction, string>> = {
+  moveForward: 'Move forward',
+  moveBackward: 'Move backward',
+  moveLeft: 'Move left',
+  moveRight: 'Move right',
+  primaryAction: 'Primary action',
+  aim: 'Aim',
+  sprint: 'Sprint',
+  jumpHandbrake: 'Jump / handbrake',
+  crouchCamera: 'Crouch / vehicle camera',
+  interactEnterExit: 'Interact / enter / exit',
+  meleeContext: 'Melee / context action',
+  reloadVehicleReset: 'Reload / vehicle reset',
+  shoulderSwap: 'Shoulder swap',
+  weaponRadial: 'Weapon radial',
+  inventory: 'Inventory',
+  map: 'City map',
+  pause: 'Pause',
+};
+
+const KEYBOARD_CODE_LABELS: Readonly<Record<string, string>> = {
+  AltLeft: 'Left Alt',
+  AltRight: 'Right Alt',
+  ArrowDown: 'Down Arrow',
+  ArrowLeft: 'Left Arrow',
+  ArrowRight: 'Right Arrow',
+  ArrowUp: 'Up Arrow',
+  Backquote: 'Backquote',
+  Backslash: 'Backslash',
+  Backspace: 'Backspace',
+  BracketLeft: 'Left Bracket',
+  BracketRight: 'Right Bracket',
+  CapsLock: 'Caps Lock',
+  Comma: 'Comma',
+  ContextMenu: 'Context Menu',
+  ControlLeft: 'Left Control',
+  ControlRight: 'Right Control',
+  Delete: 'Delete',
+  End: 'End',
+  Enter: 'Enter',
+  Equal: 'Equals',
+  Escape: 'Escape',
+  Home: 'Home',
+  Insert: 'Insert',
+  IntlBackslash: 'International Backslash',
+  IntlRo: 'International Ro',
+  IntlYen: 'International Yen',
+  MetaLeft: 'Left Command',
+  MetaRight: 'Right Command',
+  Minus: 'Minus',
+  NumLock: 'Number Lock',
+  PageDown: 'Page Down',
+  PageUp: 'Page Up',
+  Pause: 'Pause / Break',
+  Period: 'Period',
+  Quote: 'Quote',
+  ScrollLock: 'Scroll Lock',
+  Semicolon: 'Semicolon',
+  ShiftLeft: 'Left Shift',
+  ShiftRight: 'Right Shift',
+  Slash: 'Slash',
+  Space: 'Space',
+  Tab: 'Tab',
+};
+
+export interface KeyboardBindingSwap {
+  settings: GameSettings;
+  previousCode: string;
+  swappedAction?: InputAction;
+}
+
+/** Returns a readable, layout-independent label for a KeyboardEvent.code value. */
+export function formatKeyboardCode(code: string): string {
+  if (code.startsWith('Key') && code.length === 4) return code.slice(3);
+  if (code.startsWith('Digit') && code.length === 6) return code.slice(5);
+  if (code.startsWith('Numpad')) {
+    const suffix = code.slice(6).replace(/([a-z])([A-Z])/g, '$1 $2');
+    return `Numpad ${suffix}`;
+  }
+  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+  return KEYBOARD_CODE_LABELS[code] ?? code.replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
+/**
+ * Replaces one keyboard binding without ever exposing a duplicate map. If the
+ * requested key is already assigned, the two binding slots exchange keys.
+ */
+export function remapKeyboardBinding(
+  settings: GameSettings,
+  action: InputAction,
+  bindingIndex: number,
+  code: string,
+): KeyboardBindingSwap {
+  if (!isValidKeyboardCode(code)) throw new Error(`Unsupported keyboard code: ${code}`);
+  const next = cloneSettings(settings);
+  const target = next.controls.bindings[action][bindingIndex];
+  if (!target || target.device !== 'keyboard') {
+    throw new Error(`Missing keyboard binding at ${action}[${bindingIndex}]`);
+  }
+
+  const previousCode = target.code;
+  let owner: { action: InputAction; index: number; binding: InputBinding } | undefined;
+  for (const [candidateAction, bindings] of Object.entries(next.controls.bindings) as [InputAction, InputBinding[]][]) {
+    const candidateIndex = bindings.findIndex((binding) => binding.device === 'keyboard' && binding.code === code);
+    if (candidateIndex >= 0) {
+      owner = { action: candidateAction, index: candidateIndex, binding: bindings[candidateIndex]! };
+      break;
+    }
+  }
+
+  if (owner?.action === action && owner.index === bindingIndex) {
+    return { settings: next, previousCode };
+  }
+
+  target.code = code;
+  if (owner) owner.binding.code = previousCode;
+  return {
+    settings: next,
+    previousCode,
+    swappedAction: owner?.action === action ? undefined : owner?.action,
+  };
+}
+
+interface BindingCapture {
+  action: InputAction;
+  bindingIndex: number;
+}
+
 export class GameUI {
   readonly #root: HTMLElement;
   readonly #callbacks: GameUICallbacks;
+  #settings: GameSettings;
   #selectedSlot: 1 | 2 | 3 = 1;
   #toastTimer = 0;
   #dialogueTimer = 0;
+  #bindingCapture: BindingCapture | null = null;
+  #streamFailureReturnFocus: HTMLElement | null = null;
 
-  constructor(root: HTMLElement, callbacks: GameUICallbacks) {
+  readonly #handleBindingKeyDown = (event: KeyboardEvent): void => {
+    const capture = this.#bindingCapture;
+    if (!capture) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.repeat) return;
+    if (event.code === 'Escape') {
+      this.#cancelBindingCapture('Binding change cancelled.');
+      return;
+    }
+    if (!isValidKeyboardCode(event.code)) {
+      this.#setBindingStatus('That key is not supported. Press another key, or Escape to cancel.');
+      return;
+    }
+    this.#applyKeyboardBinding(capture, event.code);
+  };
+
+  constructor(root: HTMLElement, callbacks: GameUICallbacks, settings: GameSettings) {
     this.#root = root;
     this.#callbacks = callbacks;
+    this.#settings = cloneSettings(settings);
     this.#renderShell();
     this.#bindEvents();
     this.showSplash();
@@ -130,6 +285,12 @@ export class GameUI {
   showLoading(label = 'Building Arroyo Heights…', progress = 0): void {
     this.#setVisibleScreen('loading-screen');
     this.updateLoading(label, progress);
+  }
+
+  showUnsupportedBrowser(reason = 'WebGL2 could not start on this device.'): void {
+    this.#setVisibleScreen('unsupported-screen');
+    this.#query<HTMLElement>('[data-unsupported-reason]').textContent = reason;
+    this.#root.classList.remove('is-playing');
   }
 
   updateLoading(label: string, progress: number): void {
@@ -189,7 +350,35 @@ export class GameUI {
     this.#root.classList.remove('is-paused');
   }
 
+  /** Blocks the in-game UI until world streaming recovers or the player leaves. */
+  showStreamFailure(message: string): void {
+    this.#cancelBindingCapture('Binding change cancelled because world streaming stopped.');
+    const overlay = this.#query<HTMLElement>('[data-stream-failure]');
+    if (overlay.hidden) {
+      const activeElement = document.activeElement;
+      this.#streamFailureReturnFocus = activeElement instanceof HTMLElement && this.#root.contains(activeElement)
+        ? activeElement
+        : null;
+    }
+    this.#query<HTMLElement>('[data-stream-failure-message]').textContent = message;
+    overlay.hidden = false;
+    this.#root.classList.add('has-stream-failure');
+    this.#query<HTMLButtonElement>('[data-stream-retry]').focus({ preventScroll: true });
+  }
+
+  /** Removes the streaming blocker without changing the world's pause state. */
+  hideStreamFailure(): void {
+    const overlay = this.#query<HTMLElement>('[data-stream-failure]');
+    if (overlay.hidden) return;
+    overlay.hidden = true;
+    this.#root.classList.remove('has-stream-failure');
+    const returnFocus = this.#streamFailureReturnFocus;
+    this.#streamFailureReturnFocus = null;
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+  }
+
   openPanel(panel: OverlayPanel, title?: string, body?: string): void {
+    this.#cancelBindingCapture();
     const overlay = this.#query<HTMLElement>('[data-panel]');
     overlay.hidden = false;
     overlay.dataset.panel = panel;
@@ -199,6 +388,7 @@ export class GameUI {
   }
 
   closePanel(): void {
+    this.#cancelBindingCapture();
     const overlay = this.#query<HTMLElement>('[data-panel]');
     overlay.hidden = true;
     this.#callbacks.onClosePanel();
@@ -230,7 +420,18 @@ export class GameUI {
     this.#root.classList.toggle('has-touch-controls', enabled);
   }
 
+  setSettings(settings: GameSettings): void {
+    this.#cancelBindingCapture();
+    this.#settings = cloneSettings(settings);
+    const panel = this.#root.querySelector<HTMLElement>('[data-panel]');
+    if (panel?.dataset.panel === 'settings' && !panel.hidden) {
+      this.#query<HTMLElement>('[data-panel-body]').innerHTML = this.#settingsContent();
+    }
+  }
+
   destroy(): void {
+    this.#cancelBindingCapture();
+    window.removeEventListener('keydown', this.#handleBindingKeyDown, true);
     window.clearTimeout(this.#toastTimer);
     window.clearTimeout(this.#dialogueTimer);
     this.#root.replaceChildren();
@@ -304,6 +505,16 @@ export class GameUI {
           </div>
         </section>
 
+        <section id="unsupported-screen" class="screen menu-screen" data-screen hidden>
+          <div class="menu-card" role="alert">
+            <p class="eyebrow">Compatibility check</p>
+            <h2>Solara needs WebGL2.</h2>
+            <p data-unsupported-reason>WebGL2 could not start on this device.</p>
+            <p>Try a current version of Chrome, Edge, Firefox, or Safari with hardware acceleration enabled.</p>
+            <button class="button" data-action="back-menu">Return to menu</button>
+          </div>
+        </section>
+
         <section id="game-hud" class="screen game-hud" data-screen hidden aria-label="Game HUD">
           <div class="hud-top-left">
             <div class="status-bars">
@@ -352,6 +563,7 @@ export class GameUI {
             <button data-touch-action="interact" aria-label="Interact">E</button>
             <button data-touch-action="sprint" aria-label="Sprint">RUN</button>
             <button data-touch-action="jump" aria-label="Jump or handbrake">JUMP</button>
+            <button data-touch-action="crouch" aria-label="Crouch or camera">CROUCH</button>
             <button data-touch-action="aim" aria-label="Aim">AIM</button>
             <button data-touch-action="fire" aria-label="Fire or attack">FIRE</button>
           </div>
@@ -389,6 +601,28 @@ export class GameUI {
           </div>
         </section>
 
+        <section
+          class="stream-failure-overlay"
+          data-stream-failure
+          hidden
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="stream-failure-title"
+          aria-describedby="stream-failure-message"
+        >
+          <div class="stream-failure-card">
+            <p class="eyebrow">World stream interrupted</p>
+            <h2 id="stream-failure-title">Solara stopped loading.</h2>
+            <p id="stream-failure-message" data-stream-failure-message>
+              A required city area could not be loaded.
+            </p>
+            <div class="stream-failure-actions">
+              <button class="button button--primary" data-action="retry-stream" data-stream-retry>Retry</button>
+              <button class="button button--quiet" data-action="return-stream-menu">Return to menu</button>
+            </div>
+          </div>
+        </section>
+
         <div class="rotate-overlay" aria-live="polite">
           <div class="phone-rotate" aria-hidden="true"></div>
           <strong>Rotate to landscape</strong>
@@ -399,12 +633,16 @@ export class GameUI {
   }
 
   #bindEvents(): void {
+    window.addEventListener('keydown', this.#handleBindingKeyDown, true);
     this.#root.addEventListener('click', (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
 
       const actionButton = target.closest<HTMLElement>('[data-action]');
       if (actionButton) this.#handleAction(actionButton.dataset.action ?? '');
+
+      const bindingButton = target.closest<HTMLButtonElement>('[data-binding-action]');
+      if (bindingButton) this.#startBindingCapture(bindingButton);
 
       const slotButton = target.closest<HTMLElement>('[data-slot-action]');
       if (slotButton) {
@@ -438,6 +676,13 @@ export class GameUI {
       button.addEventListener('pointerup', release);
       button.addEventListener('pointercancel', release);
       button.addEventListener('pointerleave', release);
+    });
+
+    this.#root.addEventListener('input', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) {
+        this.#handleSettingsInput(target);
+      }
     });
   }
 
@@ -473,6 +718,13 @@ export class GameUI {
         break;
       case 'close-panel':
         this.closePanel();
+        break;
+      case 'retry-stream':
+        this.#callbacks.onRetryStream?.();
+        break;
+      case 'return-stream-menu':
+        this.hideStreamFailure();
+        this.#callbacks.onReturnFromStreamFailure?.();
         break;
       default:
         break;
@@ -511,18 +763,168 @@ export class GameUI {
   }
 
   #settingsContent(): string {
+    const settings = this.#settings;
+    const checked = (value: boolean): string => value ? 'checked' : '';
     return `
       <form class="settings-grid">
-        <label>Master volume <input type="range" min="0" max="100" value="80"></label>
-        <label>Music volume <input type="range" min="0" max="100" value="65"></label>
-        <label>Camera sensitivity <input type="range" min="20" max="200" value="100"></label>
-        <label>UI scale <input type="range" min="80" max="130" value="100"></label>
-        <label><input type="checkbox"> Reduce camera shake</label>
-        <label><input type="checkbox"> High-contrast objectives</label>
-        <label>Aim assist <select><option>Standard</option><option>Strong</option><option>Off</option></select></label>
-        <label>Quality <select><option>Auto</option><option>High</option><option>Low</option></select></label>
+        <fieldset><legend>Audio</legend>
+          <label>Master volume <input data-setting="audio.master" type="range" min="0" max="100" value="${Math.round(settings.audio.master * 100)}"></label>
+          <label>Music volume <input data-setting="audio.music" type="range" min="0" max="100" value="${Math.round(settings.audio.music * 100)}"></label>
+          <label>Effects volume <input data-setting="audio.sfx" type="range" min="0" max="100" value="${Math.round(settings.audio.sfx * 100)}"></label>
+          <label>UI volume <input data-setting="audio.ui" type="range" min="0" max="100" value="${Math.round(settings.audio.ui * 100)}"></label>
+          <label>Ambience volume <input data-setting="audio.ambience" type="range" min="0" max="100" value="${Math.round(settings.audio.ambience * 100)}"></label>
+        </fieldset>
+        <fieldset><legend>Controls</legend>
+          <label>Mouse sensitivity <input data-setting="controls.mouseSensitivity" type="range" min="10" max="300" value="${Math.round(settings.controls.mouseSensitivity * 100)}"></label>
+          <label>Touch sensitivity <input data-setting="controls.touchSensitivity" type="range" min="10" max="300" value="${Math.round(settings.controls.touchSensitivity * 100)}"></label>
+          <label><input data-setting="controls.invertY" type="checkbox" ${checked(settings.controls.invertY)}> Invert camera Y</label>
+          <label><input data-setting="controls.softLock" type="checkbox" ${checked(settings.controls.softLock)}> Desktop soft lock</label>
+          <label>Aim assist <select data-setting="controls.aimAssist">
+            ${selectOptions(['off', 'low', 'medium', 'high'], settings.controls.aimAssist)}
+          </select></label>
+          <label>Touch size <input data-setting="controls.touchControlScale" type="range" min="75" max="150" value="${Math.round(settings.controls.touchControlScale * 100)}"></label>
+          <label>Touch opacity <input data-setting="controls.touchControlOpacity" type="range" min="25" max="100" value="${Math.round(settings.controls.touchControlOpacity * 100)}"></label>
+        </fieldset>
+        ${this.#keyboardBindingsContent()}
+        <fieldset><legend>Accessibility</legend>
+          <label>UI scale <input data-setting="accessibility.uiScale" type="range" min="75" max="150" value="${Math.round(settings.accessibility.uiScale * 100)}"></label>
+          <label>Camera shake <input data-setting="accessibility.cameraShake" type="range" min="0" max="100" value="${Math.round(settings.accessibility.cameraShake * 100)}"></label>
+          <label><input data-setting="accessibility.reducedMotion" type="checkbox" ${checked(settings.accessibility.reducedMotion)}> Reduced motion</label>
+          <label><input data-setting="accessibility.highContrastIndicators" type="checkbox" ${checked(settings.accessibility.highContrastIndicators)}> High-contrast objectives</label>
+          <label><input data-setting="accessibility.subtitleBackground" type="checkbox" ${checked(settings.accessibility.subtitleBackground)}> Subtitle background</label>
+          <label>Subtitle size <select data-setting="accessibility.subtitleSize">
+            ${selectOptions(['small', 'medium', 'large'], settings.accessibility.subtitleSize)}
+          </select></label>
+        </fieldset>
+        <fieldset><legend>Video</legend>
+          <label>Quality <select data-setting="video.quality">
+            ${selectOptions(['auto', 'low', 'high'], settings.video.quality)}
+          </select></label>
+          <label>Resolution scale <input data-setting="video.resolutionScale" type="range" min="50" max="100" value="${Math.round(settings.video.resolutionScale * 100)}"></label>
+        </fieldset>
       </form>
     `;
+  }
+
+  #handleSettingsInput(control: HTMLInputElement | HTMLSelectElement): void {
+    const path = control.dataset.setting;
+    if (!path) return;
+    const percent = (): number => Number(control.value) / 100;
+    switch (path) {
+      case 'audio.master': this.#settings.audio.master = percent(); break;
+      case 'audio.music': this.#settings.audio.music = percent(); break;
+      case 'audio.sfx': this.#settings.audio.sfx = percent(); break;
+      case 'audio.ui': this.#settings.audio.ui = percent(); break;
+      case 'audio.ambience': this.#settings.audio.ambience = percent(); break;
+      case 'controls.mouseSensitivity': this.#settings.controls.mouseSensitivity = percent(); break;
+      case 'controls.touchSensitivity': this.#settings.controls.touchSensitivity = percent(); break;
+      case 'controls.touchControlScale': this.#settings.controls.touchControlScale = percent(); break;
+      case 'controls.touchControlOpacity': this.#settings.controls.touchControlOpacity = percent(); break;
+      case 'controls.invertY': this.#settings.controls.invertY = readCheckbox(control); break;
+      case 'controls.softLock': this.#settings.controls.softLock = readCheckbox(control); break;
+      case 'controls.aimAssist':
+        if (isChoice(control.value, ['off', 'low', 'medium', 'high'])) this.#settings.controls.aimAssist = control.value;
+        break;
+      case 'accessibility.uiScale': this.#settings.accessibility.uiScale = percent(); break;
+      case 'accessibility.cameraShake': this.#settings.accessibility.cameraShake = percent(); break;
+      case 'accessibility.reducedMotion': this.#settings.accessibility.reducedMotion = readCheckbox(control); break;
+      case 'accessibility.highContrastIndicators': this.#settings.accessibility.highContrastIndicators = readCheckbox(control); break;
+      case 'accessibility.subtitleBackground': this.#settings.accessibility.subtitleBackground = readCheckbox(control); break;
+      case 'accessibility.subtitleSize':
+        if (isChoice(control.value, ['small', 'medium', 'large'])) this.#settings.accessibility.subtitleSize = control.value;
+        break;
+      case 'video.quality':
+        if (isChoice(control.value, ['auto', 'low', 'high'])) this.#settings.video.quality = control.value;
+        break;
+      case 'video.resolutionScale': this.#settings.video.resolutionScale = percent(); break;
+      default: return;
+    }
+    this.#callbacks.onSettingsChange(cloneSettings(this.#settings));
+  }
+
+  #keyboardBindingsContent(): string {
+    const rows = (Object.entries(this.#settings.controls.bindings) as [InputAction, InputBinding[]][])
+      .map(([action, bindings]) => {
+        const keyboardBindings = bindings
+          .map((binding, bindingIndex) => ({ binding, bindingIndex }))
+          .filter(({ binding }) => binding.device === 'keyboard');
+        if (keyboardBindings.length === 0) return '';
+        const actionLabel = INPUT_ACTION_LABELS[action];
+        const buttons = keyboardBindings.map(({ binding, bindingIndex }) => {
+          const keyLabel = formatKeyboardCode(binding.code);
+          return `<button type="button" class="binding-key" data-binding-action="${action}" data-binding-index="${bindingIndex}" aria-label="Change ${escapeHtml(actionLabel)} binding, currently ${escapeHtml(keyLabel)}" aria-describedby="keyboard-binding-help">${escapeHtml(keyLabel)}</button>`;
+        }).join('');
+        return `<div class="binding-row"><span>${escapeHtml(actionLabel)}</span><div class="binding-row__keys">${buttons}</div></div>`;
+      })
+      .join('');
+    return `
+      <fieldset class="settings-bindings"><legend>Keyboard bindings</legend>
+        <p class="binding-help" id="keyboard-binding-help" data-binding-status role="status" aria-live="polite">Select a key, then press its replacement. Keys already in use are swapped.</p>
+        <div class="keyboard-bindings">${rows}</div>
+      </fieldset>
+    `;
+  }
+
+  #startBindingCapture(button: HTMLButtonElement): void {
+    const action = button.dataset.bindingAction as InputAction | undefined;
+    const bindingIndex = Number(button.dataset.bindingIndex);
+    if (!action || !Number.isInteger(bindingIndex)) return;
+    const binding = this.#settings.controls.bindings[action]?.[bindingIndex];
+    if (!binding || binding.device !== 'keyboard') return;
+    this.#cancelBindingCapture();
+    this.#bindingCapture = { action, bindingIndex };
+    button.dataset.capturing = 'true';
+    button.setAttribute('aria-pressed', 'true');
+    button.setAttribute('aria-label', `Press a key for ${INPUT_ACTION_LABELS[action]}. Escape cancels.`);
+    button.textContent = 'Press a key…';
+    this.#setBindingStatus(`Press a key for ${INPUT_ACTION_LABELS[action]}. Escape cancels.`);
+    button.focus();
+  }
+
+  #applyKeyboardBinding(capture: BindingCapture, code: string): void {
+    const result = remapKeyboardBinding(this.#settings, capture.action, capture.bindingIndex, code);
+    this.#bindingCapture = null;
+    this.#settings = result.settings;
+    this.#callbacks.onSettingsChange(cloneSettings(this.#settings));
+    const actionLabel = INPUT_ACTION_LABELS[capture.action];
+    const keyLabel = formatKeyboardCode(code);
+    const swapMessage = result.swappedAction
+      ? ` ${INPUT_ACTION_LABELS[result.swappedAction]} moved to ${formatKeyboardCode(result.previousCode)}.`
+      : '';
+    this.#refreshBindingControls(`${actionLabel} is now ${keyLabel}.${swapMessage}`, capture);
+  }
+
+  #cancelBindingCapture(message?: string): void {
+    const capture = this.#bindingCapture;
+    if (!capture) return;
+    this.#bindingCapture = null;
+    this.#refreshBindingControls(message ?? 'Select a key to change its binding.', capture);
+  }
+
+  #refreshBindingControls(message: string, focus?: BindingCapture): void {
+    this.#root.querySelectorAll<HTMLButtonElement>('[data-binding-action]').forEach((button) => {
+      const action = button.dataset.bindingAction as InputAction | undefined;
+      const bindingIndex = Number(button.dataset.bindingIndex);
+      if (!action || !Number.isInteger(bindingIndex)) return;
+      const binding = this.#settings.controls.bindings[action]?.[bindingIndex];
+      if (!binding || binding.device !== 'keyboard') return;
+      const keyLabel = formatKeyboardCode(binding.code);
+      button.textContent = keyLabel;
+      button.setAttribute('aria-label', `Change ${INPUT_ACTION_LABELS[action]} binding, currently ${keyLabel}`);
+      button.removeAttribute('aria-pressed');
+      delete button.dataset.capturing;
+    });
+    this.#setBindingStatus(message);
+    if (focus) {
+      this.#root.querySelector<HTMLButtonElement>(
+        `[data-binding-action="${focus.action}"][data-binding-index="${focus.bindingIndex}"]`,
+      )?.focus();
+    }
+  }
+
+  #setBindingStatus(message: string): void {
+    const status = this.#root.querySelector<HTMLElement>('[data-binding-status]');
+    if (status) status.textContent = message;
   }
 
   #controlsContent(): string {
@@ -541,4 +943,31 @@ export class GameUI {
     if (!element) throw new Error(`Missing UI element: ${selector}`);
     return element;
   }
+}
+
+function cloneSettings(settings: GameSettings): GameSettings {
+  return JSON.parse(JSON.stringify(settings)) as GameSettings;
+}
+
+function readCheckbox(control: HTMLInputElement | HTMLSelectElement): boolean {
+  return control instanceof HTMLInputElement && control.checked;
+}
+
+function isChoice<const Value extends string>(value: string, choices: readonly Value[]): value is Value {
+  return choices.includes(value as Value);
+}
+
+function selectOptions<const Value extends string>(choices: readonly Value[], selected: Value): string {
+  return choices
+    .map((choice) => `<option value="${choice}" ${choice === selected ? 'selected' : ''}>${choice[0]!.toUpperCase()}${choice.slice(1)}</option>`)
+    .join('');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }

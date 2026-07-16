@@ -11,8 +11,8 @@ export async function waitForSplash(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: 'Enter Solara' })).toBeVisible();
 }
 
-export async function openApplication(page: Page): Promise<void> {
-  await page.goto('/');
+export async function openApplication(page: Page, url = '/'): Promise<void> {
+  await page.goto(url);
   await waitForSplash(page);
 }
 
@@ -35,8 +35,9 @@ export async function startNewGame(
   page: Page,
   slot: 1 | 2 | 3 = 1,
   preset: AlexPreset = 'Masculine Alex',
+  url = '/',
 ): Promise<void> {
-  await openApplication(page);
+  await openApplication(page, url);
   await enterMainMenu(page);
   await chooseSaveSlot(page, slot);
   await expect(page.getByRole('heading', { level: 2, name: 'Choose Alex' })).toBeVisible();

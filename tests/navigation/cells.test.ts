@@ -8,6 +8,7 @@ import {
   cellContainsPoint,
   cellIdAt,
   cellIdFromCoordinates,
+  hashWorldChunkDefinition,
   neighborCellIds,
   parseCellId,
   predictedCellId,
@@ -77,5 +78,81 @@ describe('world chunk definitions', () => {
     expect(first.navNodes.length).toBeGreaterThan(0);
     expect(first.spawnZones).toHaveLength(2);
     expect(() => JSON.parse(JSON.stringify(first))).not.toThrow();
+  });
+
+  it('hashes transformed geometry, roads, spawn zones, and interior portals, not only ids', () => {
+    const city = generateCity('chunk-definition-content-hash', 'low');
+    const chunk = buildWorldChunkDefinition(city, 'cell:-1:0');
+    const geometry = chunk.staticGeometryRecipes[0];
+    const road = chunk.roads[0];
+    const spawnZone = chunk.spawnZones[0];
+    const interior = chunk.interiors[0];
+    expect(geometry).toBeDefined();
+    expect(road).toBeDefined();
+    expect(spawnZone).toBeDefined();
+    expect(interior).toBeDefined();
+    if (!geometry || !road || !spawnZone || !interior) return;
+
+    const variants = [
+      {
+        ...chunk,
+        staticGeometryRecipes: chunk.staticGeometryRecipes.map((recipe, index) => index === 0
+          ? { ...recipe, position: { ...recipe.position, x: recipe.position.x + 0.25 } }
+          : recipe),
+      },
+      {
+        ...chunk,
+        staticGeometryRecipes: chunk.staticGeometryRecipes.map((recipe, index) => index === 0
+          ? { ...recipe, scale: { ...recipe.scale, y: recipe.scale.y + 0.25 } }
+          : recipe),
+      },
+      {
+        ...chunk,
+        roads: chunk.roads.map((recipe, index) => index === 0
+          ? { ...recipe, width: recipe.width + 0.25 }
+          : recipe),
+      },
+      {
+        ...chunk,
+        spawnZones: chunk.spawnZones.map((zone, index) => index === 0
+          ? { ...zone, capacity: zone.capacity + 1 }
+          : zone),
+      },
+      {
+        ...chunk,
+        interiors: chunk.interiors.map((portal, index) => index === 0
+          ? { ...portal, position: { ...portal.position, z: portal.position.z + 0.25 } }
+          : portal),
+      },
+    ];
+
+    for (const variant of variants) {
+      expect(hashWorldChunkDefinition(variant)).not.toBe(chunk.manifest.hash);
+    }
+  });
+
+  it('uses canonical ordering and excludes the existing hash from its hash payload', () => {
+    const city = generateCity('chunk-definition-canonical-hash', 'low');
+    const chunk = buildWorldChunkDefinition(city, 'cell:-1:0');
+    expect(hashWorldChunkDefinition(chunk)).toBe(chunk.manifest.hash);
+    const reordered = {
+      ...chunk,
+      manifest: {
+        ...chunk.manifest,
+        hash: 'this-value-is-not-part-of-the-payload',
+        neighbors: [...chunk.manifest.neighbors].reverse(),
+        requiredAssets: [...chunk.manifest.requiredAssets].reverse(),
+      },
+      staticGeometryRecipes: [...chunk.staticGeometryRecipes].reverse(),
+      roads: [...chunk.roads].reverse(),
+      spawnZones: [...chunk.spawnZones].reverse(),
+      navNodes: [...chunk.navNodes].reverse().map((node) => ({
+        ...node,
+        neighborIds: [...node.neighborIds].reverse(),
+      })),
+      interiors: [...chunk.interiors].reverse(),
+    };
+
+    expect(hashWorldChunkDefinition(reordered)).toBe(chunk.manifest.hash);
   });
 });

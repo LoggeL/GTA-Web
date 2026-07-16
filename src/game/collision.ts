@@ -24,6 +24,54 @@ export function circleIntersectsBuildings(
   return false;
 }
 
+export function circleIntersectsRect(
+  x: number,
+  z: number,
+  radius: number,
+  collision: Readonly<CollisionRect>,
+): boolean {
+  const closestX = Math.max(collision.minX, Math.min(x, collision.maxX));
+  const closestZ = Math.max(collision.minZ, Math.min(z, collision.maxZ));
+  const deltaX = x - closestX;
+  const deltaZ = z - closestZ;
+  return deltaX * deltaX + deltaZ * deltaZ < radius * radius;
+}
+
+export function supportHeightAt(
+  x: number,
+  z: number,
+  radius: number,
+  collisions: readonly CollisionRect[],
+): number {
+  let height = 0;
+  for (const collision of collisions) {
+    if (collision.kind === 'step' && circleIntersectsRect(x, z, radius, collision)) {
+      height = Math.max(height, collision.height);
+    }
+  }
+  return height;
+}
+
+export function movementBlockersAtHeight(
+  collisions: readonly CollisionRect[],
+  footHeight: number,
+): readonly CollisionRect[] {
+  return collisions.filter((collision) => (
+    collision.kind !== 'step' && collision.height > footHeight + 0.08
+  ));
+}
+
+export function findVaultObstacle(
+  x: number,
+  z: number,
+  radius: number,
+  collisions: readonly CollisionRect[],
+): CollisionRect | null {
+  return collisions.find((collision) => (
+    collision.kind === 'vault' && circleIntersectsRect(x, z, radius, collision)
+  )) ?? null;
+}
+
 export function moveCircleWithCollisions(
   position: Vec3Data,
   deltaX: number,
@@ -117,4 +165,3 @@ export function cameraSafeFraction(
 
   return safeFraction;
 }
-

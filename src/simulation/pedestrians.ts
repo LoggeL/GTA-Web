@@ -18,6 +18,7 @@ export const PEDESTRIAN_CAPACITY: Readonly<Record<SimulationQuality, number>> = 
 interface PedestrianAgent {
   id: string;
   active: boolean;
+  hasActivated: boolean;
   position: SimulationVec3;
   heading: number;
   speed: number;
@@ -42,6 +43,7 @@ export class PedestrianSystem {
   private readonly agents: PedestrianAgent[];
   private readonly report: (event: WitnessReportEvent) => void;
   private quality: SimulationQuality;
+  private requestedActorLimit = PEDESTRIAN_CAPACITY.high;
 
   public constructor(
     random: SimulationRandom,
@@ -60,6 +62,19 @@ export class PedestrianSystem {
   public setQuality(quality: SimulationQuality): void {
     this.quality = quality;
     this.applyActiveCount();
+  }
+
+  public setActorLimit(limit: number): number {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new RangeError('pedestrian actor limit must be a non-negative safe integer');
+    }
+    this.requestedActorLimit = Math.min(limit, PEDESTRIAN_CAPACITY.high);
+    this.applyActiveCount();
+    return this.getActorLimit();
+  }
+
+  public getActorLimit(): number {
+    return Math.min(this.requestedActorLimit, PEDESTRIAN_CAPACITY[this.quality]);
   }
 
   public observeCrime(crime: CrimeEvent): void {
@@ -149,6 +164,7 @@ export class PedestrianSystem {
     const agent: PedestrianAgent = {
       id: `pedestrian-${index.toString().padStart(2, '0')}`,
       active: false,
+      hasActivated: false,
       position,
       heading: 0,
       speed: 0,
@@ -164,13 +180,16 @@ export class PedestrianSystem {
   }
 
   private applyActiveCount(): void {
-    const count = PEDESTRIAN_CAPACITY[this.quality];
+    const count = this.getActorLimit();
     this.agents.forEach((agent, index) => {
       const shouldBeActive = index < count;
       if (shouldBeActive && !agent.active) {
         agent.active = true;
-        agent.behavior = 'wander';
-        this.chooseWanderTarget(agent);
+        if (!agent.hasActivated) {
+          agent.hasActivated = true;
+          agent.behavior = 'wander';
+          this.chooseWanderTarget(agent);
+        }
       } else if (!shouldBeActive) {
         agent.active = false;
       }
@@ -249,4 +268,3 @@ export class PedestrianSystem {
     this.chooseWanderTarget(agent);
   }
 }
-

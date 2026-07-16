@@ -47,6 +47,18 @@ describe('road graph and deterministic A* routing', () => {
     expect(routeDistricts.size).toBeGreaterThanOrEqual(3);
   });
 
+  it('routes from the Moreno Garage spawn to Malik in Alta Vista', () => {
+    const graph = buildRoadGraph(generateCity('slot-2-browser-route', 'high'));
+    const route = findRoadRoute(
+      graph,
+      { x: -248, z: 248 },
+      { x: 350, z: -350 },
+    );
+    expect(route).not.toBeNull();
+    expect(route?.distanceMeters).toBeGreaterThan(900);
+    expect(createGpsRoute(route!).segments.length).toBeGreaterThan(2);
+  });
+
   it('honors closed edges and reports an unreachable destination', () => {
     const layout: Pick<CityLayout, 'roads'> = {
       roads: [

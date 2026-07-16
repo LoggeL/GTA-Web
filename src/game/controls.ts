@@ -11,12 +11,14 @@ const GAME_KEYS = new Set([
   'Space',
   'KeyC',
   'KeyE',
+  'KeyQ',
 ]);
 
 export class DefaultWorldControls {
   private readonly canvas: HTMLCanvasElement;
   private readonly pressed = new Set<string>();
   private interactionQueued = false;
+  private shoulderSwapQueued = false;
   private aiming = false;
   private pointerId: number | null = null;
   private yawDelta = 0;
@@ -33,6 +35,7 @@ export class DefaultWorldControls {
     canvas.addEventListener('pointerup', this.onPointerUp);
     canvas.addEventListener('pointercancel', this.onPointerUp);
     canvas.addEventListener('contextmenu', this.onContextMenu);
+    canvas.addEventListener('blur', this.onCanvasBlur);
     window.addEventListener('blur', this.onBlur);
   }
 
@@ -44,11 +47,13 @@ export class DefaultWorldControls {
     input.jump = this.pressed.has('Space');
     input.crouch = this.pressed.has('KeyC');
     input.aim = this.aiming;
+    input.shoulderSwap = this.shoulderSwapQueued;
     input.handbrake = this.pressed.has('Space');
     input.interact = this.interactionQueued;
     input.cameraYawDelta = this.yawDelta;
     input.cameraPitchDelta = this.pitchDelta;
     this.interactionQueued = false;
+    this.shoulderSwapQueued = false;
     this.yawDelta = 0;
     this.pitchDelta = 0;
     return input;
@@ -57,6 +62,7 @@ export class DefaultWorldControls {
   public clear(): void {
     this.pressed.clear();
     this.interactionQueued = false;
+    this.shoulderSwapQueued = false;
     this.aiming = false;
     this.pointerId = null;
     this.yawDelta = 0;
@@ -72,6 +78,7 @@ export class DefaultWorldControls {
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerUp);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
+    this.canvas.removeEventListener('blur', this.onCanvasBlur);
     window.removeEventListener('blur', this.onBlur);
   }
 
@@ -81,6 +88,9 @@ export class DefaultWorldControls {
     }
     if (event.code === 'KeyE' && !event.repeat) {
       this.interactionQueued = true;
+    }
+    if (event.code === 'KeyQ' && !event.repeat) {
+      this.shoulderSwapQueued = true;
     }
     this.pressed.add(event.code);
   };
@@ -121,6 +131,10 @@ export class DefaultWorldControls {
   };
 
   private readonly onBlur = (): void => {
+    this.clear();
+  };
+
+  private readonly onCanvasBlur = (): void => {
     this.clear();
   };
 }

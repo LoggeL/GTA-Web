@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-16 14:25 CEST  
+Last updated: 2026-07-16 17:00 CEST
 Plan status: Active  
-Current focus: M1 — integrate the verified input/player/camera/UI foundations into a complete interaction course  
+Current focus: M3 vehicles, traffic, ownership, and garage — Preview 1's passing M1/M2 candidate is ready for publication
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -202,21 +202,35 @@ The following versioned interfaces are stable boundaries and must remain seriali
 
 Acceptance: `npm run check` passes; menu starts a deterministic 3D scene; resize/focus/mobile-orientation handling works; `plan.md` exists at the canonical path.
 
-### M1 — Input, player, camera, interaction, and UI shell — `IN PROGRESS`
+### M1 — Input, player, camera, interaction, and UI shell — `COMPLETE`
 
-- [ ] Desktop and touch input abstraction with rebinding and safe-area landscape UI.
-- [ ] Player locomotion/traversal, camera modes/collision, interaction targeting, pause/focus.
-- [ ] HUD shell, pause/settings, unsupported-browser and rotate overlays.
+- [x] Desktop and touch input abstraction with rebinding and safe-area landscape UI.
+- [x] Player locomotion/traversal, camera modes/collision, interaction targeting, pause/focus.
+- [x] HUD shell, pause/settings, unsupported-browser and rotate overlays.
 
 Acceptance: keyboard/mouse and emulated touch both complete a movement/interaction course; no stuck input after blur; reduced motion and UI scaling work.
 
-### M2 — City generation, streaming, navigation, time, and weather — `PENDING`
+Completion evidence: the running world uses one remappable keyboard/mouse/touch action layer, multi-button pointer handling, focus/visibility teardown, landscape touch layouts, and a binding-capture UI. Alex's walk/sprint/jump/crouch/vault/mantle/ladder movement, aim/orbit/shoulder and vehicle chase cameras, contextual vehicle/portal interaction, pause/focus behavior, accessibility settings, unsupported-browser fallback, and portrait rotation blocker are integrated. The desktop and compact browser acceptance matrix passed with no stuck-input or overlay regressions.
 
-- [ ] Four district manifests, deterministic procedural blocks/roads/landmarks, collision/nav, key interior loader.
-- [ ] Chunk prediction/LRU/failure boundaries, minimap/full map/GPS, day-night and rain.
-- [ ] Adaptive LOD, instancing, pooling, resolution/density governor.
+### M2 — City generation, streaming, navigation, time, and weather — `COMPLETE`
+
+- [x] Four district manifests, deterministic procedural blocks/roads/landmarks, collision/nav, key interior loader.
+- [x] Chunk prediction/LRU/failure boundaries, minimap/full map/GPS, day-night and rain.
+- [x] Adaptive LOD, instancing, pooling, resolution/density governor.
 
 Acceptance: traverse all districts and one interior without gaps; forced chunk failure recovers safely; route guidance reaches cross-city targets; shell stays below the initial-load budget.
+
+Completion evidence and implemented scope:
+
+- Four deterministic 256 m district manifests, landmark/road/collision/navigation data, time-of-day lighting, authored rain windows, and a small rain-grip effect are active in gameplay. The Alta Vista finale tower is assigned to the correct district coordinate, and chunk identity is protected by a canonical hash of the full payload excluding only the hash field.
+- Streaming maintains the current cell plus its eight neighbors as the active safety envelope, predicts movement/route demand, and keeps a bounded inactive LRU of two cells on desktop or one on mobile. Adaptive performance control governs density, actor budgets, and resolution while preserving recovery at ordinary 60 Hz frame timing.
+- Cell residency is real rather than telemetry-only: lazy GPU payload roots are created for resident cells, deterministically recreated after eviction, and recursively disposed when evicted; cells begin with zero payload roots. Global roads/ground remain shared, collision is restricted to active cells, and portal visuals follow resident-cell state.
+- Five authored interior scenes and their portal visuals are integrated, including a verified enter/exit round trip through Moreno Garage. Portal interaction receives priority when eligible so exiting a nearby vehicle cannot block an interior transition.
+- Navigation includes road-graph A*, cross-city GPS guidance, rotating minimap/full map, discovery fog, authored markers, and custom waypoints. Off-road clicks snap to a reachable road destination, failed-cell route edges close, and the responsive map uses a stable render host so SVG redraws do not destroy its controls.
+- Streaming failures retry twice, close affected roads in routing, create a visible hazard barrier with collision, and clamp the player to loaded space. An accessible blocking overlay offers Retry or Return to Menu while simulation pauses and resumes safely. A query-gated QA fault injector verifies both recovery branches without exposing production mutation controls.
+- City simulation now drives actual pooled traffic and pedestrian meshes rather than counters alone. Adaptive actor limits flow into the simulation, district traversal updates real actor populations, and snapshots/HUD telemetry report the same live counts.
+- The production e2e command rebuilds before previewing, and the QA bridge is available only behind `?qa=1`. Acceptance coverage exercises four-district traversal, bounded GPU/collision residency, live populations, Moreno Garage round trip, cross-city GPS arrival, and forced failure Retry/Return in the applicable desktop and compact-mobile projects.
+- The Preview 1 pre-publication gate passed: `npm run check` completed 40 test files / 244 tests; the full Playwright suite completed 14 passed / 8 intentional project-specific skips; visual QA passed at 1280×720 and 844×390, including the full map and Moreno Garage; the production artifact is 0.83 MiB total / 0.31 MiB compressed.
 
 ### M3 — Vehicles, traffic, ownership, and garage — `PENDING`
 
@@ -304,6 +318,10 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 14:16 | M2 / M4 / M5 / M6 foundations | Added verified but not yet fully UI-integrated road A*/GPS and 256 m chunk streaming, pooled traffic/pedestrian/five-role combat simulations, progression/inventory/economy/campaign/wanted systems, 12-mission/60-collectible registries, and mission/dialogue runtimes. These do not mark later milestones complete until their end-to-end acceptance checks pass. | Unit/integration suite included in the 132 passing tests; `src/navigation`, `src/simulation`, `src/systems`, `src/data`, `src/runtime` |
 | 2026-07-16 14:21 | M0 | The first remote gate exposed two late-arriving restore validation cases. Dialogue restore now preserves its current line when earlier content is removed, and mission restore rejects malformed numeric objective/checkpoint progress without mutation. | Focused runtime tests: 14/14; full `npm run check`: 25 files / 132 tests |
 | 2026-07-16 14:25 | Preview 0.1 | Published the corrected M0 build through the GitHub Pages workflow and smoke-tested the live repository-base URL through splash, save/preset selection, and rendered gameplay. Also visually checked the live 844×390 gameplay layout. | Source `159b4179d646204069668bad7d8ae74c0f8cba85`; tag `preview-0.1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29497909734); [live preview](https://loggel.github.io/GTA-Web/) |
+| 2026-07-16 14:52 | M1 / M2 integration | Unified remappable keyboard/mouse/touch input now drives the running world; blur, visibility, multi-button mouse, focus, touch teardown, traversal, aim camera, shoulder swap, contextual vehicle entry/exit, live accessibility settings, A* GPS, discovered-cell fog, markers, responsive full map, and navigation/chunk telemetry are integrated. Desktop interaction/map/GPS smoke passed; visual streaming, binding capture UI, and final M1 browser matrix remain before the milestone gate. | 32 test files / 183 tests passed; focused desktop Playwright 5/5; build 0.74 MiB artifact / 0.28 MiB compressed shell |
+| 2026-07-16 17:00 | M1 | Completed the unified desktop/touch input, rebinding, traversal, camera, interaction, pause/focus, settings, accessibility, unsupported-browser, and landscape/portrait UI acceptance scope. Desktop and compact browser validation found no stuck-input, scaling, or overlay regression. | M1 checklist and completion evidence above; included in 40 files / 244 passing tests and the full Playwright gate |
+| 2026-07-16 17:00 | M2 | Completed the four-district streamed city: canonical chunk integrity, active/resident/LRU safety boundaries, real lazy GPU creation/eviction/disposal, active-cell collision, five interiors, Moreno Garage round trip, A*/GPS/map/discovery/custom waypoint navigation, day/night and rain grip, adaptive real traffic/pedestrian populations, road-closure collision/routing, and accessible forced-failure recovery. | `npm run check`: 40 files / 244 tests; Playwright: 14 passed / 8 intentional skips; 1280×720 and 844×390 visual QA including map and Moreno Garage; 0.83 MiB artifact / 0.31 MiB compressed |
+| 2026-07-16 17:00 | Preview 1 gate | Preview 1's local source/build gate is passing and ready to publish. Publication, tag, commit SHA, Actions workflow, and live desktop/mobile smoke evidence are intentionally not recorded until the remote deployment succeeds. | Pre-publication evidence is the passing M1/M2 gate above; current published build remains Preview 0.1 |
 
 ## Release record
 
@@ -313,5 +331,6 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 - Release commit: `159b4179d646204069668bad7d8ae74c0f8cba85`
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
 - Published artifact size: 0.68 MiB at Preview 0 gate
+- Latest local pre-publication gate: Preview 1 candidate, 0.83 MiB artifact / 0.31 MiB compressed; 40 files / 244 tests; Playwright 14 passed / 8 intentional skips; desktop and 844×390 visual QA passed
 - Final `npm run check`: pending; Preview 0 gate passed with 132 tests
 - Final browser smoke test: pending; Preview 0 local browser smoke and live desktop/844×390 smoke passed without uncaught errors

@@ -4,6 +4,7 @@ export { PEDESTRIAN_CAPACITY } from './pedestrians';
 export { TRAFFIC_CAPACITY } from './traffic';
 export { WEAPON_DEFINITIONS } from './weapons';
 export type {
+  ActorPopulationLimits,
   CitySimulationApi,
   CitySimulationOptions,
   CitySimulationSnapshot,
@@ -32,4 +33,3 @@ export type {
   WeaponType,
   WitnessReportEvent,
 } from './types';
-

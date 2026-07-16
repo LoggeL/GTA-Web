@@ -18,7 +18,8 @@ describe('procedural Solara layout', () => {
     expect(first.roads).toHaveLength(50);
     expect(first.buildings).toHaveLength(300);
     expect(first.props).toHaveLength(184);
-    expect(first.collisions).toHaveLength(first.buildings.length);
+    expect(first.traversalObstacles).toHaveLength(2);
+    expect(first.collisions).toHaveLength(first.buildings.length + first.traversalObstacles.length);
   });
 
   it('changes recipes for a different seed and reduces low-quality density', () => {
@@ -48,4 +49,3 @@ describe('procedural Solara layout', () => {
     expect(circleIntersectsBuildings(VEHICLE_SPAWN.x, VEHICLE_SPAWN.z, 1.48, city.collisions)).toBe(false);
   });
 });
-

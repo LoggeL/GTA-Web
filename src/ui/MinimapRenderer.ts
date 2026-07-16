@@ -7,6 +7,15 @@ export interface MinimapOptions {
   visibleRadius?: number;
 }
 
+export interface MinimapOverlay {
+  routeSegments?: readonly {
+    from: { x: number; z: number };
+    to: { x: number; z: number };
+  }[];
+  waypoint?: { position: { x: number; z: number } } | null;
+  markers?: readonly { kind: string; position: { x: number; z: number } }[];
+}
+
 const DISTRICT_COLORS = new Map(DISTRICTS.map((district) => [district.id, district.groundColor]));
 
 export class MinimapRenderer {
@@ -35,7 +44,7 @@ export class MinimapRenderer {
     }
   }
 
-  draw(snapshot: WorldSnapshot): void {
+  draw(snapshot: WorldSnapshot, overlay: MinimapOverlay = {}): void {
     this.resize();
     const { width, height } = this.#canvas;
     const context = this.#context;
@@ -70,6 +79,34 @@ export class MinimapRenderer {
         building.width,
         building.depth,
       );
+    }
+
+    if (overlay.routeSegments && overlay.routeSegments.length > 0) {
+      context.strokeStyle = '#ff8a4c';
+      context.lineWidth = 4 / scale;
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.beginPath();
+      for (const segment of overlay.routeSegments) {
+        context.moveTo(segment.from.x, segment.from.z);
+        context.lineTo(segment.to.x, segment.to.z);
+      }
+      context.stroke();
+    }
+
+    for (const marker of overlay.markers ?? []) {
+      context.fillStyle = marker.kind === 'mission' ? '#ff6a3d' : marker.kind === 'safehouse' ? '#53dfd0' : '#ffd56a';
+      context.beginPath();
+      context.arc(marker.position.x, marker.position.z, 4.5 / scale, 0, Math.PI * 2);
+      context.fill();
+    }
+
+    if (overlay.waypoint) {
+      context.strokeStyle = '#fff4d8';
+      context.lineWidth = 2.2 / scale;
+      context.beginPath();
+      context.arc(overlay.waypoint.position.x, overlay.waypoint.position.z, 7 / scale, 0, Math.PI * 2);
+      context.stroke();
     }
 
     context.strokeStyle = 'rgba(255, 213, 106, 0.82)';

@@ -13,6 +13,7 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await expect(touchControls.getByRole('button', { name: 'Interact' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Sprint' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Jump or handbrake' })).toBeVisible();
+    await expect(touchControls.getByRole('button', { name: 'Crouch or camera' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Aim' })).toBeVisible();
     await expect(touchControls.getByRole('button', { name: 'Fire or attack' })).toBeVisible();
 

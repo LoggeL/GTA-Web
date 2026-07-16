@@ -2,6 +2,17 @@ import type { Scene } from 'three';
 
 export type SimulationQuality = 'low' | 'high';
 
+/**
+ * Runtime population ceilings. The shape intentionally matches the actor
+ * limits emitted by CityStreamingController so callers can pass them through
+ * without translating field names (an extra `total` field is harmless).
+ */
+export interface ActorPopulationLimits {
+  readonly traffic: number;
+  readonly pedestrians: number;
+  readonly combat: number;
+}
+
 export interface SimulationVec3 {
   x: number;
   y: number;
@@ -157,6 +168,9 @@ export interface CitySimulationSnapshot {
   traffic: readonly TrafficVehicleSnapshot[];
   pedestrians: readonly PedestrianSnapshot[];
   combatants: readonly CombatantSnapshot[];
+  /** Effective ceilings after both quality and adaptive limits are applied. */
+  actorLimits: ActorPopulationLimits;
+  /** Fixed preallocated pool capacities; adaptive changes never grow these. */
   poolCapacity: {
     traffic: number;
     pedestrians: number;
@@ -173,6 +187,7 @@ export interface CitySimulationTickResult {
 export interface CitySimulationOptions {
   seed?: number | string;
   quality?: SimulationQuality;
+  actorLimits?: ActorPopulationLimits;
   roads?: readonly SimulationRoadRecipe[];
   seedCombatants?: boolean;
   onCrime?: (event: CrimeEvent) => void;
@@ -184,6 +199,9 @@ export interface CitySimulationOptions {
 export interface CitySimulationApi {
   attach(scene: Scene): void;
   detach(): void;
+  setVisible(visible: boolean): void;
+  setQuality(quality: SimulationQuality): void;
+  setActorLimits(limits: Readonly<ActorPopulationLimits>): ActorPopulationLimits;
   tick(context: CitySimulationTick): CitySimulationTickResult;
   getSnapshot(): CitySimulationSnapshot;
   dispose(): void;
