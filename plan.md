@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-17 09:42 CEST
-Plan status: Complete
-Current focus: Complete — v1.0.0 is implemented, verified within the user-approved desktop and emulated-mobile scope, and published; the user explicitly removed physical hardware testing from the required acceptance scope on 2026-07-17
+Last updated: 2026-07-17 10:08 CEST
+Plan status: Active
+Current focus: M9 — enrich the city’s street-level density and visual identity, increase relevant nearby traffic, replace placeholder-looking pedestrians, preserve adaptive performance, and publish a playable v1.1 preview
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -308,6 +308,17 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 
 Evidence boundary: the green Pixel 7 Playwright profile is viewport, DPR, user-agent, and touch emulation running on host hardware with a software WebGL renderer. It proves the user-approved responsive, interaction, bounded-pool, transition, and long-soak release scope, but it is not represented as a physical-phone FPS measurement. The optional ADB/CDP runner remains available if that evidence is requested later.
 
+### M9 — City-life and presentation enrichment — `IN PROGRESS`
+
+- [ ] Give each district a stronger visual grammar through richer block silhouettes, façades, rooflines, sidewalks, storefronts, signs, street furniture, vegetation, industrial clutter, and authored micro-landmarks.
+- [ ] Increase the amount and variety of traffic that is relevant around the player, recycle distant ambient vehicles safely, retain district-specific class mixes, and preserve intersection/deadlock recovery.
+- [ ] Replace the minimal body/head pedestrian placeholders with varied low-poly characters using layered clothing, multiple skin/hair palettes, limbs, accessories, and readable walk/flee/reaction posing.
+- [ ] Keep traffic and pedestrians spatially concentrated around active city cells without visible stacking, abrupt near-camera spawning, pool growth, or regressions to stealing, witnesses, pursuit, navigation, and combat.
+- [ ] Run the full unit/build gate, focused deterministic simulation soaks, desktop and compact-mobile visual QA, and the short performance matrix on the integrated build.
+- [ ] Publish and smoke-test a playable v1.1 city-life preview on GitHub Pages, then record its source SHA, workflow, live URL, asset hashes, population evidence, and visual QA here.
+
+Acceptance: ordinary driving through all four districts must show visibly distinct, dressed streets and a materially busier nearby traffic field; pedestrians must read as intentional stylized people rather than primitive placeholders at gameplay distance; adaptive low quality must remain coherent; pools, memory, route recovery, ordinary transition bounds, and the user-approved 60/30 host-based performance targets remain green.
+
 ## Test plan
 
 ### Automated
@@ -379,6 +390,7 @@ Evidence boundary: the green Pixel 7 Playwright profile is viewport, DPR, user-a
 | 2026-07-17 09:36 | M8 physical-device blocker | Repeated the final ADB hardware audit for the third consecutive goal turn. No eligible physical serial appeared, so there is no honest way to produce the required retained 120-second phone-performance evidence. The implementation and published release remain intact; work resumes immediately when eligible hardware is connected. | `adb devices -l` exposes only `emulator-5554` (`sdk_gphone64_arm64`, `emu64a`). Plan and goal status set to `BLOCKED`; unblock condition: connect a reviewed physical phone with USB debugging/RSA authorization, then run `npm run test:performance:android` with its exact model. |
 | 2026-07-17 09:39 | M8 final scope decision | The user explicitly stated that hardware tests are not necessary, removing the sole remaining external gate. M8 and the complete implementation plan are therefore accepted without a physical-device performance claim. The audited fail-closed Android runner remains checked in for optional future evidence, while the already green desktop, cross-browser, landscape touch-emulation, performance, 41.8-minute soak, live-asset, and Pages gates form the final required evidence set. | User decision in the active Codex task; plan status and M8 set to `COMPLETE`. Final non-hardware release audit and completion publication follow on this exact source. |
 | 2026-07-17 09:42 | Final completion audit | Re-ran the complete canonical quality gate after the user's scope decision, confirmed that every milestone is `COMPLETE` with no unchecked implementation item, verified both generated raster assets, and downloaded all six live runtime artifacts from GitHub Pages for byte comparison. The live site is exactly the previously accepted v1.0.0 build, so the QA-only and documentation commits do not alter the deployed game. | `npm run check`: 85/85 Vitest files, 532/532 tests, 5/5 release tests, typecheck, lint, build, source/dist asset graph, and 1.49 MiB / 0.66 MiB budget green. Live HTML/app/Three.js/CSS/splash/social SHA-256 values exactly match canonical `dist`; Pages workflow `29559022071` remains successful at release source `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`. This row is the final docs-only `[skip ci]` completion record. |
+| 2026-07-17 10:08 | M9 enrichment kickoff | Reopened the plan after direct player feedback that the city reads as boring, nearby traffic is too sparse, and pedestrians look visibly unfinished. Split implementation into three parallel, non-overlapping tracks: district/city dressing, adaptive nearby population density, and higher-quality animated traffic/pedestrian models. | M9 marked `IN PROGRESS`; v1.0.0 remains the stable live baseline while the integrated v1.1 preview is gated on visual QA, simulation tests, performance, and a passing Pages deployment. |
 
 ## Release record
 
