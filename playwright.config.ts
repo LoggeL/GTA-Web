@@ -1,9 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const performanceMode = process.env.HEATLINE_PERFORMANCE === '1';
+const androidRealDeviceMode = process.env.HEATLINE_ANDROID_REAL === '1';
+const performanceMode = process.env.HEATLINE_PERFORMANCE === '1' || androidRealDeviceMode;
 export default defineConfig({
   testDir: './tests',
-  testMatch: performanceMode
+  testMatch: androidRealDeviceMode
+    ? ['performance/android-real-device.spec.ts']
+    : performanceMode
     ? ['performance/**/*.spec.ts']
     : ['e2e/**/*.spec.ts'],
   timeout: 30_000,
@@ -15,12 +18,16 @@ export default defineConfig({
     // failures only.
     trace: performanceMode ? 'off' : 'retain-on-failure',
   },
-  webServer: {
-    command: 'npm run preview:e2e',
-    port: 4173,
-    reuseExistingServer: true,
-  },
-  projects: performanceMode
+  webServer: androidRealDeviceMode
+    ? undefined
+    : {
+      command: 'npm run preview:e2e',
+      port: 4173,
+      reuseExistingServer: true,
+    },
+  projects: androidRealDeviceMode
+    ? [{ name: 'android-real-device' }]
+    : performanceMode
     ? [
       { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
       {

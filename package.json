@@ -21,6 +21,7 @@
     "test:e2e:release:firefox": "playwright test --workers=1 --project=firefox-desktop e2e/desktop-smoke.spec.ts --grep \"accessibility and audio settings apply live and persist across reload\"",
     "test:e2e:release:webkit": "playwright test --workers=1 --project=webkit-desktop e2e/desktop-smoke.spec.ts --grep \"accessibility and audio settings apply live and persist across reload\"",
     "test:performance": "HEATLINE_PERFORMANCE=1 HEATLINE_SOAK_SECONDS=30 playwright test --workers=1 --grep \"runtime frame\"",
+    "test:performance:android": "HEATLINE_ANDROID_REAL=1 playwright test --workers=1 --project=android-real-device",
     "test:context-recovery": "HEATLINE_PERFORMANCE=1 playwright test --grep \"WebGL context\"",
     "test:soak": "HEATLINE_PERFORMANCE=1 HEATLINE_SOAK_SECONDS=1200 playwright test --workers=1 --grep \"runtime frame\"",
     "budget": "node scripts/check-bundle.mjs",
