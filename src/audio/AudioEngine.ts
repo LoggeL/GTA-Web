@@ -42,6 +42,8 @@ export interface RadioSnapshot {
   readonly ready: boolean;
   readonly contextState: AudioRuntimeState;
   readonly mix: Readonly<AudioMix>;
+  /** Actual master gain after a harness-level output mute is applied. */
+  readonly effectiveMaster: number;
   readonly worldAudio: Readonly<WorldAudioState>;
   /** Number of long-lived sources; frequent world updates never increase it. */
   readonly worldVoiceCount: number;
@@ -55,6 +57,11 @@ export interface AudioScheduler {
 export interface AudioEngineOptions {
   readonly createContext?: () => AudioContext;
   readonly scheduler?: AudioScheduler;
+  /**
+   * Hard output mute for automated browser runs. This intentionally leaves the
+   * player-facing mix untouched so settings persistence can still be tested.
+   */
+  readonly muteOutput?: boolean;
 }
 
 interface ProceduralTrack {
@@ -217,6 +224,7 @@ function safeStop(source: AudioScheduledSourceNode | null): void {
 export class AudioEngine {
   readonly #createContext: () => AudioContext;
   readonly #schedulerApi: AudioScheduler;
+  readonly #muteOutput: boolean;
   #context: AudioContext | null = null;
   #master: GainNode | null = null;
   #music: GainNode | null = null;
@@ -247,6 +255,7 @@ export class AudioEngine {
     this.#createContext = options.createContext
       ?? (() => new AudioContext({ latencyHint: 'interactive' }));
     this.#schedulerApi = options.scheduler ?? DEFAULT_SCHEDULER;
+    this.#muteOutput = options.muteOutput ?? false;
   }
 
   get ready(): boolean {
@@ -348,6 +357,7 @@ export class AudioEngine {
       ready: this.ready,
       contextState: normalizeContextState(this.#context),
       mix: Object.freeze({ ...this.#mix }),
+      effectiveMaster: this.#muteOutput ? 0 : this.#mix.master,
       worldAudio: Object.freeze({ ...this.#worldAudio }),
       worldVoiceCount: this.#worldVoiceCount(),
     });
@@ -512,7 +522,7 @@ export class AudioEngine {
 
   #applyMix(): void {
     const now = this.#context?.currentTime ?? 0;
-    this.#master?.gain.setTargetAtTime(this.#mix.master, now, 0.02);
+    this.#master?.gain.setTargetAtTime(this.#muteOutput ? 0 : this.#mix.master, now, 0.02);
     this.#music?.gain.setTargetAtTime(this.#mix.music, now, 0.02);
     this.#sfx?.gain.setTargetAtTime(this.#mix.sfx, now, 0.02);
     this.#ui?.gain.setTargetAtTime(this.#mix.ui, now, 0.02);

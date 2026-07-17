@@ -1,10 +1,25 @@
 import { expect, test as base } from '@playwright/test';
 
 interface SmokeFixtures {
+  readonly mutedTestAudio: void;
   readonly uncaughtPageErrors: readonly string[];
 }
 
 export const test = base.extend<SmokeFixtures>({
+  mutedTestAudio: [
+    async ({ page }, use) => {
+      await page.addInitScript(() => {
+        Object.defineProperty(globalThis, '__HEATLINE_TEST_AUDIO_MUTED__', {
+          configurable: false,
+          enumerable: false,
+          value: true,
+          writable: false,
+        });
+      });
+      await use();
+    },
+    { auto: true },
+  ],
   uncaughtPageErrors: [
     async ({ page }, use, testInfo) => {
       const pageErrors: string[] = [];

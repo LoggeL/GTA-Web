@@ -275,6 +275,23 @@ describe('AudioEngine radio state', () => {
     expect(before.mix).toEqual({ master: 0.8, music: 0.58, sfx: 0.8, ui: 0.7, ambience: 0.6 });
     expect(before.mix).not.toBe(after.mix);
   });
+
+  it('hard-mutes automated output without changing the player-facing mix', async () => {
+    const context = new FakeAudioContext();
+    const audio = new AudioEngine({
+      createContext: () => context as unknown as AudioContext,
+      muteOutput: true,
+    });
+    audio.setMix({ master: 1, music: 1 });
+
+    await audio.unlock();
+
+    expect(audio.snapshot()).toMatchObject({
+      mix: { master: 1, music: 1 },
+      effectiveMaster: 0,
+    });
+    expect(context.gains[0]?.gain.targets.at(-1)).toBe(0);
+  });
 });
 
 describe('AudioEngine context and bounded world voices', () => {

@@ -12,6 +12,7 @@ interface AudioQaSnapshot {
   ready: boolean;
   contextState: string;
   mix: Readonly<Record<'master' | 'music' | 'sfx' | 'ui' | 'ambience', number>>;
+  effectiveMaster: number;
   worldAudio: {
     active: boolean;
     inVehicle: boolean;
@@ -79,6 +80,7 @@ test.describe('M7 audio, accessibility, and responsive acceptance', () => {
       trackTitle: 'Sodium Lights',
       ready: true,
       contextState: 'running',
+      effectiveMaster: 0,
       worldVoiceCount: 5,
     });
 
@@ -138,6 +140,7 @@ test.describe('M7 audio, accessibility, and responsive acceptance', () => {
 
     await expect.poll(() => audioState(page)).toMatchObject({
       mix: { master: 0.43, music: 0.37, sfx: 0.61, ui: 0.52, ambience: 0.29 },
+      effectiveMaster: 0,
     });
     await panel.getByRole('button', { name: 'Close' }).click();
     await expect(settingsLauncher).toBeFocused();

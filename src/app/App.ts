@@ -328,6 +328,12 @@ function detectSoftwareWebGlRenderer(): boolean {
   return SOFTWARE_WEBGL_RENDERER_PATTERN.test(description);
 }
 
+function isAutomatedTestAudioMuted(): boolean {
+  return (globalThis as typeof globalThis & {
+    readonly __HEATLINE_TEST_AUDIO_MUTED__?: boolean;
+  }).__HEATLINE_TEST_AUDIO_MUTED__ === true;
+}
+
 interface PersistenceFailureState {
   readonly operation: PersistenceFailureOperation;
   readonly slotId: SaveSlotId | null;
@@ -358,7 +364,7 @@ export class App {
   readonly #saveService: SaveService;
   readonly #persistenceMode: PersistenceMode;
   readonly #softwareWebGlRenderer: boolean;
-  readonly #audio = new AudioEngine();
+  readonly #audio = new AudioEngine({ muteOutput: isAutomatedTestAudioMuted() });
   readonly #ui: GameUI;
   readonly #minimap: MinimapRenderer;
   #settings: GameSettings;
