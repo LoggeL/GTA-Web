@@ -9,7 +9,11 @@ export default defineConfig({
   timeout: 30_000,
   use: {
     baseURL: 'http://127.0.0.1:4173',
-    trace: 'retain-on-failure',
+    // Performance runs measure the page's frame cadence. Recording a trace
+    // adds periodic screenshot encoding on the same host and can manufacture
+    // scheduler stalls during a 20-minute soak, so keep it for functional
+    // failures only.
+    trace: performanceMode ? 'off' : 'retain-on-failure',
   },
   webServer: {
     command: 'npm run preview:e2e',

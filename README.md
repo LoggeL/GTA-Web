@@ -6,9 +6,9 @@ This project is an independent genre exercise. It is not associated with, endors
 
 > Content note: mature crime themes, strong text dialogue, and stylized non-graphic action violence.
 
-## Current playable preview
+## Current release
 
-Play the latest passing build at **[loggel.github.io/GTA-Web](https://loggel.github.io/GTA-Web/)**. Preview tags and verified source commits are recorded in [plan.md](./plan.md).
+Play **HEATLINE: SOLARA v1.0.0** at **[loggel.github.io/GTA-Web](https://loggel.github.io/GTA-Web/)**. The verified release tag, source commit, deployment, and earlier previews are recorded in [plan.md](./plan.md).
 
 ## Controls
 
