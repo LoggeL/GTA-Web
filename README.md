@@ -55,9 +55,9 @@ npm run check
 npm run test:e2e
 ```
 
-### Physical Android performance acceptance
+### Optional physical Android measurement
 
-The final mobile hardware gate uses Chrome on a USB-connected Android phone through ADB/CDP. It refuses emulator, generic-device, mismatched-model, software-renderer, background-tab, and portrait runs. Use a dedicated browser profile or an empty HEATLINE save slot, keep the phone unlocked in landscape, and disable battery-saving or thermal-throttling modes for the course.
+Physical-phone testing is not required for the v1.0.0 release under the final user-approved acceptance scope; the shipped release is backed by the complete landscape touch-emulation, performance, pool, transition, and long-soak matrix recorded in [`plan.md`](./plan.md). The ADB/CDP runner is retained for an optional future Chrome measurement and does not imply that physical-device FPS evidence was collected. It refuses emulator, generic-device, mismatched-model, software-renderer, background-tab, and portrait runs. Use a dedicated browser profile or an empty HEATLINE save slot, keep the phone unlocked in landscape, and disable battery-saving or thermal-throttling modes for the course.
 
 After enabling USB debugging and accepting the phone's RSA prompt, confirm the exact model with `adb shell getprop ro.product.model`, then run:
 
@@ -68,9 +68,9 @@ HEATLINE_ANDROID_SECONDS=120 \
 npm run test:performance:android
 ```
 
-Physical acceptance requires an exact match in the reviewed mid-range model/device allowlist in [`android-performance-evidence.ts`](./tests/performance/android-performance-evidence.ts); unknown devices fail pending a sourced profile review, and a typed label cannot promote a flagship. The runner also verifies the immutable v1.0.0 HTML/JS/CSS/image SHA-256 set, requires WebGL2 with a named hardware renderer, records visibility/focus/orientation across the full course, measures one-second windows around ordinary cell transitions, enforces at least 120 seconds at 30.00 FPS, and deletes only its newly created save slot afterward.
+An optional accepted measurement requires an exact match in the reviewed mid-range model/device allowlist in [`android-performance-evidence.ts`](./tests/performance/android-performance-evidence.ts); unknown devices fail pending a sourced profile review, and a typed label cannot promote a flagship. The runner also verifies the immutable v1.0.0 HTML/JS/CSS/image SHA-256 set, requires WebGL2 with a named hardware renderer, records visibility/focus/orientation across the full course, measures one-second windows around ordinary cell transitions, enforces at least 120 seconds at 30.00 FPS, and deletes only its newly created save slot afterward.
 
-Set `HEATLINE_ANDROID_CLEAR_ORIGIN=1` only on a dedicated test profile when all three save slots are occupied; it clears HEATLINE's origin storage before measuring. A passing physical run retains the serial-free JSON record under `evidence/performance/android/`. `HEATLINE_ALLOW_EMULATOR=1` exists solely to validate the runner infrastructure and can never produce accepted hardware evidence.
+Set `HEATLINE_ANDROID_CLEAR_ORIGIN=1` only on a dedicated test profile when all three save slots are occupied; it clears HEATLINE's origin storage before measuring. A passing optional physical run retains the serial-free JSON record under `evidence/performance/android/`. `HEATLINE_ALLOW_EMULATOR=1` exists solely to validate the runner infrastructure and can never produce accepted hardware evidence.
 
 Production preview:
 
