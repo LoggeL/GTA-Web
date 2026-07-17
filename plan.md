@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-17 08:02 CEST
-Plan status: Active  
-Current focus: pass the v1.0.0 cross-browser release gates, publish the verified source through GitHub Pages, and complete live desktop/mobile acceptance
+Last updated: 2026-07-17 08:18 CEST
+Plan status: Complete
+Current focus: Complete — v1.0.0 is published, tagged, and live-verified on desktop and the required mobile viewport
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -289,7 +289,7 @@ Acceptance: generated assets are local and credited in the progress log; audio u
 
 Completion evidence: all three stations and nine authored procedural tracks now share one authoritative catalog, advance automatically, retain station/track state across vehicle entry/exit, and expose desktop/touch controls plus persistent HUD text. The independent master/music/SFX/UI/ambience mixer, explicit user-gesture unlock, suspend/resume lifecycle, five bounded long-lived world voices, and procedural engine/rain/city/siren/UI/weapon/impact/pickup/cash/dialogue cues are integrated without per-frame allocation growth. Deterministic speed/impact camera shake obeys its independent intensity and exact zero/Reduced Motion gates. The generated 1200×630 social card, canonical/Open Graph/Twitter metadata, favicon, signature/dimension/reference checks, semantic meters/live regions, modal focus trap/inert/return behavior, visible focus, UI/subtitle scaling, high contrast, safe areas, touch-only Pause/Jobs/Map/Inventory/Settings routes, compact 667×375 objective, 44 px targets, and portrait input/audio pause all passed. `npm run check` passed 77 test files / 497 Vitest tests plus 5 release tests; focused M7 Playwright passed 4 applicable scenarios / 2 intentional skips; the complete resource-bounded Chromium matrix passed 27 applicable scenarios / 19 intentional device skips. The production artifact is 1.47 MiB total / 0.65 MiB compressed.
 
-### M8 — Persistence, QA, optimization, and release — `IN PROGRESS`
+### M8 — Persistence, QA, optimization, and release — `COMPLETE`
 
 - [x] Harden the save core with serialized per-slot writes, atomic active/last-known-good rotation, checksummed emergency exports, migrations, structured storage/read errors, and future-version preservation.
 - [x] Present truthful three-slot states and real save previews in the UI: empty, ready, recovered, corrupt, and unsupported-version saves must expose only safe actions; unknown state after a transient read failure is locked with no actions.
@@ -300,7 +300,7 @@ Completion evidence: all three stations and nine authored procedural tracks now 
 - [x] Add cross-browser release jobs, production asset/metadata/bundle gates, bounded performance instrumentation, and WebGL context loss/recovery coverage.
 - [x] Complete persistence unit/UI/e2e coverage for import/export, backup recovery, corruption, future-version, quota, and IndexedDB-unavailable cases.
 - [x] Pass the complete unit/integration/browser matrix, declared 60/30 FPS acceptance, a 20-minute desktop/mobile soak, memory/pool bounds, and the final copy/content/accessibility audit.
-- [ ] Publish the passing Final build through GitHub Pages, verify the exact live assets and desktop/mobile gameplay, record the final evidence here, and tag the verified source commit.
+- [x] Publish the passing Final build through GitHub Pages, verify the exact live assets and desktop/mobile gameplay, record the final evidence here, and tag the verified source commit.
 
 Acceptance: all checks below pass, deployment workflow is green, live GitHub Pages playthrough reaches gameplay on desktop and mobile viewport, assets stream under the repository base path, and the final URL is recorded here.
 
@@ -368,16 +368,17 @@ Acceptance: all checks below pass, deployment workflow is green, live GitHub Pag
 | 2026-07-16 23:53 | M8 soak audit | Completed the first full 20-minute desktop adjacent-driving course. The game met its sustained and transition targets: 77,638 measured frames, 64.70 FPS average, p95 18.2 ms, three adjacent-cell transitions with a 26.1 ms maximum, bounded actor/audio pools, and stable heap/residency. One unrelated 266.5 ms host-scheduler stall inside a 137 MB Playwright screenshot trace exposed that the harness incorrectly applied the plan's 250 ms chunk-transition limit to every host animation callback. The global maximum remains recorded diagnostically; average/p95 remain release gates; the strict 250 ms assertion remains on real adjacent-cell transitions. Performance-mode tracing is now disabled to avoid recorder-induced measurement stalls. | The first desktop soak is evidence-bearing but not accepted as the final gate because the corrected harness must be rerun from the start. Typecheck and lint pass after the harness correction. Short-matrix and complete desktop/mobile soak reruns await explicit permission for the local preview server after sandbox escalation was denied. M8 remains `IN PROGRESS`; no final version or tag has been cut. |
 | 2026-07-17 07:59 | M8 final soak | Accepted the corrected performance harness and closed the final technical M8 gate. The short desktop/mobile realistic-travel plus far-teleport matrix passed 4/4 in 2.8 minutes. The complete serial soak then passed 4/4 in 41.8 minutes: desktop adjacent driving 20.2 minutes, desktop far-teleport/heap stress 41.2 seconds, mobile adjacent driving 20.2 minutes, and mobile far-teleport/heap stress 41.3 seconds. Both long courses retained the declared 60/30 acceptance, real adjacent-transition bound, and actor/audio/residency/heap assertions without trace-recorder interference. | Post-correction `npm run check`: 83/83 files and 525/525 Vitest tests plus 5/5 release tests, typecheck, lint, production build, asset graph, and 1.49 MiB / 0.66 MiB budget green. M8's matrix/soak/audit checkbox is complete; only the v1.0.0 cross-browser release deployment, exact live-asset verification, desktop/mobile playthrough, and verified source tag remain. |
 | 2026-07-17 08:02 | v1.0.0 local release gate | Set the root package and lockfile metadata to `1.0.0`, converted README preview copy to the current release, and passed the entire final local gate on that exact source. | `npm run check`: 83/83 files, 525/525 Vitest tests, 5/5 release tests, typecheck, lint, production build, source/dist asset graph, 1.49 MiB artifact and 0.66 MiB compressed shell; Chromium desktop/mobile: 35 passed / 27 intentional device skips / 0 failures; Firefox: 1/1; WebKit: 1/1. Canonical sync, source commit, Pages workflow, live acceptance, and verified tag are next. |
+| 2026-07-17 08:18 | Final v1.0.0 / M8 complete | Published the exact passing source, watched every Pages job complete, reached the live splash/menu/three-slot save screen and continued slot 2 into rendered gameplay, then published the annotated `v1.0.0` tag at the verified source SHA. Live desktop used hardware/high rendering with a 2560×1440 canvas, nine resident cells, 24 traffic actors and 45 pedestrians; the 1280×720 HUD and objective were fully bounded. Live 844×390 gameplay retained exactly 844 px scroll width with no overflow, a bounded 422×98 px objective card, low mobile quality, 10 traffic actors and 18 pedestrians. Final touch controls and portrait pause/recovery are covered by the green mobile release matrix. The production browser reported zero warning/error logs throughout the desktop and mobile viewport courses. | Source `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`; annotated tag `v1.0.0`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29559022071); [live v1.0.0](https://loggel.github.io/GTA-Web/?release=v1.0.0); deployed JS `index-DIZf55Ac.js`, Three.js `three-DUbjvPP5.js`, CSS `index-cuUGOPjv.css`, splash `heatline-splash.webp`, canonical social card `heatline-solara-social.jpg`; 1.49 MiB artifact / 0.66 MiB compressed shell. M8 and the implementation plan are complete. |
 
 ## Release record
 
 - Repository: `https://github.com/LoggeL/GTA-Web`
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
-- Current preview: M8 Preview 1 (`m8-preview-1`)
-- Release commit: `c619c8cff7b037f649205817e523093baf80d96c`
-- Deployment workflow: [GitHub Pages run 29535717138 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29535717138)
+- Current release: Final v1.0.0 (`v1.0.0`)
+- Release commit: `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`
+- Deployment workflow: [GitHub Pages run 29559022071 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29559022071)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.66 MiB at M8 Preview 1 gate
-- Published artifact size: 1.49 MiB at M8 Preview 1 gate
+- Current compressed shell: 0.66 MiB at v1.0.0 gate
+- Published artifact size: 1.49 MiB at v1.0.0 gate
 - Latest `npm run check`: v1.0.0 source passed with 83 files / 525 Vitest tests plus 5 release tests, typecheck, lint, build, source/dist asset graph, and bundle budget
-- Latest browser smoke test: Final v1.0.0 Chromium desktop/mobile matrix passed 35 applicable scenarios with 27 intentional device skips and 0 failures; Firefox and WebKit passed 1/1 each. The corrected performance matrix passed 4/4 in 2.8 minutes and the complete desktop/mobile soak passed 4/4 in 41.8 minutes. The previous live M8 desktop and 844×390 verification passed with exact JS/Three.js/CSS assets, hardware WebGL, and zero console warnings/errors; final v1.0.0 deployment and live verification remain pending.
+- Latest browser smoke test: Final v1.0.0 Chromium desktop/mobile matrix passed 35 applicable scenarios with 27 intentional device skips and 0 failures; Firefox and WebKit passed 1/1 each. The corrected performance matrix passed 4/4 in 2.8 minutes and the complete desktop/mobile soak passed 4/4 in 41.8 minutes. Live v1.0.0 desktop and 844×390 gameplay passed with exact repository-base JS/Three.js/CSS/image assets, bounded HUD/objective geometry, hardware WebGL on desktop, adaptive low quality at the mobile viewport, and zero console warnings/errors.
