@@ -18,6 +18,7 @@ import type {
   EnemyDamageEvent,
   PlayerDamageEvent,
   SimulationQuality,
+  SimulationVisualCapabilities,
   SimulationVec3,
   TrafficVehicleSnapshot,
   WeaponFireResult,
@@ -106,10 +107,13 @@ export class CitySimulation {
     }
   }
 
-  public attach(scene: Scene): void {
+  public attach(
+    scene: Scene,
+    capabilities?: Readonly<SimulationVisualCapabilities>,
+  ): void {
     this.assertAlive();
     this.detach();
-    this.visuals = new SimulationVisualLayer(scene);
+    this.visuals = new SimulationVisualLayer(scene, capabilities);
     this.visuals.update(this.getSnapshot());
     this.visualUpdateElapsed = 0;
   }
@@ -151,6 +155,29 @@ export class CitySimulation {
   public tick(context: CitySimulationTick): CitySimulationTickResult {
     this.assertAlive();
     const dt = Math.min(0.1, Math.max(0, context.deltaSeconds));
+    const weaponFire = this.advanceState(context, dt);
+    const snapshot = this.getSnapshot();
+    this.updateVisuals(dt, snapshot);
+    return { snapshot, weaponFire };
+  }
+
+  /**
+   * Advances the simulation without materializing a public snapshot unless the
+   * attached visual layer is due for one. Runtime callers that do not consume
+   * the per-frame snapshot should prefer this path.
+   */
+  public advance(context: CitySimulationTick): WeaponFireResult | null {
+    this.assertAlive();
+    const dt = Math.min(0.1, Math.max(0, context.deltaSeconds));
+    const weaponFire = this.advanceState(context, dt);
+    this.updateVisuals(dt);
+    return weaponFire;
+  }
+
+  private advanceState(
+    context: Readonly<CitySimulationTick>,
+    dt: number,
+  ): WeaponFireResult | null {
     this.simulationTime += dt;
     stepWeaponRuntime(this.weaponRuntime, dt);
     const input = context.input;
@@ -166,6 +193,7 @@ export class CitySimulation {
 
     this.traffic.tick({
       deltaSeconds: dt,
+      playerPosition: context.playerPosition,
       sirenPosition: input?.sirenActive ? context.playerPosition : null,
       sirenRadius: 24,
       obstructions: context.obstructions ?? [],
@@ -196,10 +224,9 @@ export class CitySimulation {
     this.combat.drainActions();
     this.pedestrians.tick(dt, this.simulationTime, {
       obstacles: context.obstructions ?? [],
+      playerPosition: context.playerPosition,
     });
-    const snapshot = this.getSnapshot();
-    this.updateVisuals(snapshot, dt);
-    return { snapshot, weaponFire };
+    return weaponFire;
   }
 
   public fireWeapon(
@@ -432,10 +459,13 @@ export class CitySimulation {
     }));
   }
 
-  private updateVisuals(snapshot: Readonly<CitySimulationSnapshot>, deltaSeconds: number): void {
+  private updateVisuals(
+    deltaSeconds: number,
+    snapshot?: Readonly<CitySimulationSnapshot>,
+  ): void {
     if (!this.visuals) return;
     if (this.quality === 'high') {
-      this.visuals.update(snapshot);
+      this.visuals.update(snapshot ?? this.getSnapshot());
       return;
     }
 
@@ -443,6 +473,6 @@ export class CitySimulation {
     const interval = CitySimulation.LOW_QUALITY_VISUAL_INTERVAL_SECONDS;
     if (this.visualUpdateElapsed + Number.EPSILON < interval) return;
     this.visualUpdateElapsed %= interval;
-    this.visuals.update(snapshot);
+    this.visuals.update(snapshot ?? this.getSnapshot());
   }
 }

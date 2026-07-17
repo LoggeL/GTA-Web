@@ -1,3 +1,4 @@
+import { solaraDistrictAt } from '../core/districts';
 import { COLLECTIBLES, COLLECTIBLE_SETS } from './collectibles';
 import { ACTIVITIES, PROPERTIES } from './economy';
 import { ITEMS, RECIPES, WEAPONS } from './items';
@@ -344,6 +345,18 @@ function validateMissionContent(issues: RegistryValidationIssue[]): void {
         !Number.isFinite(missionCheckpoint.respawn.z)
       ) {
         addIssue(issues, 'missions', `${missionCheckpoint.id}.respawn`, 'Checkpoint coordinates must be finite.');
+      } else if (
+        solaraDistrictAt(
+          missionCheckpoint.respawn.x,
+          missionCheckpoint.respawn.z,
+        ) !== missionCheckpoint.respawn.district
+      ) {
+        addIssue(
+          issues,
+          'missions',
+          `${missionCheckpoint.id}.respawn.district`,
+          'Checkpoint coordinates must occupy the declared canonical district.',
+        );
       }
     }
 
@@ -677,12 +690,35 @@ function validateCollectibles(issues: RegistryValidationIssue[]): void {
       addIssue(issues, 'collectibleSets', set.category, 'Completion rewards and unlock flag must be populated.');
     }
   }
+  const occupiedPositions = new Set<string>();
   for (const collectible of COLLECTIBLES) {
     if (collectible.position.district !== collectible.district) {
       addIssue(issues, 'collectibles', collectible.id, 'Position and collectible districts must match.');
     }
     if (!Number.isFinite(collectible.position.x) || !Number.isFinite(collectible.position.z)) {
       addIssue(issues, 'collectibles', collectible.id, 'Collectible position must be finite.');
+    } else {
+      if (
+        solaraDistrictAt(collectible.position.x, collectible.position.z)
+        !== collectible.district
+      ) {
+        addIssue(
+          issues,
+          'collectibles',
+          `${collectible.id}.position.district`,
+          'Collectible coordinates must occupy the declared canonical district.',
+        );
+      }
+      const positionKey = `${collectible.position.x}:${collectible.position.z}`;
+      if (occupiedPositions.has(positionKey)) {
+        addIssue(
+          issues,
+          'collectibles',
+          `${collectible.id}.position`,
+          'Collectible positions must be unique.',
+        );
+      }
+      occupiedPositions.add(positionKey);
     }
     if (collectible.revealRule !== expectedRules[collectible.category]) {
       addIssue(issues, 'collectibles', `${collectible.id}.revealRule`, 'Reveal rule does not match the collectible category.');

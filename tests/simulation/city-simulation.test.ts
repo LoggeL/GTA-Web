@@ -1,4 +1,4 @@
-import { Scene } from 'three';
+import { InstancedMesh, Scene } from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { CitySimulation } from '../../src/simulation/CitySimulation';
@@ -13,14 +13,14 @@ describe('CitySimulation integration surface', () => {
     const first = new CitySimulation({ seed: 'city-seed', quality: 'low' });
     const second = new CitySimulation({ seed: 'city-seed', quality: 'low' });
     expect(first.getSnapshot()).toEqual(second.getSnapshot());
-    expect(first.getSnapshot().traffic).toHaveLength(10);
-    expect(first.getSnapshot().pedestrians).toHaveLength(18);
+    expect(first.getSnapshot().traffic).toHaveLength(18);
+    expect(first.getSnapshot().pedestrians).toHaveLength(30);
     expect(first.getSnapshot().combatants).toHaveLength(5);
     expect(() => JSON.parse(JSON.stringify(first.getSnapshot())) as unknown).not.toThrow();
 
     first.setQuality('high');
-    expect(first.getSnapshot().traffic).toHaveLength(24);
-    expect(first.getSnapshot().pedestrians).toHaveLength(45);
+    expect(first.getSnapshot().traffic).toHaveLength(42);
+    expect(first.getSnapshot().pedestrians).toHaveLength(72);
     first.dispose();
     second.dispose();
   });
@@ -41,11 +41,11 @@ describe('CitySimulation integration surface', () => {
     }
 
     const full = simulation.getSnapshot();
-    expect(full.actorLimits).toEqual({ traffic: 24, pedestrians: 45, combat: 20 });
-    expect(full.poolCapacity).toEqual({ traffic: 24, pedestrians: 45, combatants: 20 });
+    expect(full.actorLimits).toEqual({ traffic: 42, pedestrians: 72, combat: 20 });
+    expect(full.poolCapacity).toEqual({ traffic: 42, pedestrians: 72, combatants: 20 });
     expect([full.traffic.length, full.pedestrians.length, full.combatants.length]).toEqual([
-      24,
-      45,
+      42,
+      72,
       20,
     ]);
 
@@ -63,8 +63,8 @@ describe('CitySimulation integration surface', () => {
 
     simulation.setQuality('low');
     expect(simulation.getSnapshot().actorLimits).toEqual({
-      traffic: 10,
-      pedestrians: 18,
+      traffic: 18,
+      pedestrians: 30,
       combat: 8,
     });
     simulation.setQuality('high');
@@ -86,7 +86,7 @@ describe('CitySimulation integration surface', () => {
       10,
     ]);
 
-    expect(simulation.setActorLimits({ traffic: 24, pedestrians: 45, combat: 20 })).toEqual(
+    expect(simulation.setActorLimits({ traffic: 42, pedestrians: 72, combat: 20 })).toEqual(
       full.actorLimits,
     );
     const restored = simulation.getSnapshot();
@@ -137,6 +137,36 @@ describe('CitySimulation integration surface', () => {
     simulation.dispose();
   });
 
+  it('keeps tick and snapshot-free advance simulation and weapon results identical', () => {
+    const tickSimulation = new CitySimulation({
+      seed: 'advance-contract',
+      quality: 'low',
+    });
+    const advanceSimulation = new CitySimulation({
+      seed: 'advance-contract',
+      quality: 'low',
+    });
+    const context = {
+      deltaSeconds: 1 / 60,
+      playerPosition: { x: 0, y: 0, z: 0 },
+      playerHeading: -Math.PI / 2,
+      input: {
+        fire: true,
+        weapon: 'pistol' as const,
+        aimDirection: { x: 1, y: 0, z: 0 },
+        threatening: true,
+      },
+    };
+
+    const tickResult = tickSimulation.tick(context);
+    const advanceWeaponFire = advanceSimulation.advance(context);
+
+    expect(advanceWeaponFire).toEqual(tickResult.weaponFire);
+    expect(advanceSimulation.getSnapshot()).toEqual(tickResult.snapshot);
+    tickSimulation.dispose();
+    advanceSimulation.dispose();
+  });
+
   it('resolves a crouch-context stealth takedown only within unaware range', () => {
     const crimes: CrimeEvent[] = [];
     const simulation = new CitySimulation({
@@ -177,7 +207,7 @@ describe('CitySimulation integration surface', () => {
     const target = simulation.getSnapshot().traffic[0];
     if (!target) throw new Error('Missing traffic vehicle');
     expect(simulation.claimTrafficVehicle(target.id)).toEqual(target);
-    expect(simulation.getSnapshot().traffic).toHaveLength(10);
+    expect(simulation.getSnapshot().traffic).toHaveLength(18);
     expect(crimes.at(-1)).toMatchObject({ kind: 'vehicle-theft', sourceId: 'player' });
     simulation.dispose();
   });
@@ -215,10 +245,22 @@ describe('CitySimulation integration surface', () => {
     const scene = new Scene();
     const simulation = new CitySimulation({ seed: 'visuals', quality: 'low' });
     simulation.attach(scene);
-    expect(scene.getObjectByName('city-simulation-visuals')).toBeDefined();
+    const fallbackRoot = scene.getObjectByName('city-simulation-visuals');
+    expect(fallbackRoot).toBeDefined();
+    expect(fallbackRoot?.children.filter((child) => child instanceof InstancedMesh))
+      .toHaveLength(24);
+    expect(fallbackRoot?.children.filter((child) => (
+      child.visible && child.name.startsWith('low-quality-')
+    ))).toHaveLength(1);
     simulation.detach();
     expect(scene.getObjectByName('city-simulation-visuals')).toBeUndefined();
-    simulation.attach(scene);
+    simulation.attach(scene, { supportsMultiDraw: true });
+    const optimizedRoot = scene.getObjectByName('city-simulation-visuals');
+    expect(optimizedRoot?.children.filter((child) => child instanceof InstancedMesh))
+      .toHaveLength(24);
+    expect(optimizedRoot?.children.filter((child) => (
+      child.visible && child.name.startsWith('low-quality-')
+    ))).toHaveLength(1);
     simulation.dispose();
     expect(scene.getObjectByName('city-simulation-visuals')).toBeUndefined();
     expect(() => simulation.tick({

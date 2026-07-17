@@ -4,19 +4,22 @@ import {
   Color,
   ConeGeometry,
   CylinderGeometry,
+  DynamicDrawUsage,
   Float32BufferAttribute,
   Group,
   IcosahedronGeometry,
   InstancedMesh,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshLambertMaterial,
   MeshStandardMaterial,
   Object3D,
   PlaneGeometry,
   Points,
   PointsMaterial,
 } from 'three';
-import type { Matrix4 } from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import type { VehicleClassId } from '../data/types';
 import { cellIdAt, parseCellId } from '../navigation/cells';
@@ -65,7 +68,8 @@ export interface CityVisualStreamingSnapshot {
 export interface CityVisualBundle {
   root: Group;
   buildingMaterials: readonly MeshStandardMaterial[];
-  roadMaterial: MeshStandardMaterial;
+  roadMaterial: MeshStandardMaterial | MeshLambertMaterial;
+  setRoadColor: (color: Readonly<Color>) => void;
   applyStreamingState: (
     renderableActiveCellIds: readonly CellId[],
     residentCellIds: readonly CellId[],
@@ -74,9 +78,33 @@ export interface CityVisualBundle {
   dispose: () => void;
 }
 
+export interface VisualRenderCapabilities {
+  readonly supportsMultiDraw: boolean;
+}
+
+export interface VehicleVisualOptions extends VisualRenderCapabilities {
+  readonly quality: WorldQuality;
+}
+
+const DEFAULT_VISUAL_RENDER_CAPABILITIES: Readonly<VisualRenderCapabilities> = Object.freeze({
+  supportsMultiDraw: false,
+});
+
+const DEFAULT_VEHICLE_VISUAL_OPTIONS: Readonly<VehicleVisualOptions> = Object.freeze({
+  quality: 'high',
+  supportsMultiDraw: false,
+});
+
+type CityDisposableMaterial =
+  | MeshStandardMaterial
+  | MeshLambertMaterial
+  | MeshBasicMaterial;
+
 interface DensityMeshRecord {
   readonly mesh: InstancedMesh;
   readonly capacity: number;
+  /** Instances that form one complete density unit (for example one detailed building). */
+  readonly instancesPerDensityUnit: number;
   readonly shadowCaster: boolean;
   readonly shadowKey: string;
 }
@@ -89,6 +117,53 @@ interface CityCellVisualPayload {
   readonly traversal: DensityMeshRecord[];
 }
 
+interface CityBuildingVisualBatches {
+  readonly solids: readonly InstancedMesh[];
+  readonly facades: InstancedMesh;
+  readonly lowQuality: readonly LowBuildingCellBatch[] | null;
+  readonly lowQualityRoot: Group | null;
+  readonly lowSharedBatch: LowSharedSurfaceBatch | null;
+  readonly quality: WorldQuality;
+  readonly dummy: Object3D;
+}
+
+interface LowBuildingCellBatch {
+  readonly cellId: CellId;
+  readonly mesh: InstancedMesh;
+  readonly buildingCount: number;
+}
+
+type CityPropBatchKind =
+  | 'boxes'
+  | 'accents'
+  | 'stems'
+  | 'foliage'
+  | 'lights'
+  | 'sculptures';
+
+interface CityPropVisualBatches {
+  readonly boxes: InstancedMesh;
+  readonly accents: InstancedMesh;
+  readonly stems: InstancedMesh;
+  readonly foliage: InstancedMesh;
+  readonly lights: InstancedMesh;
+  readonly sculptures: InstancedMesh;
+  readonly merged: Mesh | null;
+  readonly mergedSources: BufferGeometry[];
+  readonly quality: WorldQuality;
+  readonly matrix: Matrix4;
+  readonly color: Color;
+}
+
+interface CityPropBatchCounts {
+  boxes: number;
+  accents: number;
+  stems: number;
+  foliage: number;
+  lights: number;
+  sculptures: number;
+}
+
 interface CityCellVisualRecipes {
   readonly buildings: readonly BuildingRecipe[];
   readonly props: readonly PropRecipe[];
@@ -98,6 +173,11 @@ interface CityCellVisualRecipes {
 interface CityVisualSharedResources {
   readonly buildingGeometry: BufferGeometry;
   readonly buildingMaterials: readonly MeshStandardMaterial[];
+  readonly facadeGeometry: BufferGeometry;
+  readonly facadeMaterial: MeshStandardMaterial;
+  readonly accentMaterial: MeshStandardMaterial;
+  readonly streetDetailGeometry: BufferGeometry;
+  readonly streetDetailMaterial: MeshStandardMaterial;
   readonly stemGeometry: BufferGeometry;
   readonly stemMaterial: MeshStandardMaterial;
   readonly foliageGeometry: BufferGeometry;
@@ -108,6 +188,71 @@ interface CityVisualSharedResources {
   readonly containerMaterial: MeshStandardMaterial;
   readonly traversalGeometry: BufferGeometry;
   readonly traversalMaterial: MeshStandardMaterial;
+}
+
+interface LowSharedSurfaceBatch {
+  readonly surfaceMesh: InstancedMesh;
+  readonly buildingGeometry: BufferGeometry;
+  readonly buildingMaterial: MeshLambertMaterial;
+  readonly dummy: Object3D;
+  readonly color: Color;
+  readonly fixedInstanceCount: number;
+  readonly roadStartIndex: number;
+  readonly roadInstanceCount: number;
+  readonly sidewalkStartIndex: number;
+  readonly groundStartIndex: number;
+  readonly fixedMatrices: Array<Matrix4 | undefined>;
+  readonly fixedColors: Array<Color | undefined>;
+  writtenFixedInstances: number;
+}
+
+class AliasedInstancedMesh extends InstancedMesh {
+  public constructor(
+    geometry: BufferGeometry,
+    material: CityDisposableMaterial,
+    count: number,
+    private readonly lookupAliases: readonly string[],
+  ) {
+    super(geometry, material, count);
+  }
+
+  public override getObjectByProperty(
+    name: string,
+    value: unknown,
+  ): Object3D | undefined {
+    if (
+      name === 'name'
+      && typeof value === 'string'
+      && this.lookupAliases.includes(value)
+    ) {
+      return this;
+    }
+    return super.getObjectByProperty(name, value);
+  }
+}
+
+class AliasedMesh extends Mesh<BufferGeometry, MeshLambertMaterial> {
+  public constructor(
+    geometry: BufferGeometry,
+    material: MeshLambertMaterial,
+    private readonly lookupAliases: readonly string[],
+  ) {
+    super(geometry, material);
+  }
+
+  public override getObjectByProperty(
+    name: string,
+    value: unknown,
+  ): Object3D | undefined {
+    if (
+      name === 'name'
+      && typeof value === 'string'
+      && this.lookupAliases.includes(value)
+    ) {
+      return this;
+    }
+    return super.getObjectByProperty(name, value);
+  }
 }
 
 function composeMatrix(
@@ -127,8 +272,149 @@ function composeMatrix(
   return target.matrix;
 }
 
-function createDistrictGrounds(root: Group, geometries: BufferGeometry[], materials: MeshStandardMaterial[]): void {
-  for (const district of DISTRICTS) {
+function composeEulerMatrix(
+  target: Object3D,
+  position: readonly [number, number, number],
+  rotation: readonly [number, number, number],
+  scale: readonly [number, number, number],
+): Matrix4 {
+  target.position.set(...position);
+  target.rotation.set(...rotation);
+  target.scale.set(...scale);
+  target.updateMatrix();
+  return target.matrix;
+}
+
+function createLowSharedSurfaceBatch(
+  root: Group,
+  layout: Readonly<CityLayout>,
+  geometries: BufferGeometry[],
+  materials: CityDisposableMaterial[],
+): LowSharedSurfaceBatch {
+  const buildingGeometry = new BoxGeometry(1, 1, 1);
+  const buildingMaterial = new MeshLambertMaterial({
+    color: 0xffffff,
+  });
+  const surfaceGeometry = new PlaneGeometry(1, 1, 1, 1).rotateX(-Math.PI / 2);
+  const surfaceMaterial = new MeshBasicMaterial({
+    color: 0xffffff,
+    toneMapped: true,
+  });
+  const roadStartIndex = 0;
+  const roadInstanceCount = layout.roads.length;
+  const sidewalkStartIndex = roadInstanceCount;
+  const groundStartIndex = roadInstanceCount + layout.roads.length * 2;
+  const fixedInstanceCount = groundStartIndex + DISTRICTS.length;
+  const surfaceMesh = new AliasedInstancedMesh(
+    surfaceGeometry,
+    surfaceMaterial,
+    fixedInstanceCount,
+    ['city-sidewalks', 'city-roads'],
+  );
+  // The fixed ground network keeps its exact authored top surfaces while
+  // dropping the hidden undersides and tiny vertical walls of the former
+  // boxes. Buildings render first through conservative cell clusters so their
+  // depth rejects covered ground fragments early.
+  surfaceMesh.name = 'city-surfaces-low-quality';
+  surfaceMesh.userData.fixedInstanceCount = fixedInstanceCount;
+  surfaceMesh.userData.roadStartIndex = roadStartIndex;
+  surfaceMesh.userData.roadInstanceCount = roadInstanceCount;
+  surfaceMesh.userData.sidewalkStartIndex = sidewalkStartIndex;
+  surfaceMesh.userData.groundStartIndex = groundStartIndex;
+  surfaceMesh.count = 0;
+  surfaceMesh.frustumCulled = false;
+  surfaceMesh.renderOrder = -1;
+  surfaceMesh.receiveShadow = false;
+  root.add(surfaceMesh);
+  geometries.push(buildingGeometry, surfaceGeometry);
+  materials.push(buildingMaterial, surfaceMaterial);
+  return {
+    surfaceMesh,
+    buildingGeometry,
+    buildingMaterial,
+    dummy: new Object3D(),
+    color: new Color(),
+    fixedInstanceCount,
+    roadStartIndex,
+    roadInstanceCount,
+    sidewalkStartIndex,
+    groundStartIndex,
+    fixedMatrices: new Array<Matrix4 | undefined>(fixedInstanceCount),
+    fixedColors: new Array<Color | undefined>(fixedInstanceCount),
+    writtenFixedInstances: 0,
+  };
+}
+
+function setLowFixedInstance(
+  sharedSurfaces: LowSharedSurfaceBatch,
+  index: number,
+  matrix: Readonly<Matrix4>,
+  color: Readonly<Color>,
+): void {
+  let storedMatrix = sharedSurfaces.fixedMatrices[index];
+  let storedColor = sharedSurfaces.fixedColors[index];
+  if (!storedMatrix || !storedColor) {
+    storedMatrix = new Matrix4();
+    storedColor = new Color();
+    sharedSurfaces.fixedMatrices[index] = storedMatrix;
+    sharedSurfaces.fixedColors[index] = storedColor;
+    sharedSurfaces.writtenFixedInstances += 1;
+  }
+  storedMatrix.copy(matrix);
+  storedColor.copy(color);
+}
+
+function commitLowFixedInstances(sharedSurfaces: LowSharedSurfaceBatch): void {
+  if (sharedSurfaces.writtenFixedInstances !== sharedSurfaces.fixedInstanceCount) {
+    throw new Error('Low-quality shared city batch was not filled exactly');
+  }
+  for (let index = 0; index < sharedSurfaces.fixedInstanceCount; index += 1) {
+    const matrix = sharedSurfaces.fixedMatrices[index];
+    const color = sharedSurfaces.fixedColors[index];
+    if (!matrix || !color) {
+      throw new Error(`Missing low-quality fixed city instance ${index}`);
+    }
+    sharedSurfaces.surfaceMesh.setMatrixAt(index, matrix);
+    sharedSurfaces.surfaceMesh.setColorAt(index, color);
+  }
+  sharedSurfaces.surfaceMesh.count = sharedSurfaces.fixedInstanceCount;
+  sharedSurfaces.surfaceMesh.visible = true;
+  finalizeInstances(sharedSurfaces.surfaceMesh);
+}
+
+function createDistrictGrounds(
+  root: Group,
+  geometries: BufferGeometry[],
+  materials: CityDisposableMaterial[],
+  sharedSurfaces: LowSharedSurfaceBatch | null,
+  quality: WorldQuality,
+): void {
+  DISTRICTS.forEach((district, districtIndex) => {
+    const x = (district.minX + district.maxX) / 2;
+    const z = (district.minZ + district.maxZ) / 2;
+    if (sharedSurfaces) {
+      const anchor = new Object3D();
+      anchor.name = `city-ground:${district.id}`;
+      anchor.position.set(x, -0.08, z);
+      anchor.scale.set(DISTRICT_SIZE, 0.12, DISTRICT_SIZE);
+      anchor.userData.groundColor = district.groundColor;
+      root.add(anchor);
+      setLowFixedInstance(
+        sharedSurfaces,
+        sharedSurfaces.groundStartIndex + districtIndex,
+        composeMatrix(
+          sharedSurfaces.dummy,
+          x,
+          -0.02,
+          z,
+          DISTRICT_SIZE,
+          1,
+          DISTRICT_SIZE,
+        ),
+        sharedSurfaces.color.setHex(district.groundColor),
+      );
+      return;
+    }
     const geometry = new BoxGeometry(DISTRICT_SIZE, 0.12, DISTRICT_SIZE);
     const material = new MeshStandardMaterial({
       color: district.groundColor,
@@ -137,25 +423,27 @@ function createDistrictGrounds(root: Group, geometries: BufferGeometry[], materi
     });
     const ground = new Mesh(geometry, material);
     ground.name = `city-ground:${district.id}`;
-    ground.position.set(
-      (district.minX + district.maxX) / 2,
-      -0.08,
-      (district.minZ + district.maxZ) / 2,
-    );
+    ground.position.set(x, -0.08, z);
     ground.receiveShadow = true;
     root.add(ground);
     geometries.push(geometry);
     materials.push(material);
-  }
+  });
 
   const oceanGeometry = new PlaneGeometry(300, 1_300, 1, 1);
-  const oceanMaterial = new MeshStandardMaterial({
-    color: 0x197c9b,
-    roughness: 0.25,
-    metalness: 0.05,
-    transparent: true,
-    opacity: 0.9,
-  });
+  const oceanMaterial = quality === 'low'
+    ? new MeshLambertMaterial({
+      color: 0x197c9b,
+      transparent: true,
+      opacity: 0.9,
+    })
+    : new MeshStandardMaterial({
+      color: 0x197c9b,
+      roughness: 0.25,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.9,
+    });
   const ocean = new Mesh(oceanGeometry, oceanMaterial);
   ocean.name = 'city-ocean';
   ocean.rotation.x = -Math.PI / 2;
@@ -169,39 +457,85 @@ function createRoads(
   root: Group,
   layout: CityLayout,
   geometries: BufferGeometry[],
-  materials: MeshStandardMaterial[],
-): MeshStandardMaterial {
-  const geometry = new BoxGeometry(1, 1, 1);
-  const material = new MeshStandardMaterial({
-    color: 0x26313b,
-    roughness: 0.82,
-    metalness: 0.05,
-  });
-  const mesh = new InstancedMesh(geometry, material, layout.roads.length);
-  mesh.name = 'city-roads';
+  materials: CityDisposableMaterial[],
+  sharedSurfaces: LowSharedSurfaceBatch | null,
+): MeshStandardMaterial | MeshLambertMaterial {
+  const geometry = sharedSurfaces ? null : new BoxGeometry(1, 1, 1);
+  const material = layout.quality === 'low'
+    ? new MeshLambertMaterial({
+      color: 0x26313b,
+    })
+    : new MeshStandardMaterial({
+      color: 0x26313b,
+      roughness: 0.82,
+      metalness: 0.05,
+    });
+  const mesh = sharedSurfaces?.surfaceMesh ?? new InstancedMesh(
+    geometry!,
+    material,
+    layout.roads.length,
+  );
+  if (!sharedSurfaces) {
+    mesh.name = 'city-roads';
+  }
   const dummy = new Object3D();
   layout.roads.forEach((road, index) => {
-    mesh.setMatrixAt(
-      index,
-      composeMatrix(dummy, road.position.x, road.position.y, road.position.z, road.width, 0.1, road.depth),
-    );
+    const instanceIndex = (sharedSurfaces?.roadStartIndex ?? 0) + index;
+    if (sharedSurfaces) {
+      setLowFixedInstance(
+        sharedSurfaces,
+        instanceIndex,
+        composeMatrix(
+          dummy,
+          road.position.x,
+          road.position.y + 0.05,
+          road.position.z,
+          road.width,
+          1,
+          road.depth,
+        ),
+        sharedSurfaces.color.setHex(0x26313b),
+      );
+    } else {
+      mesh.setMatrixAt(
+        instanceIndex,
+        composeMatrix(
+          dummy,
+          road.position.x,
+          road.position.y,
+          road.position.z,
+          road.width,
+          0.1,
+          road.depth,
+        ),
+      );
+    }
   });
-  mesh.receiveShadow = true;
-  root.add(mesh);
-  geometries.push(geometry);
+  mesh.receiveShadow = !sharedSurfaces;
+  if (!sharedSurfaces && geometry) {
+    root.add(mesh);
+    geometries.push(geometry);
+  }
   materials.push(material);
 
   const markingCount = layout.roads.reduce((count, road) => {
     const length = Math.max(road.width, road.depth);
     return count + Math.floor(length / 28);
   }, 0);
-  const markingGeometry = new BoxGeometry(1, 1, 1);
-  const markingMaterial = new MeshStandardMaterial({
-    color: 0xffd66b,
-    emissive: 0x6d4817,
-    emissiveIntensity: 0.12,
-    roughness: 0.72,
-  });
+  const markingGeometry = layout.quality === 'low'
+    ? new PlaneGeometry(1, 1, 1, 1).rotateX(-Math.PI / 2)
+    : new BoxGeometry(1, 1, 1);
+  const markingMaterial = layout.quality === 'low'
+    ? new MeshBasicMaterial({
+      color: 0xffd66b,
+      toneMapped: true,
+    })
+    : new MeshStandardMaterial({
+      color: 0xffd66b,
+      emissive: 0x6d4817,
+      emissiveIntensity: 0.12,
+      roughness: 0.72,
+    });
   const markings = new InstancedMesh(markingGeometry, markingMaterial, markingCount);
   markings.name = 'city-road-markings';
   let markingIndex = 0;
@@ -223,6 +557,75 @@ function createRoads(
   root.add(markings);
   geometries.push(markingGeometry);
   materials.push(markingMaterial);
+
+  const sidewalkGeometry = sharedSurfaces ? null : new BoxGeometry(1, 1, 1);
+  const sidewalkMaterial = sharedSurfaces
+    ? null
+    : new MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.96,
+      metalness: 0,
+    });
+  const sidewalks = sharedSurfaces?.surfaceMesh ?? new InstancedMesh(
+    sidewalkGeometry!,
+    sidewalkMaterial!,
+    layout.roads.length * 2,
+  );
+  if (!sharedSurfaces) {
+    sidewalks.name = 'city-sidewalks';
+  }
+  let sidewalkIndex = 0;
+  const curbPalette: Readonly<Record<BuildingRecipe['district'], number>> = {
+    'neon-strand': 0xe4d7bd,
+    'alta-vista': 0x9faeb1,
+    'arroyo-heights': 0xd2b789,
+    breakwater: 0x89918a,
+  };
+  for (const road of layout.roads) {
+    const vertical = road.depth > road.width;
+    const curbOffset = (vertical ? road.width : road.depth) / 2 + 2.2;
+    for (const side of [-1, 1] as const) {
+      const x = road.position.x + (vertical ? side * curbOffset : 0);
+      const z = road.position.z + (vertical ? 0 : side * curbOffset);
+      const instanceIndex =
+        (sharedSurfaces?.sidewalkStartIndex ?? 0) + sidewalkIndex;
+      const matrix = composeMatrix(
+        dummy,
+        x,
+        sharedSurfaces ? 0.22 : 0.13,
+        z,
+        vertical ? 3.6 : road.width,
+        sharedSurfaces ? 1 : 0.18,
+        vertical ? road.depth : 3.6,
+      );
+      if (sharedSurfaces) {
+        setLowFixedInstance(
+          sharedSurfaces,
+          instanceIndex,
+          matrix,
+          sharedSurfaces.color.setHex(curbPalette[road.district]),
+        );
+      } else {
+        sidewalks.setMatrixAt(instanceIndex, matrix);
+        sidewalks.setColorAt(
+          instanceIndex,
+          new Color(curbPalette[road.district]),
+        );
+      }
+      sidewalkIndex += 1;
+    }
+  }
+  sidewalks.receiveShadow = !sharedSurfaces;
+  if (sharedSurfaces) {
+    commitLowFixedInstances(sharedSurfaces);
+  } else {
+    finalizeInstances(sidewalks);
+  }
+  if (!sharedSurfaces && sidewalkGeometry && sidewalkMaterial) {
+    root.add(sidewalks);
+    geometries.push(sidewalkGeometry);
+    materials.push(sidewalkMaterial);
+  }
   return material;
 }
 
@@ -284,7 +687,7 @@ function indexCellRecipes(layout: CityLayout): ReadonlyMap<CellId, CityCellVisua
 
 function createSharedResources(
   geometries: BufferGeometry[],
-  materials: MeshStandardMaterial[],
+  materials: CityDisposableMaterial[],
 ): CityVisualSharedResources {
   const buildingGeometry = new BoxGeometry(1, 1, 1);
   const buildingMaterials = DISTRICTS.map((district) =>
@@ -296,6 +699,27 @@ function createSharedResources(
       metalness: district.id === 'alta-vista' ? 0.18 : 0.04,
     }),
   );
+  const facadeGeometry = new BoxGeometry(1, 1, 1);
+  const facadeMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0x10283c,
+    emissiveIntensity: 0.34,
+    roughness: 0.34,
+    metalness: 0.22,
+  });
+  const accentMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0x281018,
+    emissiveIntensity: 0.28,
+    roughness: 0.62,
+    metalness: 0.06,
+  });
+  const streetDetailGeometry = new BoxGeometry(1, 1, 1);
+  const streetDetailMaterial = new MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.8,
+    metalness: 0.08,
+  });
   const stemGeometry = new CylinderGeometry(0.5, 0.68, 1, 6);
   const stemMaterial = new MeshStandardMaterial({
     color: 0xffffff,
@@ -325,6 +749,8 @@ function createSharedResources(
   });
   geometries.push(
     buildingGeometry,
+    facadeGeometry,
+    streetDetailGeometry,
     stemGeometry,
     foliageGeometry,
     lightGeometry,
@@ -333,6 +759,9 @@ function createSharedResources(
   );
   materials.push(
     ...buildingMaterials,
+    facadeMaterial,
+    accentMaterial,
+    streetDetailMaterial,
     stemMaterial,
     foliageMaterial,
     lightMaterial,
@@ -342,6 +771,11 @@ function createSharedResources(
   return {
     buildingGeometry,
     buildingMaterials,
+    facadeGeometry,
+    facadeMaterial,
+    accentMaterial,
+    streetDetailGeometry,
+    streetDetailMaterial,
     stemGeometry,
     stemMaterial,
     foliageGeometry,
@@ -374,69 +808,501 @@ function finalizeInstances(mesh: InstancedMesh): void {
   }
 }
 
+function setLowSharedRoadColor(
+  sharedSurfaces: LowSharedSurfaceBatch | null,
+  color: Readonly<Color>,
+): void {
+  if (!sharedSurfaces) {
+    return;
+  }
+  const endIndex = sharedSurfaces.roadStartIndex + sharedSurfaces.roadInstanceCount;
+  for (
+    let index = sharedSurfaces.roadStartIndex;
+    index < endIndex;
+    index += 1
+  ) {
+    const storedColor = sharedSurfaces.fixedColors[index];
+    if (!storedColor) {
+      throw new Error(`Missing low-quality road color ${index}`);
+    }
+    storedColor.copy(color);
+    sharedSurfaces.surfaceMesh.setColorAt(index, storedColor);
+  }
+  if (sharedSurfaces.surfaceMesh.instanceColor) {
+    sharedSurfaces.surfaceMesh.instanceColor.needsUpdate = true;
+  }
+}
+
 function recordDensityMesh(
   payload: CityCellVisualPayload,
   kind: 'structures' | 'props' | 'traversal',
   mesh: InstancedMesh,
   shadowCaster: boolean,
   shadowKey: string,
+  instancesPerDensityUnit = 1,
 ): void {
+  const capacity = mesh.count;
+  if (
+    !Number.isSafeInteger(instancesPerDensityUnit)
+    || instancesPerDensityUnit <= 0
+    || capacity % instancesPerDensityUnit !== 0
+  ) {
+    throw new RangeError('density unit size must evenly divide mesh capacity');
+  }
+  mesh.computeBoundingSphere();
   payload.root.add(mesh);
   payload[kind].push({
     mesh,
-    capacity: mesh.count,
+    capacity,
+    instancesPerDensityUnit,
     shadowCaster,
     shadowKey: `${payload.cellId}:${shadowKey}`,
   });
 }
 
-function createBuildings(
-  payload: CityCellVisualPayload,
+function buildingFaceMatrix(
+  dummy: Object3D,
+  building: Readonly<BuildingRecipe>,
+  face: 'front' | 'side',
+  y: number,
+  height: number,
+  alongScale: number,
+  thickness: number,
+  outwardOffset = 0,
+): Matrix4 {
+  const facesZ = building.frontage === 'north' || building.frontage === 'south';
+  const frontSign =
+    building.frontage === 'north' || building.frontage === 'west' ? -1 : 1;
+  if (face === 'front') {
+    return facesZ
+      ? composeMatrix(
+        dummy,
+        building.position.x,
+        y,
+        building.position.z + frontSign * (building.depth / 2 + outwardOffset),
+        building.width * alongScale,
+        height,
+        thickness,
+      )
+      : composeMatrix(
+        dummy,
+        building.position.x + frontSign * (building.width / 2 + outwardOffset),
+        y,
+        building.position.z,
+        thickness,
+        height,
+        building.depth * alongScale,
+      );
+  }
+  return facesZ
+    ? composeMatrix(
+      dummy,
+      building.position.x + building.width / 2 + 0.035,
+      y,
+      building.position.z,
+      thickness,
+      height,
+      building.depth * alongScale,
+    )
+    : composeMatrix(
+      dummy,
+      building.position.x,
+      y,
+      building.position.z + building.depth / 2 + 0.035,
+      building.width * alongScale,
+      height,
+      thickness,
+    );
+}
+
+function facadeCoverage(building: Readonly<BuildingRecipe>): number {
+  switch (building.facadeStyle) {
+    case 'art-deco':
+      return 0.54;
+    case 'glass-grid':
+      return 0.82;
+    case 'stucco-arcade':
+      return 0.62;
+    case 'warehouse-bay':
+      return 0.74;
+  }
+}
+
+const BUILDING_SOLID_PARTS = 4;
+const BUILDING_FACADE_PARTS = 5;
+
+const BUILDING_SOLID_LAYERS = Object.freeze([
+  'shell',
+  'storefront',
+  'roof-cap',
+  'roof-feature',
+] as const);
+
+const BUILDING_FACADE_LAYERS = Object.freeze([
+  'facade-front',
+  'facade-side',
+  'facade-accent',
+  'window-band-low',
+  'window-band-high',
+] as const);
+
+const buildingInstanceColor = new Color();
+
+function setBuildingPart(
+  mesh: InstancedMesh,
+  index: number,
+  matrix: Matrix4,
+  color: number,
+): void {
+  mesh.setMatrixAt(index, matrix);
+  mesh.setColorAt(index, buildingInstanceColor.setHex(color));
+}
+
+function buildingStorefrontMatrix(
+  dummy: Object3D,
+  building: Readonly<BuildingRecipe>,
+): Matrix4 {
+  const canopy =
+    building.storefrontStyle === 'awning'
+    || building.storefrontStyle === 'arcade';
+  const height = canopy
+    ? building.storefrontStyle === 'arcade' ? 0.42 : 0.28
+    : building.storefrontStyle === 'loading-bay' ? 3.8 : 4.2;
+  const thickness = canopy
+    ? building.storefrontStyle === 'arcade' ? 1.6 : 1.35
+    : 0.18;
+  return buildingFaceMatrix(
+    dummy,
+    building,
+    'front',
+    canopy ? 3.15 : height / 2,
+    height,
+    building.storefrontStyle === 'loading-bay' ? 0.54 : 0.68,
+    thickness,
+    canopy ? thickness / 2 : 0.11,
+  );
+}
+
+function buildingRoofCapMatrix(
+  dummy: Object3D,
+  building: Readonly<BuildingRecipe>,
+): Matrix4 {
+  const capHeight =
+    building.roofStyle === 'step' ? Math.min(3.2, building.height * 0.12) : 0.28;
+  const footprint = building.roofStyle === 'step' ? 0.68 : 0.9;
+  return composeMatrix(
+    dummy,
+    building.position.x,
+    building.height + capHeight / 2,
+    building.position.z,
+    building.width * footprint,
+    capHeight,
+    building.depth * footprint,
+  );
+}
+
+function buildingRoofFeatureMatrix(
+  dummy: Object3D,
+  building: Readonly<BuildingRecipe>,
+): Matrix4 {
+  const baseY =
+    building.height
+    + (building.roofStyle === 'step' ? Math.min(3.2, building.height * 0.12) : 0.28);
+  switch (building.roofFeature) {
+    case 'neon-crown': {
+      const height = building.landmark ? 7.5 : 3.5;
+      return composeMatrix(
+        dummy,
+        building.position.x,
+        baseY + height / 2,
+        building.position.z,
+        building.width * 0.56,
+        height,
+        0.38,
+      );
+    }
+    case 'antenna': {
+      const height = building.landmark ? 13 : 5.5;
+      return composeMatrix(
+        dummy,
+        building.position.x,
+        baseY + height / 2,
+        building.position.z,
+        0.34,
+        height,
+        0.34,
+      );
+    }
+    case 'terrace':
+      return composeMatrix(
+        dummy,
+        building.position.x,
+        baseY + 0.9,
+        building.position.z,
+        building.width * 0.45,
+        1.8,
+        building.depth * 0.44,
+      );
+    case 'water-tank':
+      return composeMatrix(
+        dummy,
+        building.position.x,
+        baseY + 1.5,
+        building.position.z,
+        building.landmark ? 4.6 : 3.2,
+        3,
+        building.landmark ? 4.6 : 3.2,
+      );
+    case 'gantry': {
+      const height = building.landmark ? 6.5 : 3.2;
+      return composeMatrix(
+        dummy,
+        building.position.x,
+        baseY + height / 2,
+        building.position.z,
+        building.width * 0.68,
+        height,
+        0.42,
+      );
+    }
+    case 'vents':
+      return composeMatrix(
+        dummy,
+        building.position.x + building.width * 0.18,
+        baseY + 0.8,
+        building.position.z - building.depth * 0.16,
+        2.1,
+        1.6,
+        1.5,
+      );
+  }
+}
+
+function writeBuildingPartsToMeshes(
+  solids: InstancedMesh,
+  facades: InstancedMesh,
+  building: Readonly<BuildingRecipe>,
+  solidIndex: number,
+  facadeIndex: number,
+  dummy: Object3D,
+): void {
+  setBuildingPart(
+    solids,
+    solidIndex,
+    composeMatrix(
+      dummy,
+      building.position.x,
+      building.position.y,
+      building.position.z,
+      building.width,
+      building.height,
+      building.depth,
+    ),
+    building.color,
+  );
+  setBuildingPart(
+    solids,
+    solidIndex + 1,
+    buildingStorefrontMatrix(dummy, building),
+    building.accentColor,
+  );
+  setBuildingPart(
+    solids,
+    solidIndex + 2,
+    buildingRoofCapMatrix(dummy, building),
+    building.accentColor,
+  );
+  setBuildingPart(
+    solids,
+    solidIndex + 3,
+    buildingRoofFeatureMatrix(dummy, building),
+    building.accentColor,
+  );
+
+  const facadeHeight = Math.max(2.5, building.height * 0.54);
+  setBuildingPart(
+    facades,
+    facadeIndex,
+    buildingFaceMatrix(
+      dummy,
+      building,
+      'front',
+      building.height * 0.64,
+      facadeHeight,
+      facadeCoverage(building),
+      0.12,
+      0.065,
+    ),
+    building.glassColor,
+  );
+  setBuildingPart(
+    facades,
+    facadeIndex + 1,
+    buildingFaceMatrix(
+      dummy,
+      building,
+      'side',
+      building.height * 0.66,
+      Math.max(2.3, building.height * 0.46),
+      Math.max(0.36, facadeCoverage(building) - 0.12),
+      0.1,
+    ),
+    building.glassColor,
+  );
+  const horizontalAccent =
+    building.facadeStyle === 'stucco-arcade'
+    || building.facadeStyle === 'warehouse-bay';
+  setBuildingPart(
+    facades,
+    facadeIndex + 2,
+    buildingFaceMatrix(
+      dummy,
+      building,
+      'front',
+      horizontalAccent
+        ? Math.min(building.height * 0.72, 5.6)
+        : building.height * 0.58,
+      horizontalAccent ? 0.34 : Math.max(2.6, building.height * 0.68),
+      horizontalAccent ? 0.82 : 0.1,
+      0.17,
+      0.1,
+    ),
+    building.accentColor,
+  );
+  for (const [offset, heightRatio] of [
+    [3, 0.38],
+    [4, 0.72],
+  ] as const) {
+    setBuildingPart(
+      facades,
+      facadeIndex + offset,
+      composeMatrix(
+        dummy,
+        building.position.x,
+        Math.max(3.4, building.height * heightRatio),
+        building.position.z,
+        building.width + 0.14,
+        building.facadeStyle === 'warehouse-bay' ? 0.32 : 0.48,
+        building.depth + 0.14,
+      ),
+      building.glassColor,
+    );
+  }
+}
+
+function createLowBuildingCellBatches(
+  root: Group,
+  buildings: readonly BuildingRecipe[],
+  sharedSurfaces: LowSharedSurfaceBatch,
+): {
+  readonly root: Group;
+  readonly batches: readonly LowBuildingCellBatch[];
+} {
+  const lowQualityRoot = new Group();
+  lowQualityRoot.name = 'city-buildings-low-quality';
+  const dummy = new Object3D();
+  const batches = groupByCell(
+    buildings,
+    (building) => building.position,
+  ).map(([cellId, cellBuildings]) => {
+    const mesh = new InstancedMesh(
+      sharedSurfaces.buildingGeometry,
+      sharedSurfaces.buildingMaterial,
+      cellBuildings.length * (BUILDING_SOLID_PARTS + BUILDING_FACADE_PARTS),
+    );
+    mesh.name = `city-building-cluster:${cellId}`;
+    mesh.userData.cellId = cellId;
+    mesh.userData.visualLayers = [
+      ...BUILDING_SOLID_LAYERS,
+      ...BUILDING_FACADE_LAYERS,
+    ];
+    cellBuildings.forEach((building, buildingIndex) => {
+      const solidIndex = buildingIndex * (
+        BUILDING_SOLID_PARTS + BUILDING_FACADE_PARTS
+      );
+      writeBuildingPartsToMeshes(
+        mesh,
+        mesh,
+        building,
+        solidIndex,
+        solidIndex + BUILDING_SOLID_PARTS,
+        dummy,
+      );
+    });
+    finalizeInstances(mesh);
+    // Bounds include every density tier in the cell, so camera culling remains
+    // conservative when adaptive density changes the visible prefix.
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.frustumCulled = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.renderOrder = -2;
+    lowQualityRoot.add(mesh);
+    return {
+      cellId,
+      mesh,
+      buildingCount: cellBuildings.length,
+    };
+  });
+  root.add(lowQualityRoot);
+  return { root: lowQualityRoot, batches };
+}
+
+function createBuildingBatches(
+  root: Group,
   buildings: readonly BuildingRecipe[],
   quality: WorldQuality,
   resources: CityVisualSharedResources,
-): void {
-  for (const [districtIndex, district] of DISTRICTS.entries()) {
-    const recipes = buildings.filter(
-      (building) => building.district === district.id,
-    );
+  lowSharedBatch: LowSharedSurfaceBatch | null,
+): CityBuildingVisualBatches {
+  const solids = DISTRICTS.map((district, districtIndex) => {
     const material = resources.buildingMaterials[districtIndex];
-    if (recipes.length === 0 || !material) {
-      continue;
-    }
+    if (!material) throw new Error(`City building material is unavailable for ${district.id}`);
+    const capacity = buildings.filter((building) => building.district === district.id).length;
     const mesh = new InstancedMesh(
       resources.buildingGeometry,
       material,
-      recipes.length,
+      capacity * BUILDING_SOLID_PARTS,
     );
-    mesh.name = `city-buildings:${payload.cellId}:${district.id}`;
-    const dummy = new Object3D();
-    recipes.forEach((building, index) => {
-      mesh.setMatrixAt(
-        index,
-        composeMatrix(
-          dummy,
-          building.position.x,
-          building.position.y,
-          building.position.z,
-          building.width,
-          building.height,
-          building.depth,
-        ),
-      );
-      mesh.setColorAt(index, new Color(building.color));
-    });
+    mesh.name = `city-building-solids:${district.id}`;
+    mesh.userData.visualLayers = BUILDING_SOLID_LAYERS;
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.frustumCulled = false;
     mesh.castShadow = quality === 'high';
     mesh.receiveShadow = true;
-    finalizeInstances(mesh);
-    recordDensityMesh(
-      payload,
-      'structures',
-      mesh,
-      quality === 'high',
-      `buildings:${district.id}`,
-    );
-  }
+    return mesh;
+  });
+  const facades = new InstancedMesh(
+    resources.facadeGeometry,
+    resources.facadeMaterial,
+    buildings.length * BUILDING_FACADE_PARTS,
+  );
+  facades.name = 'city-building-facades';
+  facades.userData.visualLayers = BUILDING_FACADE_LAYERS;
+  facades.count = 0;
+  facades.visible = false;
+  // Active cells are compacted into these buffers whenever streaming changes.
+  // Their world-space bounds therefore change too; disabling frustum culling
+  // avoids a full-city bound and keeps transitions allocation-free.
+  facades.frustumCulled = false;
+  facades.receiveShadow = true;
+  root.add(...solids, facades);
+  const lowQuality = lowSharedBatch
+    ? createLowBuildingCellBatches(root, buildings, lowSharedBatch)
+    : null;
+  return {
+    solids,
+    facades,
+    lowQuality: lowQuality?.batches ?? null,
+    lowQualityRoot: lowQuality?.root ?? null,
+    lowSharedBatch,
+    quality,
+    dummy: new Object3D(),
+  };
 }
 
 function propStemDimensions(prop: PropRecipe): readonly [number, number] {
@@ -450,6 +1316,14 @@ function propStemDimensions(prop: PropRecipe): readonly [number, number] {
     case 'bollard':
       return [0.22 * prop.scale, 1.05 * prop.scale];
     case 'container':
+    case 'bench':
+    case 'planter':
+    case 'kiosk':
+    case 'market-stall':
+    case 'transit-shelter':
+    case 'sculpture':
+    case 'cargo-pallet':
+    case 'pipe-stack':
       return [0, 0];
   }
 }
@@ -624,6 +1498,364 @@ function createProps(
     finalizeInstances(mesh);
     recordDensityMesh(payload, 'props', mesh, true, 'containers');
   }
+
+  const planters = cellProps.filter((prop) => prop.kind === 'planter');
+  if (planters.length > 0) {
+    const pots = new InstancedMesh(
+      resources.streetDetailGeometry,
+      resources.streetDetailMaterial,
+      planters.length,
+    );
+    pots.name = `city-planters:${payload.cellId}`;
+    const crowns = new InstancedMesh(
+      resources.foliageGeometry,
+      resources.foliageMaterial,
+      planters.length,
+    );
+    crowns.name = `city-planter-foliage:${payload.cellId}`;
+    planters.forEach((prop, index) => {
+      pots.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          0.42 * prop.scale,
+          prop.position.z,
+          1.25 * prop.scale,
+          0.84 * prop.scale,
+          1.25 * prop.scale,
+          prop.rotation,
+        ),
+      );
+      pots.setColorAt(index, new Color(prop.color));
+      crowns.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          1.35 * prop.scale,
+          prop.position.z,
+          1.35 * prop.scale,
+          1.5 * prop.scale,
+          1.35 * prop.scale,
+          prop.rotation,
+        ),
+      );
+      crowns.setColorAt(index, new Color(0x3f8452));
+    });
+    finalizeInstances(pots);
+    finalizeInstances(crowns);
+    recordDensityMesh(payload, 'props', pots, true, 'planters');
+    recordDensityMesh(payload, 'props', crowns, true, 'planter-foliage');
+  }
+
+  const furniture = cellProps.filter((prop) =>
+    prop.kind === 'bench'
+    || prop.kind === 'kiosk'
+    || prop.kind === 'market-stall'
+    || prop.kind === 'transit-shelter',
+  );
+  if (furniture.length > 0) {
+    const bases = new InstancedMesh(
+      resources.streetDetailGeometry,
+      resources.streetDetailMaterial,
+      furniture.length,
+    );
+    bases.name = `city-street-furniture:${payload.cellId}`;
+    const tops = new InstancedMesh(
+      resources.streetDetailGeometry,
+      resources.accentMaterial,
+      furniture.length,
+    );
+    tops.name = `city-street-furniture-accents:${payload.cellId}`;
+    furniture.forEach((prop, index) => {
+      switch (prop.kind) {
+        case 'bench': {
+          const backrestOffset = 0.31 * prop.scale;
+          bases.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              0.55 * prop.scale,
+              prop.position.z,
+              2.4 * prop.scale,
+              0.22 * prop.scale,
+              0.72 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          tops.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x - Math.sin(prop.rotation) * backrestOffset,
+              1.05 * prop.scale,
+              prop.position.z - Math.cos(prop.rotation) * backrestOffset,
+              2.4 * prop.scale,
+              0.82 * prop.scale,
+              0.16 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          break;
+        }
+        case 'kiosk':
+          bases.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              1.25 * prop.scale,
+              prop.position.z,
+              2.3 * prop.scale,
+              2.5 * prop.scale,
+              1.8 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          tops.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              2.75 * prop.scale,
+              prop.position.z,
+              2.9 * prop.scale,
+              0.28 * prop.scale,
+              2.25 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          break;
+        case 'market-stall':
+          bases.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              0.72 * prop.scale,
+              prop.position.z,
+              2.8 * prop.scale,
+              1.44 * prop.scale,
+              1.55 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          tops.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              2.35 * prop.scale,
+              prop.position.z,
+              3.4 * prop.scale,
+              0.3 * prop.scale,
+              2.3 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          break;
+        case 'transit-shelter':
+          bases.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              1.35 * prop.scale,
+              prop.position.z,
+              3.6 * prop.scale,
+              2.7 * prop.scale,
+              0.16 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          tops.setMatrixAt(
+            index,
+            composeMatrix(
+              dummy,
+              prop.position.x,
+              2.78 * prop.scale,
+              prop.position.z,
+              4 * prop.scale,
+              0.22 * prop.scale,
+              1.6 * prop.scale,
+              prop.rotation,
+            ),
+          );
+          break;
+      }
+      bases.setColorAt(index, new Color(prop.color));
+      tops.setColorAt(index, new Color(prop.color));
+    });
+    bases.castShadow = true;
+    tops.castShadow = true;
+    finalizeInstances(bases);
+    finalizeInstances(tops);
+    recordDensityMesh(payload, 'props', bases, true, 'street-furniture');
+    recordDensityMesh(payload, 'props', tops, true, 'street-furniture-accents');
+  }
+
+  const industrialDetails = cellProps.filter((prop) =>
+    prop.kind === 'cargo-pallet' || prop.kind === 'pipe-stack',
+  );
+  if (industrialDetails.length > 0) {
+    const mesh = new InstancedMesh(
+      resources.streetDetailGeometry,
+      resources.streetDetailMaterial,
+      industrialDetails.length,
+    );
+    mesh.name = `city-industrial-clutter:${payload.cellId}`;
+    industrialDetails.forEach((prop, index) => {
+      const pipes = prop.kind === 'pipe-stack';
+      mesh.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          (pipes ? 0.68 : 0.28) * prop.scale,
+          prop.position.z,
+          (pipes ? 2.7 : 2.35) * prop.scale,
+          (pipes ? 1.36 : 0.56) * prop.scale,
+          (pipes ? 1.45 : 1.85) * prop.scale,
+          prop.rotation,
+        ),
+      );
+      mesh.setColorAt(index, new Color(prop.color));
+    });
+    mesh.castShadow = true;
+    finalizeInstances(mesh);
+    recordDensityMesh(payload, 'props', mesh, true, 'industrial-clutter');
+  }
+
+  const sculptures = cellProps.filter((prop) => prop.kind === 'sculpture');
+  if (sculptures.length > 0) {
+    const plinths = new InstancedMesh(
+      resources.streetDetailGeometry,
+      resources.streetDetailMaterial,
+      sculptures.length,
+    );
+    plinths.name = `city-sculpture-plinths:${payload.cellId}`;
+    const forms = new InstancedMesh(
+      resources.lightGeometry,
+      resources.accentMaterial,
+      sculptures.length,
+    );
+    forms.name = `city-sculptures:${payload.cellId}`;
+    sculptures.forEach((prop, index) => {
+      plinths.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          0.42 * prop.scale,
+          prop.position.z,
+          1.5 * prop.scale,
+          0.84 * prop.scale,
+          1.5 * prop.scale,
+          prop.rotation,
+        ),
+      );
+      plinths.setColorAt(index, new Color(0x9ba6aa));
+      forms.setMatrixAt(
+        index,
+        composeMatrix(
+          dummy,
+          prop.position.x,
+          2.25 * prop.scale,
+          prop.position.z,
+          3.5 * prop.scale,
+          4.3 * prop.scale,
+          3.5 * prop.scale,
+          prop.rotation,
+        ),
+      );
+      forms.setColorAt(index, new Color(prop.color));
+    });
+    plinths.castShadow = true;
+    forms.castShadow = true;
+    finalizeInstances(plinths);
+    finalizeInstances(forms);
+    recordDensityMesh(payload, 'props', plinths, true, 'sculpture-plinths');
+    recordDensityMesh(payload, 'props', forms, true, 'sculptures');
+  }
+}
+
+function createPropBatches(
+  root: Group,
+  propCapacity: number,
+  quality: WorldQuality,
+  resources: CityVisualSharedResources,
+  lowQualityMaterial: MeshLambertMaterial | null,
+): CityPropVisualBatches {
+  const createBatch = (
+    name: string,
+    geometry: BufferGeometry,
+    material: MeshStandardMaterial,
+    capacity: number,
+  ): InstancedMesh => {
+    const mesh = new InstancedMesh(geometry, material, capacity);
+    mesh.name = name;
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    root.add(mesh);
+    return mesh;
+  };
+  const batches = {
+    boxes: createBatch(
+      'city-props-batch:boxes',
+      resources.streetDetailGeometry,
+      resources.streetDetailMaterial,
+      propCapacity * 2,
+    ),
+    accents: createBatch(
+      'city-props-batch:accents',
+      resources.streetDetailGeometry,
+      resources.accentMaterial,
+      propCapacity,
+    ),
+    stems: createBatch(
+      'city-props-batch:stems',
+      resources.stemGeometry,
+      resources.stemMaterial,
+      propCapacity,
+    ),
+    foliage: createBatch(
+      'city-props-batch:foliage',
+      resources.foliageGeometry,
+      resources.foliageMaterial,
+      propCapacity,
+    ),
+    lights: createBatch(
+      'city-props-batch:lights',
+      resources.lightGeometry,
+      resources.lightMaterial,
+      propCapacity,
+    ),
+    sculptures: createBatch(
+      'city-props-batch:sculptures',
+      resources.lightGeometry,
+      resources.accentMaterial,
+      propCapacity,
+    ),
+    merged: lowQualityMaterial
+      ? new Mesh(new BufferGeometry(), lowQualityMaterial)
+      : null,
+    mergedSources: [] as BufferGeometry[],
+    quality,
+    matrix: new Matrix4(),
+    color: new Color(),
+  };
+  if (batches.merged) {
+    batches.merged.name = 'city-props-merged';
+    batches.merged.visible = false;
+    batches.merged.frustumCulled = false;
+    batches.merged.castShadow = false;
+    batches.merged.receiveShadow = true;
+    root.add(batches.merged);
+  }
+  return batches;
 }
 
 function createTraversalObstacles(
@@ -684,6 +1916,281 @@ function densityCount(capacity: number, density: number): number {
   return Math.min(capacity, Math.max(0, Math.floor(capacity * density)));
 }
 
+function propBatchKind(mesh: InstancedMesh): CityPropBatchKind {
+  if (
+    mesh.name.startsWith('city-vegetation-stems:')
+    || mesh.name.startsWith('city-light-stems:')
+    || mesh.name.startsWith('city-bollards:')
+  ) {
+    return 'stems';
+  }
+  if (
+    mesh.name.startsWith('city-foliage:')
+    || mesh.name.startsWith('city-planter-foliage:')
+  ) {
+    return 'foliage';
+  }
+  if (mesh.name.startsWith('city-lights:')) return 'lights';
+  if (mesh.name.startsWith('city-sculptures:')) return 'sculptures';
+  if (mesh.name.startsWith('city-street-furniture-accents:')) return 'accents';
+  return 'boxes';
+}
+
+function appendMergedPropGeometry(
+  record: Readonly<DensityMeshRecord>,
+  index: number,
+  batches: CityPropVisualBatches,
+): void {
+  record.mesh.getMatrixAt(index, batches.matrix);
+  if (record.mesh.instanceColor) {
+    record.mesh.getColorAt(index, batches.color);
+  } else {
+    batches.color.set(0xffffff);
+  }
+  const sourceGeometry = record.mesh.geometry;
+  const geometry = sourceGeometry.index
+    ? sourceGeometry.toNonIndexed()
+    : sourceGeometry.clone();
+  // MeshLambertMaterial only needs position, normal, and the generated color
+  // in this low path. Removing optional primitive-specific attributes (for
+  // example BoxGeometry UVs absent on an icosahedron) keeps mergeGeometries
+  // structurally compatible across every authored prop kind.
+  for (const attributeName of Object.keys(geometry.attributes)) {
+    if (attributeName !== 'position' && attributeName !== 'normal') {
+      geometry.deleteAttribute(attributeName);
+    }
+  }
+  geometry.applyMatrix4(batches.matrix);
+  const vertexCount = geometry.getAttribute('position').count;
+  const colors = new Float32Array(vertexCount * 3);
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const offset = vertex * 3;
+    colors[offset] = batches.color.r;
+    colors[offset + 1] = batches.color.g;
+    colors[offset + 2] = batches.color.b;
+  }
+  geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
+  batches.mergedSources.push(geometry);
+}
+
+function copyPropRecordsToBatches(
+  records: readonly DensityMeshRecord[],
+  density: number,
+  cellVisible: boolean,
+  batches: CityPropVisualBatches,
+  counts: CityPropBatchCounts,
+): { readonly visible: number; readonly capacity: number } {
+  let visible = 0;
+  let capacity = 0;
+  for (const record of records) {
+    const densityUnits = record.capacity / record.instancesPerDensityUnit;
+    const count = densityCount(densityUnits, density) * record.instancesPerDensityUnit;
+    record.mesh.count = count;
+    // Resident payload meshes retain deterministic matrices and bounds as CPU/GPU
+    // staging buffers, while only the five compact active batches are submitted.
+    record.mesh.visible = false;
+    record.mesh.castShadow = false;
+    capacity += record.capacity;
+    if (!cellVisible || count === 0) continue;
+
+    const kind = propBatchKind(record.mesh);
+    if (batches.merged) {
+      for (let index = 0; index < count; index += 1) {
+        appendMergedPropGeometry(record, index, batches);
+      }
+      counts[kind] += count;
+      visible += count;
+      continue;
+    }
+
+    const target = batches[kind];
+    const firstTargetIndex = counts[kind];
+    const targetCapacity = target.instanceMatrix.count;
+    if (counts[kind] + count > targetCapacity) {
+      throw new RangeError(`city prop ${kind} batch capacity exceeded`);
+    }
+    for (let index = 0; index < count; index += 1) {
+      record.mesh.getMatrixAt(index, batches.matrix);
+      target.setMatrixAt(firstTargetIndex + index, batches.matrix);
+      if (record.mesh.instanceColor) {
+        record.mesh.getColorAt(index, batches.color);
+        target.setColorAt(firstTargetIndex + index, batches.color);
+      }
+    }
+    counts[kind] += count;
+    visible += count;
+  }
+  return { visible, capacity };
+}
+
+function finalizePropBatches(
+  batches: CityPropVisualBatches,
+  counts: Readonly<CityPropBatchCounts>,
+  shadowDensity: number,
+): number {
+  if (batches.merged) {
+    let totalCount = 0;
+    for (const kind of [
+      'boxes',
+      'accents',
+      'stems',
+      'foliage',
+      'lights',
+      'sculptures',
+    ] as const) {
+      const count = counts[kind];
+      totalCount += count;
+      const fallback = batches[kind];
+      fallback.count = 0;
+      fallback.visible = false;
+      fallback.castShadow = false;
+    }
+    const nextGeometry = batches.mergedSources.length > 0
+      ? mergeGeometries(batches.mergedSources, false) as BufferGeometry | null
+      : new BufferGeometry();
+    if (!nextGeometry) {
+      batches.mergedSources.forEach((geometry) => geometry.dispose());
+      batches.mergedSources.length = 0;
+      throw new Error('Low-quality prop geometry merge failed');
+    }
+    batches.mergedSources.forEach((geometry) => geometry.dispose());
+    batches.mergedSources.length = 0;
+    batches.merged.geometry.dispose();
+    batches.merged.geometry = nextGeometry;
+    batches.merged.visible = totalCount > 0;
+    return 0;
+  }
+
+  let shadows = 0;
+  for (const kind of [
+    'boxes',
+    'accents',
+    'stems',
+    'foliage',
+    'lights',
+    'sculptures',
+  ] as const) {
+    const mesh = batches[kind];
+    const count = counts[kind];
+    const sampledShadow =
+      shadowDensity >= 1
+      || (
+        shadowDensity > 0
+        && shadowSample(`city-props-batch:${kind}`) < shadowDensity
+      );
+    mesh.count = count;
+    mesh.visible = count > 0;
+    mesh.castShadow =
+      batches.quality === 'high'
+      && kind !== 'lights'
+      && count > 0
+      && sampledShadow;
+    mesh.receiveShadow = kind !== 'lights';
+    if (count > 0) finalizeInstances(mesh);
+    if (mesh.castShadow) shadows += count;
+  }
+  return shadows;
+}
+
+function applyBuildingStreamingState(
+  batches: CityBuildingVisualBatches,
+  activeCellIds: readonly CellId[],
+  recipeIndex: ReadonlyMap<CellId, CityCellVisualRecipes>,
+  structureDensity: number,
+  shadowDensity: number,
+): { readonly visible: number; readonly shadows: number } {
+  if (batches.lowQuality) {
+    const active = new Set(activeCellIds);
+    let visibleStructures = 0;
+    for (const batch of batches.lowQuality) {
+      const visibleBuildings = active.has(batch.cellId)
+        ? densityCount(batch.buildingCount, structureDensity)
+        : 0;
+      const count = visibleBuildings * (
+        BUILDING_SOLID_PARTS + BUILDING_FACADE_PARTS
+      );
+      batch.mesh.count = count;
+      batch.mesh.visible = count > 0;
+      batch.mesh.castShadow = false;
+      visibleStructures += count;
+    }
+    batches.lowQualityRoot?.updateMatrixWorld(true);
+    batches.solids.forEach((mesh) => {
+      mesh.count = 0;
+      mesh.visible = false;
+      mesh.castShadow = false;
+    });
+    batches.facades.count = 0;
+    batches.facades.visible = false;
+    return {
+      visible: visibleStructures,
+      shadows: 0,
+    };
+  }
+
+  let facadeBuildingIndex = 0;
+  const solidBuildingCounts = DISTRICTS.map(() => 0);
+  for (const cellId of activeCellIds) {
+    const buildings = recipeIndex.get(cellId)?.buildings ?? [];
+    const visibleBuildings = densityCount(buildings.length, structureDensity);
+    for (let index = 0; index < visibleBuildings; index += 1) {
+      const building = buildings[index];
+      if (building) {
+        const districtIndex = DISTRICTS.findIndex(
+          (district) => district.id === building.district,
+        );
+        const districtBuildingIndex = solidBuildingCounts[districtIndex];
+        if (districtBuildingIndex === undefined) {
+          throw new Error(`Missing building count for ${building.district}`);
+        }
+        const solids = batches.solids[districtIndex];
+        if (!solids) {
+          throw new Error(`Missing building batch for ${building.district}`);
+        }
+        writeBuildingPartsToMeshes(
+          solids,
+          batches.facades,
+          building,
+          districtBuildingIndex * BUILDING_SOLID_PARTS,
+          facadeBuildingIndex * BUILDING_FACADE_PARTS,
+          batches.dummy,
+        );
+        solidBuildingCounts[districtIndex] = districtBuildingIndex + 1;
+        facadeBuildingIndex += 1;
+      }
+    }
+  }
+
+  let solidCount = 0;
+  let shadows = 0;
+  batches.solids.forEach((mesh, districtIndex) => {
+    const count = (solidBuildingCounts[districtIndex] ?? 0) * BUILDING_SOLID_PARTS;
+    const sampledShadow =
+      shadowDensity >= 1
+      || (
+        shadowDensity > 0
+        && shadowSample(`city-building-solids:${DISTRICTS[districtIndex]?.id ?? districtIndex}`)
+          < shadowDensity
+      );
+    mesh.count = count;
+    mesh.visible = count > 0;
+    mesh.castShadow = batches.quality === 'high' && count > 0 && sampledShadow;
+    if (count > 0) finalizeInstances(mesh);
+    solidCount += count;
+    if (mesh.castShadow) shadows += count;
+  });
+  const facadeCount = facadeBuildingIndex * BUILDING_FACADE_PARTS;
+  batches.facades.count = facadeCount;
+  batches.facades.visible = facadeCount > 0;
+  if (facadeBuildingIndex > 0) {
+    finalizeInstances(batches.facades);
+  }
+  return {
+    visible: solidCount + facadeCount,
+    shadows,
+  };
+}
+
 function shadowSample(key: string): number {
   let hash = 0x811c9dc5;
   for (let index = 0; index < key.length; index += 1) {
@@ -703,7 +2210,8 @@ function applyDensity(
   let capacity = 0;
   let shadows = 0;
   for (const record of records) {
-    const count = densityCount(record.capacity, density);
+    const densityUnits = record.capacity / record.instancesPerDensityUnit;
+    const count = densityCount(densityUnits, density) * record.instancesPerDensityUnit;
     record.mesh.count = count;
     record.mesh.visible = count > 0;
     record.mesh.castShadow =
@@ -727,11 +2235,9 @@ function instantiateCellPayload(
   root: Group,
   cellId: CellId,
   recipes: CityCellVisualRecipes,
-  quality: WorldQuality,
   resources: CityVisualSharedResources,
 ): CityCellVisualPayload {
   const payload = createCellPayload(cellId);
-  createBuildings(payload, recipes.buildings, quality, resources);
   createProps(payload, recipes.props, resources);
   createTraversalObstacles(payload, recipes.traversal, resources);
   root.add(payload.root);
@@ -752,8 +2258,9 @@ function applyStreamingState(
   root: Group,
   recipeIndex: ReadonlyMap<CellId, CityCellVisualRecipes>,
   payloads: Map<CellId, CityCellVisualPayload>,
+  buildingBatches: CityBuildingVisualBatches,
+  propBatches: CityPropVisualBatches,
   resources: CityVisualSharedResources,
-  quality: WorldQuality,
   renderableActiveCellIds: readonly CellId[],
   requestedResidentCellIds: readonly CellId[],
   drawDensity: Readonly<DrawDensityLimits>,
@@ -796,20 +2303,43 @@ function applyStreamingState(
     }
     payloads.set(
       cellId,
-      instantiateCellPayload(root, cellId, recipes, quality, resources),
+      instantiateCellPayload(root, cellId, recipes, resources),
     );
     createdCellIds.push(cellId);
   }
   const active = new Set(activeCellIds);
   const visibleCellIds: CellId[] = [];
   const hiddenCellIds: CellId[] = [];
-  let structuresVisible = 0;
-  let structuresCapacity = 0;
+  const buildingSnapshot = applyBuildingStreamingState(
+    buildingBatches,
+    activeCellIds,
+    recipeIndex,
+    drawDensity.structures,
+    drawDensity.shadows,
+  );
+  const structuresVisible = buildingSnapshot.visible;
+  const structuresCapacity = residentCellIds.reduce(
+    (capacity, cellId) =>
+      capacity + (recipeIndex.get(cellId)?.buildings.length ?? 0) * (
+        BUILDING_SOLID_PARTS + BUILDING_FACADE_PARTS
+      ),
+    0,
+  );
   let propsVisible = 0;
   let propsCapacity = 0;
   let traversalVisible = 0;
   let traversalCapacity = 0;
-  let shadowCastingInstances = 0;
+  let shadowCastingInstances = buildingSnapshot.shadows;
+  const propBatchCounts: CityPropBatchCounts = {
+    boxes: 0,
+    accents: 0,
+    stems: 0,
+    foliage: 0,
+    lights: 0,
+    sculptures: 0,
+  };
+  propBatches.mergedSources.forEach((geometry) => geometry.dispose());
+  propBatches.mergedSources.length = 0;
 
   for (const cellId of residentCellIds) {
     const payload = payloads.get(cellId);
@@ -820,17 +2350,12 @@ function applyStreamingState(
     payload.root.visible = cellVisible;
     (cellVisible ? visibleCellIds : hiddenCellIds).push(cellId);
 
-    const structures = applyDensity(
-      payload.structures,
-      drawDensity.structures,
-      drawDensity.shadows,
-      cellVisible,
-    );
-    const props = applyDensity(
+    const props = copyPropRecordsToBatches(
       payload.props,
       drawDensity.props,
-      drawDensity.shadows,
       cellVisible,
+      propBatches,
+      propBatchCounts,
     );
     const traversal = applyDensity(
       payload.traversal,
@@ -838,15 +2363,17 @@ function applyStreamingState(
       drawDensity.shadows,
       cellVisible,
     );
-    structuresVisible += structures.visible;
-    structuresCapacity += structures.capacity;
     propsVisible += props.visible;
     propsCapacity += props.capacity;
     traversalVisible += traversal.visible;
     traversalCapacity += traversal.capacity;
-    shadowCastingInstances +=
-      structures.shadows + props.shadows + traversal.shadows;
+    shadowCastingInstances += traversal.shadows;
   }
+  shadowCastingInstances += finalizePropBatches(
+    propBatches,
+    propBatchCounts,
+    drawDensity.shadows,
+  );
 
   return {
     activeCellIds,
@@ -864,22 +2391,70 @@ function applyStreamingState(
   };
 }
 
-export function createCityVisuals(layout: CityLayout): CityVisualBundle {
+export function createCityVisuals(
+  layout: CityLayout,
+  capabilities: Readonly<VisualRenderCapabilities> = DEFAULT_VISUAL_RENDER_CAPABILITIES,
+): CityVisualBundle {
   const root = new Group();
   root.name = 'procedural-solara';
   const geometries: BufferGeometry[] = [];
-  const materials: MeshStandardMaterial[] = [];
+  const materials: CityDisposableMaterial[] = [];
   const recipeIndex = indexCellRecipes(layout);
   const payloads = new Map<CellId, CityCellVisualPayload>();
-  createDistrictGrounds(root, geometries, materials);
-  const roadMaterial = createRoads(root, layout, geometries, materials);
+  const useReducedLowPath = layout.quality === 'low' && capabilities.supportsMultiDraw;
+  const sharedSurfaces = useReducedLowPath
+    ? createLowSharedSurfaceBatch(root, layout, geometries, materials)
+    : null;
+  createDistrictGrounds(
+    root,
+    geometries,
+    materials,
+    sharedSurfaces,
+    layout.quality,
+  );
+  const roadMaterial = createRoads(
+    root,
+    layout,
+    geometries,
+    materials,
+    sharedSurfaces,
+  );
   const resources = createSharedResources(geometries, materials);
+  const lowPropMaterial = useReducedLowPath
+    ? new MeshLambertMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+    })
+    : null;
+  if (lowPropMaterial) {
+    materials.push(lowPropMaterial);
+  }
+  const buildingBatches = createBuildingBatches(
+    root,
+    layout.buildings,
+    layout.quality,
+    resources,
+    sharedSurfaces,
+  );
+  const propBatches = createPropBatches(
+    root,
+    layout.props.length,
+    layout.quality,
+    resources,
+    lowPropMaterial,
+  );
   let disposed = false;
 
   return {
     root,
     buildingMaterials: resources.buildingMaterials,
     roadMaterial,
+    setRoadColor: (color) => {
+      if (disposed) {
+        throw new Error('City visuals are disposed');
+      }
+      setLowSharedRoadColor(sharedSurfaces, color);
+    },
     applyStreamingState: (
       renderableActiveCellIds,
       residentCellIds,
@@ -892,8 +2467,9 @@ export function createCityVisuals(layout: CityLayout): CityVisualBundle {
         root,
         recipeIndex,
         payloads,
+        buildingBatches,
+        propBatches,
         resources,
-        layout.quality,
         renderableActiveCellIds,
         residentCellIds,
         drawDensity,
@@ -907,6 +2483,7 @@ export function createCityVisuals(layout: CityLayout): CityVisualBundle {
       root.removeFromParent();
       payloads.forEach((payload) => releaseCellPayload(payload));
       payloads.clear();
+      propBatches.merged?.geometry.dispose();
       root.traverse((object) => {
         if (object instanceof InstancedMesh) {
           object.dispose();
@@ -934,19 +2511,77 @@ export class AvatarVisual {
     const jacketMaterial = new MeshStandardMaterial({ color: 0xff7045, roughness: 0.76 });
     const darkMaterial = new MeshStandardMaterial({ color: 0x182936, roughness: 0.84 });
     const skinMaterial = new MeshStandardMaterial({ color: 0xb97858, roughness: 0.92 });
-    this.materials.push(jacketMaterial, darkMaterial, skinMaterial);
+    const shirtMaterial = new MeshStandardMaterial({ color: 0xf4c85a, roughness: 0.8 });
+    const hairMaterial = new MeshStandardMaterial({ color: 0x251b1b, roughness: 0.95 });
+    const shoeMaterial = new MeshStandardMaterial({ color: 0x101a23, roughness: 0.68 });
+    this.materials.push(
+      jacketMaterial,
+      darkMaterial,
+      skinMaterial,
+      shirtMaterial,
+      hairMaterial,
+      shoeMaterial,
+    );
 
     const torsoGeometry = new BoxGeometry(0.78, 0.95, 0.42);
     const headGeometry = new IcosahedronGeometry(0.31, 1);
     const limbGeometry = new BoxGeometry(0.24, 0.78, 0.24);
-    this.geometries.push(torsoGeometry, headGeometry, limbGeometry);
+    const jacketHemGeometry = new BoxGeometry(0.9, 0.28, 0.46);
+    const lapelGeometry = new BoxGeometry(0.18, 0.62, 0.07);
+    const beltGeometry = new BoxGeometry(0.74, 0.1, 0.45);
+    const handGeometry = new IcosahedronGeometry(0.15, 1);
+    const shoeGeometry = new BoxGeometry(0.29, 0.2, 0.46);
+    const hairGeometry = new ConeGeometry(0.34, 0.32, 7);
+    const noseGeometry = new BoxGeometry(0.1, 0.1, 0.13);
+    this.geometries.push(
+      torsoGeometry,
+      headGeometry,
+      limbGeometry,
+      jacketHemGeometry,
+      lapelGeometry,
+      beltGeometry,
+      handGeometry,
+      shoeGeometry,
+      hairGeometry,
+      noseGeometry,
+    );
 
     const torso = new Mesh(torsoGeometry, jacketMaterial);
+    torso.name = 'avatar-part:torso';
     torso.position.y = 1.42;
     torso.castShadow = true;
     const head = new Mesh(headGeometry, skinMaterial);
+    head.name = 'avatar-part:head';
     head.position.y = 2.18;
     head.castShadow = true;
+    const hair = new Mesh(hairGeometry, hairMaterial);
+    hair.name = 'avatar-part:hair';
+    hair.position.y = 2.44;
+    hair.rotation.y = Math.PI / 7;
+    hair.castShadow = true;
+    const nose = new Mesh(noseGeometry, skinMaterial);
+    nose.name = 'avatar-part:face';
+    nose.position.set(0, 2.18, -0.31);
+    nose.rotation.x = Math.PI / 4;
+    const jacketHem = new Mesh(jacketHemGeometry, jacketMaterial);
+    jacketHem.name = 'avatar-part:jacket-hem';
+    jacketHem.position.y = 1.02;
+    jacketHem.castShadow = true;
+    const shirt = new Mesh(new BoxGeometry(0.34, 0.7, 0.08), shirtMaterial);
+    shirt.name = 'avatar-part:shirt';
+    shirt.position.set(0, 1.48, -0.24);
+    this.geometries.push(shirt.geometry);
+    const leftLapel = new Mesh(lapelGeometry, darkMaterial);
+    leftLapel.name = 'avatar-part:lapel-left';
+    leftLapel.position.set(-0.16, 1.52, -0.265);
+    leftLapel.rotation.z = -0.22;
+    const rightLapel = new Mesh(lapelGeometry, darkMaterial);
+    rightLapel.name = 'avatar-part:lapel-right';
+    rightLapel.position.set(0.16, 1.52, -0.265);
+    rightLapel.rotation.z = 0.22;
+    const belt = new Mesh(beltGeometry, darkMaterial);
+    belt.name = 'avatar-part:belt';
+    belt.position.y = 0.92;
     this.leftArm = new Mesh(limbGeometry, jacketMaterial);
     this.rightArm = new Mesh(limbGeometry, jacketMaterial);
     this.leftLeg = new Mesh(limbGeometry, darkMaterial);
@@ -958,7 +2593,41 @@ export class AvatarVisual {
     for (const limb of [this.leftArm, this.rightArm, this.leftLeg, this.rightLeg]) {
       limb.castShadow = true;
     }
-    this.root.add(torso, head, this.leftArm, this.rightArm, this.leftLeg, this.rightLeg);
+    for (const [arm, side] of [
+      [this.leftArm, 'left'],
+      [this.rightArm, 'right'],
+    ] as const) {
+      const hand = new Mesh(handGeometry, skinMaterial);
+      hand.name = `avatar-part:hand-${side}`;
+      hand.position.y = -0.48;
+      hand.castShadow = true;
+      arm.add(hand);
+    }
+    for (const [leg, side] of [
+      [this.leftLeg, 'left'],
+      [this.rightLeg, 'right'],
+    ] as const) {
+      const shoe = new Mesh(shoeGeometry, shoeMaterial);
+      shoe.name = `avatar-part:shoe-${side}`;
+      shoe.position.set(0, -0.48, -0.11);
+      shoe.castShadow = true;
+      leg.add(shoe);
+    }
+    this.root.add(
+      torso,
+      jacketHem,
+      shirt,
+      leftLapel,
+      rightLapel,
+      belt,
+      head,
+      hair,
+      nose,
+      this.leftArm,
+      this.rightArm,
+      this.leftLeg,
+      this.rightLeg,
+    );
   }
 
   public sync(state: Readonly<PlayerSimulationState>): void {
@@ -982,19 +2651,56 @@ export class AvatarVisual {
 }
 
 interface VehicleWheelVisual {
-  readonly mesh: Mesh;
+  readonly marker: Object3D;
+  readonly position: readonly [number, number, number];
   readonly radius: number;
+  readonly width: number;
   readonly steerable: boolean;
 }
 
+type VehicleBoxLayer = 'solid' | 'glass' | 'lamp';
+
+interface VehiclePartAppearance {
+  readonly layer: VehicleBoxLayer;
+  readonly color: number;
+  readonly paintable?: boolean;
+}
+
 interface VehicleModelMaterials {
-  readonly body: MeshStandardMaterial;
-  readonly accent: MeshStandardMaterial;
-  readonly glass: MeshStandardMaterial;
-  readonly tire: MeshStandardMaterial;
-  readonly hub: MeshStandardMaterial;
-  readonly headlight: MeshBasicMaterial;
-  readonly taillight: MeshBasicMaterial;
+  readonly body: VehiclePartAppearance;
+  readonly accent: VehiclePartAppearance;
+  readonly glass: VehiclePartAppearance;
+  readonly tire: VehiclePartAppearance;
+  readonly hub: VehiclePartAppearance;
+  readonly headlight: VehiclePartAppearance;
+  readonly taillight: VehiclePartAppearance;
+}
+
+interface VehicleBoxVisualRecipe {
+  readonly marker: Object3D;
+  readonly name: string;
+  readonly size: readonly [number, number, number];
+  readonly position: readonly [number, number, number];
+  readonly rotation: readonly [number, number, number];
+  readonly appearance: VehiclePartAppearance;
+  batchIndex: number;
+  lowVertexOffset: number;
+  lowVertexCount: number;
+}
+
+interface VehicleLowWheelUniforms {
+  readonly travel: { value: number };
+  readonly steering: { value: number };
+}
+
+interface VehicleBatchMeshes {
+  readonly solid: InstancedMesh | null;
+  readonly glass: InstancedMesh | null;
+  readonly lamps: InstancedMesh | null;
+  readonly tires: InstancedMesh;
+  readonly hubs: InstancedMesh;
+  readonly lowMerged: Mesh<BufferGeometry, MeshLambertMaterial> | null;
+  readonly lowWheelUniforms: VehicleLowWheelUniforms | null;
 }
 
 interface VehicleVisualPalette {
@@ -1013,6 +2719,127 @@ const VEHICLE_VISUAL_PALETTES: Readonly<Record<VehicleClassId, VehicleVisualPale
   'police-cruiser': { body: 0xe1e4df, accent: 0x162431, glass: 0x122b3a },
   motorcycle: { body: 0xb94370, accent: 0x20252b, glass: 0x1b3442 },
 };
+const VEHICLE_TIRE_COLOR = new Color(0x0e1215);
+const VEHICLE_HUB_COLOR = new Color(0x85929a);
+const VEHICLE_LOW_WHEEL_SHADER_KEY = 'vehicle-low-merged-wheel-v1';
+
+interface VehicleMergedWheelAttributes {
+  readonly center: readonly [number, number, number];
+  readonly inverseRadius: number;
+  readonly steerable: boolean;
+}
+
+function createVehicleMergedPartGeometry(
+  source: BufferGeometry,
+  matrix: Readonly<Matrix4>,
+  color: Readonly<Color>,
+  wheel: Readonly<VehicleMergedWheelAttributes> | null,
+): BufferGeometry {
+  const geometry = source.clone();
+  geometry.applyMatrix4(matrix);
+  const vertexCount = geometry.getAttribute('position').count;
+  const colors = new Float32Array(vertexCount * 3);
+  const wheelCenters = new Float32Array(vertexCount * 3);
+  const wheelRoles = new Float32Array(vertexCount * 3);
+  for (let index = 0; index < vertexCount; index += 1) {
+    color.toArray(colors, index * 3);
+    if (wheel) {
+      wheelCenters[index * 3] = wheel.center[0];
+      wheelCenters[index * 3 + 1] = wheel.center[1];
+      wheelCenters[index * 3 + 2] = wheel.center[2];
+      wheelRoles[index * 3] = 1;
+      wheelRoles[index * 3 + 1] = wheel.steerable ? 1 : 0;
+      wheelRoles[index * 3 + 2] = wheel.inverseRadius;
+    }
+  }
+  geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
+  geometry.setAttribute(
+    'vehicleWheelCenter',
+    new Float32BufferAttribute(wheelCenters, 3),
+  );
+  geometry.setAttribute(
+    'vehicleWheelRole',
+    new Float32BufferAttribute(wheelRoles, 3),
+  );
+  return geometry;
+}
+
+function replaceVehicleShaderChunk(
+  source: string,
+  chunk: string,
+  replacement: string,
+): string {
+  if (!source.includes(chunk)) {
+    throw new Error(`Vehicle shader chunk is unavailable: ${chunk}`);
+  }
+  return source.replace(chunk, replacement);
+}
+
+function configureLowVehicleWheelShader(
+  material: MeshLambertMaterial,
+  uniforms: VehicleLowWheelUniforms,
+): void {
+  material.userData.vehicleWheelUniforms = uniforms;
+  material.customProgramCacheKey = () => VEHICLE_LOW_WHEEL_SHADER_KEY;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.vehicleWheelTravel = uniforms.travel;
+    shader.uniforms.vehicleWheelSteering = uniforms.steering;
+    shader.vertexShader = replaceVehicleShaderChunk(
+      shader.vertexShader,
+      '#include <common>',
+      `#include <common>
+attribute vec3 vehicleWheelCenter;
+attribute vec3 vehicleWheelRole;
+uniform float vehicleWheelTravel;
+uniform float vehicleWheelSteering;
+
+vec3 vehicleRotateX( vec3 value, float angle ) {
+  float sine = sin( angle );
+  float cosine = cos( angle );
+  return vec3(
+    value.x,
+    cosine * value.y - sine * value.z,
+    sine * value.y + cosine * value.z
+  );
+}
+
+vec3 vehicleRotateY( vec3 value, float angle ) {
+  float sine = sin( angle );
+  float cosine = cos( angle );
+  return vec3(
+    cosine * value.x + sine * value.z,
+    value.y,
+    -sine * value.x + cosine * value.z
+  );
+}
+
+vec3 vehicleAnimateWheelDirection( vec3 value ) {
+  if ( vehicleWheelRole.x <= 0.0 ) return value;
+  float steer = -vehicleWheelSteering * 0.36 * vehicleWheelRole.y;
+  float spin = vehicleWheelTravel * vehicleWheelRole.z;
+  return vehicleRotateX( vehicleRotateY( value, steer ), spin );
+}
+
+vec3 vehicleAnimateWheelPosition( vec3 value ) {
+  if ( vehicleWheelRole.x <= 0.0 ) return value;
+  vec3 local = value - vehicleWheelCenter;
+  return vehicleAnimateWheelDirection( local ) + vehicleWheelCenter;
+}`,
+    );
+    shader.vertexShader = replaceVehicleShaderChunk(
+      shader.vertexShader,
+      '#include <beginnormal_vertex>',
+      `#include <beginnormal_vertex>
+objectNormal = vehicleAnimateWheelDirection( objectNormal );`,
+    );
+    shader.vertexShader = replaceVehicleShaderChunk(
+      shader.vertexShader,
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+transformed = vehicleAnimateWheelPosition( transformed );`,
+    );
+  };
+}
 
 export const VEHICLE_VISUAL_PAINTS = {
   'coastal-teal': 0x14b8a6,
@@ -1030,16 +2857,28 @@ export class VehicleVisual {
   public readonly root = new Group();
 
   private wheels: VehicleWheelVisual[] = [];
+  private boxParts: VehicleBoxVisualRecipe[] = [];
   private readonly geometries: BufferGeometry[] = [];
-  private readonly materials: (MeshStandardMaterial | MeshBasicMaterial)[] = [];
+  private readonly materials: (
+    MeshStandardMaterial
+    | MeshLambertMaterial
+    | MeshBasicMaterial
+  )[] = [];
+  private readonly wheelDummy = new Object3D();
+  private readonly options: Readonly<VehicleVisualOptions>;
   private modelRoot: Group | null = null;
-  private bodyMaterial: MeshStandardMaterial | null = null;
+  private batches: VehicleBatchMeshes | null = null;
   private activeClassId: VehicleClassId;
   private activePaint: VehicleVisualPaint = 'factory';
+  private bodyHealth = 100;
   private wheelTravel = 0;
   private disposed = false;
 
-  public constructor(initialClassId: VehicleClassId = DEFAULT_VEHICLE_CLASS_ID) {
+  public constructor(
+    initialClassId: VehicleClassId = DEFAULT_VEHICLE_CLASS_ID,
+    options: Readonly<VehicleVisualOptions> = DEFAULT_VEHICLE_VISUAL_OPTIONS,
+  ) {
+    this.options = options;
     this.activeClassId = initialClassId;
     this.rebuild(initialClassId);
   }
@@ -1059,32 +2898,22 @@ export class VehicleVisual {
   public setPaint(paint: string): VehicleVisualPaint {
     const normalized = isVehicleVisualPaint(paint) ? paint : 'factory';
     this.activePaint = normalized;
-    const color = normalized === 'factory'
-      ? VEHICLE_VISUAL_PALETTES[this.activeClassId].body
-      : VEHICLE_VISUAL_PAINTS[normalized];
-    this.bodyMaterial?.color.setHex(color);
+    this.updateBodyInstanceColors();
     this.root.userData.vehiclePaint = normalized;
     return normalized;
   }
 
   private createMaterials(classId: VehicleClassId): VehicleModelMaterials {
     const palette = VEHICLE_VISUAL_PALETTES[classId];
-    const body = new MeshStandardMaterial({ color: palette.body, roughness: 0.48, metalness: 0.2 });
-    const accent = new MeshStandardMaterial({ color: palette.accent, roughness: 0.58, metalness: 0.18 });
-    const glass = new MeshStandardMaterial({
-      color: palette.glass,
-      roughness: 0.16,
-      metalness: 0.5,
-      transparent: true,
-      opacity: 0.9,
-    });
-    const tire = new MeshStandardMaterial({ color: 0x0e1215, roughness: 0.96 });
-    const hub = new MeshStandardMaterial({ color: 0x85929a, roughness: 0.38, metalness: 0.72 });
-    const headlight = new MeshBasicMaterial({ color: 0xfff1bd });
-    const taillight = new MeshBasicMaterial({ color: 0xff3e39 });
-    this.bodyMaterial = body;
-    this.materials.push(body, accent, glass, tire, hub, headlight, taillight);
-    return { body, accent, glass, tire, hub, headlight, taillight };
+    return {
+      body: { layer: 'solid', color: palette.body, paintable: true },
+      accent: { layer: 'solid', color: palette.accent },
+      glass: { layer: 'glass', color: palette.glass },
+      tire: { layer: 'solid', color: 0x0e1215 },
+      hub: { layer: 'solid', color: 0x85929a },
+      headlight: { layer: 'lamp', color: 0xfff1bd },
+      taillight: { layer: 'lamp', color: 0xff3e39 },
+    };
   }
 
   private addBox(
@@ -1092,19 +2921,28 @@ export class VehicleVisual {
     name: string,
     size: readonly [number, number, number],
     position: readonly [number, number, number],
-    material: MeshStandardMaterial | MeshBasicMaterial,
+    appearance: VehiclePartAppearance,
     rotation: readonly [number, number, number] = [0, 0, 0],
-  ): Mesh {
-    const geometry = new BoxGeometry(...size);
-    const mesh = new Mesh(geometry, material);
-    mesh.name = name;
-    mesh.position.set(...position);
-    mesh.rotation.set(...rotation);
-    mesh.castShadow = material instanceof MeshStandardMaterial;
-    mesh.receiveShadow = material instanceof MeshStandardMaterial;
-    parent.add(mesh);
-    this.geometries.push(geometry);
-    return mesh;
+  ): Object3D {
+    const marker = new Object3D();
+    marker.name = name;
+    marker.position.set(...position);
+    marker.rotation.set(...rotation);
+    marker.userData.vehiclePartSize = [...size];
+    marker.userData.vehiclePartLayer = appearance.layer;
+    parent.add(marker);
+    this.boxParts.push({
+      marker,
+      name,
+      size,
+      position,
+      rotation,
+      appearance,
+      batchIndex: -1,
+      lowVertexOffset: -1,
+      lowVertexCount: 0,
+    });
+    return marker;
   }
 
   private addCabin(
@@ -1130,22 +2968,20 @@ export class VehicleVisual {
     radius: number,
     width: number,
     steerable: boolean,
-    materials: VehicleModelMaterials,
+    _materials: VehicleModelMaterials,
   ): void {
-    const wheelGeometry = new CylinderGeometry(radius, radius, width, 12);
-    const wheel = new Mesh(wheelGeometry, materials.tire);
-    wheel.name = `vehicle-wheel:${role}`;
-    wheel.position.set(...position);
-    wheel.rotation.z = Math.PI / 2;
-    wheel.castShadow = true;
-    wheel.userData.steerable = steerable;
-    const hubGeometry = new CylinderGeometry(radius * 0.48, radius * 0.48, width + 0.015, 10);
-    const hub = new Mesh(hubGeometry, materials.hub);
-    hub.name = `vehicle-wheel-hub:${role}`;
-    wheel.add(hub);
-    parent.add(wheel);
-    this.geometries.push(wheelGeometry, hubGeometry);
-    this.wheels.push({ mesh: wheel, radius, steerable });
+    const marker = new Object3D();
+    marker.name = `vehicle-wheel:${role}`;
+    marker.position.set(...position);
+    marker.rotation.z = Math.PI / 2;
+    marker.userData.steerable = steerable;
+    marker.userData.radius = radius;
+    marker.userData.width = width;
+    const hubMarker = new Object3D();
+    hubMarker.name = `vehicle-wheel-hub:${role}`;
+    marker.add(hubMarker);
+    parent.add(marker);
+    this.wheels.push({ marker, position, radius, width, steerable });
   }
 
   private addFourWheels(
@@ -1251,9 +3087,8 @@ export class VehicleVisual {
     this.addBox(parent, 'vehicle-part:pushbar-cross', [2.12, 0.13, 0.12], [0, 0.42, -2.4], materials.accent);
     this.addBox(parent, 'vehicle-part:pushbar-left', [0.12, 0.5, 0.12], [-0.75, 0.53, -2.38], materials.accent);
     this.addBox(parent, 'vehicle-part:pushbar-right', [0.12, 0.5, 0.12], [0.75, 0.53, -2.38], materials.accent);
-    const redBeacon = new MeshBasicMaterial({ color: 0xff3038 });
-    const blueBeacon = new MeshBasicMaterial({ color: 0x328cff });
-    this.materials.push(redBeacon, blueBeacon);
+    const redBeacon: VehiclePartAppearance = { layer: 'lamp', color: 0xff3038 };
+    const blueBeacon: VehiclePartAppearance = { layer: 'lamp', color: 0x328cff };
     this.addBox(parent, 'vehicle-part:lightbar-base', [1.42, 0.09, 0.22], [0, 1.42, 0], materials.accent);
     this.addBox(parent, 'vehicle-part:lightbar-red', [0.64, 0.16, 0.2], [-0.35, 1.52, 0], redBeacon);
     this.addBox(parent, 'vehicle-part:lightbar-blue', [0.64, 0.16, 0.2], [0.35, 1.52, 0], blueBeacon);
@@ -1273,6 +3108,318 @@ export class VehicleVisual {
     this.addBox(parent, 'vehicle-part:handlebar', [0.78, 0.08, 0.08], [0, 0.99, -0.79], materials.hub);
     this.addBox(parent, 'vehicle-part:motorcycle-headlight', [0.3, 0.28, 0.12], [0, 0.82, -1.08], materials.headlight);
     this.addBox(parent, 'vehicle-light:rear', [0.26, 0.17, 0.1], [0, 0.68, 0.92], materials.taillight);
+  }
+
+  private createLowMergedBatch(
+    parent: Group,
+    boxGeometry: BufferGeometry,
+    tireGeometry: BufferGeometry,
+    hubGeometry: BufferGeometry,
+    material: MeshLambertMaterial,
+  ): {
+    readonly mesh: Mesh<BufferGeometry, MeshLambertMaterial>;
+    readonly uniforms: VehicleLowWheelUniforms;
+  } {
+    const sources: BufferGeometry[] = [];
+    const dummy = new Object3D();
+    const color = new Color();
+    let vertexOffset = 0;
+    this.boxParts.forEach((part, index) => {
+      const geometry = createVehicleMergedPartGeometry(
+        boxGeometry,
+        composeEulerMatrix(dummy, part.position, part.rotation, part.size),
+        color.setHex(part.appearance.color),
+        null,
+      );
+      const vertexCount = geometry.getAttribute('position').count;
+      part.batchIndex = index;
+      part.lowVertexOffset = vertexOffset;
+      part.lowVertexCount = vertexCount;
+      part.marker.userData.vehicleBatchName = 'vehicle-batch:low-boxes';
+      part.marker.userData.vehicleBatchIndex = index;
+      part.marker.userData.vehicleVertexOffset = vertexOffset;
+      part.marker.userData.vehicleVertexCount = vertexCount;
+      vertexOffset += vertexCount;
+      sources.push(geometry);
+    });
+
+    const wheelPartNames: string[] = [];
+    this.wheels.forEach((wheel, index) => {
+      dummy.position.set(...wheel.position);
+      dummy.rotation.set(0, 0, Math.PI / 2);
+      dummy.scale.set(wheel.radius, wheel.width, wheel.radius);
+      dummy.updateMatrix();
+      const tire = createVehicleMergedPartGeometry(
+        tireGeometry,
+        dummy.matrix,
+        VEHICLE_TIRE_COLOR,
+        {
+          center: wheel.position,
+          inverseRadius: 1 / wheel.radius,
+          steerable: wheel.steerable,
+        },
+      );
+      const tireVertexCount = tire.getAttribute('position').count;
+      wheel.marker.userData.vehicleBatchName = 'vehicle-batch:low-wheels';
+      wheel.marker.userData.vehicleBatchIndex = index;
+      wheel.marker.userData.vehicleVertexOffset = vertexOffset;
+      wheel.marker.userData.vehicleVertexCount = tireVertexCount;
+      wheelPartNames.push(wheel.marker.name);
+      vertexOffset += tireVertexCount;
+      sources.push(tire);
+
+      dummy.scale.set(
+        wheel.radius * 0.48,
+        wheel.width + 0.015,
+        wheel.radius * 0.48,
+      );
+      dummy.updateMatrix();
+      const hub = createVehicleMergedPartGeometry(
+        hubGeometry,
+        dummy.matrix,
+        VEHICLE_HUB_COLOR,
+        {
+          center: wheel.position,
+          inverseRadius: 1 / wheel.radius,
+          steerable: wheel.steerable,
+        },
+      );
+      const hubVertexCount = hub.getAttribute('position').count;
+      const hubMarker = wheel.marker.getObjectByName(
+        wheel.marker.name.replace('vehicle-wheel:', 'vehicle-wheel-hub:'),
+      );
+      if (hubMarker) {
+        hubMarker.userData.vehicleBatchName = 'vehicle-batch:low-wheels';
+        hubMarker.userData.vehicleBatchIndex = this.wheels.length + index;
+        hubMarker.userData.vehicleVertexOffset = vertexOffset;
+        hubMarker.userData.vehicleVertexCount = hubVertexCount;
+        wheelPartNames.push(hubMarker.name);
+      }
+      vertexOffset += hubVertexCount;
+      sources.push(hub);
+    });
+
+    const geometry = mergeGeometries(sources, false);
+    sources.forEach((source) => source.dispose());
+    if (!geometry) {
+      throw new Error('Low-quality vehicle geometry merge failed');
+    }
+    (geometry.getAttribute('color') as Float32BufferAttribute)
+      .setUsage(DynamicDrawUsage);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    this.geometries.push(geometry);
+
+    const uniforms: VehicleLowWheelUniforms = {
+      travel: { value: this.wheelTravel },
+      steering: { value: 0 },
+    };
+    configureLowVehicleWheelShader(material, uniforms);
+    const mesh = new AliasedMesh(
+      geometry,
+      material,
+      ['vehicle-batch:low-boxes', 'vehicle-batch:low-wheels'],
+    );
+    mesh.name = 'vehicle-batch:low-vehicle';
+    mesh.userData.partNames = this.boxParts.map((part) => part.name);
+    mesh.userData.wheelPartNames = wheelPartNames;
+    mesh.userData.vehicleWheelUniforms = uniforms;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
+    parent.add(mesh);
+    return { mesh, uniforms };
+  }
+
+  private createBatches(parent: Group): VehicleBatchMeshes {
+    const boxGeometry = new BoxGeometry(1, 1, 1);
+    const tireGeometry = new CylinderGeometry(1, 1, 1, 12);
+    const hubGeometry = new CylinderGeometry(1, 1, 1, 10);
+    const solidMaterial = new MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.54,
+      metalness: 0.2,
+    });
+    const glassMaterial = new MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.16,
+      metalness: 0.5,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const lampMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    const tireMaterial = new MeshStandardMaterial({ color: 0x0e1215, roughness: 0.96 });
+    const hubMaterial = new MeshStandardMaterial({
+      color: 0x85929a,
+      roughness: 0.38,
+      metalness: 0.72,
+    });
+    const lowQualityMaterial = this.options.quality === 'low'
+      && this.options.supportsMultiDraw
+      ? new MeshLambertMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+      })
+      : null;
+    this.geometries.push(boxGeometry, tireGeometry, hubGeometry);
+    this.materials.push(
+      solidMaterial,
+      glassMaterial,
+      lampMaterial,
+      tireMaterial,
+      hubMaterial,
+    );
+    if (lowQualityMaterial) this.materials.push(lowQualityMaterial);
+
+    const dummy = new Object3D();
+    const color = new Color();
+    const createBoxBatch = (
+      layer: VehicleBoxLayer,
+      name: string,
+      material: MeshStandardMaterial | MeshBasicMaterial,
+    ): InstancedMesh | null => {
+      const parts = this.boxParts.filter((part) => part.appearance.layer === layer);
+      if (parts.length === 0) return null;
+      const mesh = new InstancedMesh(boxGeometry, material, parts.length);
+      mesh.name = name;
+      mesh.userData.partNames = parts.map((part) => part.name);
+      parts.forEach((part, index) => {
+        part.batchIndex = index;
+        part.marker.userData.vehicleBatchName = name;
+        part.marker.userData.vehicleBatchIndex = index;
+        mesh.setMatrixAt(
+          index,
+          composeEulerMatrix(dummy, part.position, part.rotation, part.size),
+        );
+        mesh.setColorAt(index, color.setHex(part.appearance.color));
+      });
+      mesh.castShadow = material instanceof MeshStandardMaterial && layer !== 'glass';
+      mesh.receiveShadow = material instanceof MeshStandardMaterial;
+      finalizeInstances(mesh);
+      mesh.computeBoundingBox();
+      mesh.computeBoundingSphere();
+      parent.add(mesh);
+      return mesh;
+    };
+
+    const solid = createBoxBatch('solid', 'vehicle-batch:solid', solidMaterial);
+    const glass = createBoxBatch('glass', 'vehicle-batch:glass', glassMaterial);
+    const lamps = createBoxBatch('lamp', 'vehicle-batch:lamps', lampMaterial);
+    const tires = new InstancedMesh(tireGeometry, tireMaterial, this.wheels.length);
+    tires.name = 'vehicle-batch:tires';
+    tires.castShadow = true;
+    tires.receiveShadow = true;
+    const hubs = new InstancedMesh(hubGeometry, hubMaterial, this.wheels.length);
+    hubs.name = 'vehicle-batch:hubs';
+    hubs.castShadow = true;
+    hubs.receiveShadow = true;
+    parent.add(tires, hubs);
+    const low = lowQualityMaterial
+      ? this.createLowMergedBatch(
+        parent,
+        boxGeometry,
+        tireGeometry,
+        hubGeometry,
+        lowQualityMaterial,
+      )
+      : null;
+    if (low) {
+      if (solid) solid.visible = false;
+      if (glass) glass.visible = false;
+      if (lamps) lamps.visible = false;
+      tires.visible = false;
+      hubs.visible = false;
+    }
+    const batches = {
+      solid,
+      glass,
+      lamps,
+      tires,
+      hubs,
+      lowMerged: low?.mesh ?? null,
+      lowWheelUniforms: low?.uniforms ?? null,
+    };
+    this.batches = batches;
+    this.updateWheelBatches(0);
+    tires.computeBoundingSphere();
+    hubs.computeBoundingSphere();
+    return batches;
+  }
+
+  private updateBodyInstanceColors(): void {
+    const batches = this.batches;
+    if (!batches) return;
+    const base = this.activePaint === 'factory'
+      ? VEHICLE_VISUAL_PALETTES[this.activeClassId].body
+      : VEHICLE_VISUAL_PAINTS[this.activePaint];
+    const damageAmount = Math.min(0.58, Math.max(0, (100 - this.bodyHealth) / 100) * 0.58);
+    const color = new Color(base).lerp(new Color(0x332b2c), damageAmount);
+    if (batches.lowMerged) {
+      const colors = batches.lowMerged.geometry.getAttribute(
+        'color',
+      ) as Float32BufferAttribute;
+      colors.clearUpdateRanges();
+      for (const part of this.boxParts) {
+        if (
+          !part.appearance.paintable
+          || part.lowVertexOffset < 0
+          || part.lowVertexCount <= 0
+        ) {
+          continue;
+        }
+        const end = part.lowVertexOffset + part.lowVertexCount;
+        for (let index = part.lowVertexOffset; index < end; index += 1) {
+          colors.setXYZ(index, color.r, color.g, color.b);
+        }
+        colors.addUpdateRange(part.lowVertexOffset * 3, part.lowVertexCount * 3);
+      }
+      colors.needsUpdate = true;
+      return;
+    }
+    const carrier = batches.solid;
+    if (!carrier) return;
+    for (const part of this.boxParts) {
+      if (part.appearance.paintable && part.batchIndex >= 0) {
+        carrier.setColorAt(part.batchIndex, color);
+      }
+    }
+    if (carrier instanceof InstancedMesh && carrier.instanceColor) {
+      carrier.instanceColor.needsUpdate = true;
+    }
+  }
+
+  private updateWheelBatches(steering: number): void {
+    const batches = this.batches;
+    if (!batches) return;
+    for (let index = 0; index < this.wheels.length; index += 1) {
+      const wheel = this.wheels[index];
+      if (!wheel) continue;
+      const spin = this.wheelTravel / wheel.radius;
+      const steer = wheel.steerable ? -steering * 0.36 : 0;
+      wheel.marker.rotation.set(spin, steer, Math.PI / 2);
+    }
+    if (batches.lowMerged && batches.lowWheelUniforms) {
+      batches.lowWheelUniforms.travel.value = this.wheelTravel;
+      batches.lowWheelUniforms.steering.value = steering;
+      return;
+    }
+    const dummy = this.wheelDummy;
+    for (let index = 0; index < this.wheels.length; index += 1) {
+      const wheel = this.wheels[index];
+      if (!wheel) continue;
+      const spin = this.wheelTravel / wheel.radius;
+      const steer = wheel.steerable ? -steering * 0.36 : 0;
+      dummy.position.set(...wheel.position);
+      dummy.rotation.set(spin, steer, Math.PI / 2);
+      dummy.scale.set(wheel.radius, wheel.width, wheel.radius);
+      dummy.updateMatrix();
+      batches.tires.setMatrixAt(index, dummy.matrix);
+      dummy.scale.set(wheel.radius * 0.48, wheel.width + 0.015, wheel.radius * 0.48);
+      dummy.updateMatrix();
+      batches.hubs.setMatrixAt(index, dummy.matrix);
+    }
+    finalizeInstances(batches.tires);
+    finalizeInstances(batches.hubs);
   }
 
   private rebuild(classId: VehicleClassId): void {
@@ -1295,6 +3442,7 @@ export class VehicleVisual {
     this.activeClassId = classId;
     this.modelRoot = model;
     this.wheelTravel = 0;
+    this.createBatches(model);
     this.root.name = `vehicle:${classId}`;
     this.root.userData.vehicleClassId = classId;
     this.root.userData.vehicleName = profile.name;
@@ -1304,14 +3452,20 @@ export class VehicleVisual {
   }
 
   private releaseModel(): void {
+    this.modelRoot?.traverse((object) => {
+      if (object instanceof InstancedMesh) {
+        object.dispose();
+      }
+    });
     this.modelRoot?.removeFromParent();
     this.modelRoot?.clear();
     this.modelRoot = null;
-    this.bodyMaterial = null;
+    this.batches = null;
     this.geometries.forEach((geometry) => geometry.dispose());
     this.materials.forEach((material) => material.dispose());
     this.geometries.length = 0;
     this.materials.length = 0;
+    this.boxParts = [];
     this.wheels = [];
   }
 
@@ -1325,10 +3479,11 @@ export class VehicleVisual {
     this.root.position.set(state.position.x, state.position.y, state.position.z);
     this.root.rotation.set(state.pitch ?? 0, state.heading, state.roll ?? 0);
     this.wheelTravel -= state.speed * Math.max(0, deltaSeconds);
-    this.wheels.forEach((wheel) => {
-      wheel.mesh.rotation.x = this.wheelTravel / wheel.radius;
-      wheel.mesh.rotation.y = wheel.steerable ? -state.steering * 0.36 : 0;
-    });
+    this.updateWheelBatches(state.steering);
+    if (state.integrity.bodyHealth !== this.bodyHealth) {
+      this.bodyHealth = state.integrity.bodyHealth;
+      this.updateBodyInstanceColors();
+    }
   }
 
   public dispose(): void {

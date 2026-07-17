@@ -1,8 +1,6 @@
-export type DistrictId =
-  | 'neon-strand'
-  | 'alta-vista'
-  | 'arroyo-heights'
-  | 'breakwater';
+import type { SolaraDistrictId } from '../core/districts';
+
+export type DistrictId = SolaraDistrictId;
 
 export type ContactId = 'garage' | 'juno' | 'malik' | 'priya' | 'all-contacts';
 

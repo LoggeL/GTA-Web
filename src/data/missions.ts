@@ -1,3 +1,7 @@
+import {
+  resolveSolaraRoadPosition,
+  solaraCoordinateSalt,
+} from '../core/districts';
 import type {
   CheckpointDefinition,
   DialogueEntry,
@@ -27,11 +31,16 @@ function checkpoint(
   z: number,
   vehicleHealthPercent?: number,
 ): CheckpointDefinition {
+  const position = resolveSolaraRoadPosition(
+    district,
+    { x, z },
+    solaraCoordinateSalt(`mission-checkpoint:${id}`),
+  );
   return {
     id,
     label,
     afterObjectiveId,
-    respawn: { district, x, y: 0, z },
+    respawn: { district, x: position.x, y: 0, z: position.z },
     restore: {
       healthPercent: 100,
       armorPercent: 50,

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CityStreamingController,
+  MOBILE_MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
+  MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
   baseResolutionScaleForQuality,
+  baseResolutionScaleForRuntime,
 } from '../../src/game/CityStreamingController';
 import { currentAndAdjacentCellIds } from '../../src/navigation/cells';
 import type {
@@ -82,6 +85,15 @@ describe('CityStreamingController quality and adaptive performance', () => {
     expect(baseResolutionScaleForQuality(0.7, 'high', 'high')).toBe(0.7);
   });
 
+  it('caps only automatic desktop software rendering at the stable full-level scale', () => {
+    expect(baseResolutionScaleForRuntime(1, 'auto', 'low', 'desktop', true)).toBe(0.5);
+    expect(baseResolutionScaleForRuntime(0.65, 'auto', 'low', 'desktop', true)).toBe(0.5);
+    expect(baseResolutionScaleForRuntime(1, 'auto', 'low', 'mobile', true)).toBe(0.8);
+    expect(baseResolutionScaleForRuntime(1, 'auto', 'low', 'desktop', false)).toBe(0.8);
+    expect(baseResolutionScaleForRuntime(1, 'low', 'low', 'desktop', true)).toBe(1);
+    expect(baseResolutionScaleForRuntime(1, 'auto', 'high', 'desktop', true)).toBe(1);
+  });
+
   it('matches pooled actor capacities and exposes per-quality draw limits', () => {
     const controller = new CityStreamingController({ quality: 'high' });
     controller.updateCells('cell:0:0');
@@ -89,20 +101,36 @@ describe('CityStreamingController quality and adaptive performance', () => {
     const low = controller.setQuality('low');
 
     expect(high.actors).toEqual({
-      traffic: 24,
-      pedestrians: 45,
+      traffic: 42,
+      pedestrians: 72,
       combat: 20,
-      total: 89,
+      total: 134,
     });
     expect(low.actors).toEqual({
-      traffic: 10,
-      pedestrians: 18,
+      traffic: 18,
+      pedestrians: 30,
       combat: 8,
-      total: 36,
+      total: 56,
     });
     expect(low.drawDensity.roads).toBe(1);
     expect(low.drawDensity.structures).toBeLessThan(high.drawDensity.structures);
     expect(low.drawDensity.props).toBeLessThan(high.drawDensity.props);
+
+    const adaptiveLow = new CityStreamingController({
+      quality: 'low',
+      frameWindowSize: 2,
+      slowWindowsToDegrade: 1,
+    });
+    sampleFrames(adaptiveLow, 30, 4);
+    expect(adaptiveLow.snapshot().performance).toMatchObject({
+      level: 'minimum',
+      limits: {
+        actors: {
+          traffic: 10,
+          pedestrians: 18,
+        },
+      },
+    });
   });
 
   it('degrades and recovers with rolling-window hysteresis', () => {
@@ -137,6 +165,189 @@ describe('CityStreamingController quality and adaptive performance', () => {
       p95Milliseconds: 10,
       estimatedFramesPerSecond: 100,
     });
+  });
+
+  it('keeps the public sampleFrame decision and per-sample frames contract', () => {
+    const controller = new CityStreamingController({
+      frameWindowSize: 3,
+    });
+    const decisions = [10, 20, 30, 40].map((frameMilliseconds) =>
+      controller.sampleFrame(frameMilliseconds),
+    );
+
+    expect(decisions.map(({ changed, reason, previousLevel, level }) => ({
+      changed,
+      reason,
+      previousLevel,
+      level,
+    }))).toEqual([
+      {
+        changed: false,
+        reason: 'collecting',
+        previousLevel: 'full',
+        level: 'full',
+      },
+      {
+        changed: false,
+        reason: 'collecting',
+        previousLevel: 'full',
+        level: 'full',
+      },
+      {
+        changed: false,
+        reason: 'stable',
+        previousLevel: 'full',
+        level: 'full',
+      },
+      {
+        changed: false,
+        reason: 'stable',
+        previousLevel: 'full',
+        level: 'full',
+      },
+    ]);
+    expect(decisions.map(({ frames }) => frames)).toEqual([
+      {
+        sampleCount: 1,
+        averageMilliseconds: 10,
+        p95Milliseconds: 10,
+        estimatedFramesPerSecond: 100,
+      },
+      {
+        sampleCount: 2,
+        averageMilliseconds: 15,
+        p95Milliseconds: 20,
+        estimatedFramesPerSecond: 1_000 / 15,
+      },
+      {
+        sampleCount: 3,
+        averageMilliseconds: 20,
+        p95Milliseconds: 30,
+        estimatedFramesPerSecond: 50,
+      },
+      {
+        sampleCount: 3,
+        averageMilliseconds: 30,
+        p95Milliseconds: 40,
+        estimatedFramesPerSecond: 1_000 / 30,
+      },
+    ]);
+  });
+
+  it('emits runtime decisions only for adaptive level changes', () => {
+    const options = {
+      frameWindowSize: 2,
+      slowFrameThresholdMilliseconds: 22,
+      fastFrameThresholdMilliseconds: 15,
+      slowWindowsToDegrade: 1,
+      fastWindowsToRecover: 1,
+    } as const;
+    const publicController = new CityStreamingController(options);
+    const runtimeController = new CityStreamingController(options);
+
+    for (const frameMilliseconds of [30, 30, 30, 30, 10, 10, 10, 10]) {
+      const publicDecision = publicController.sampleFrame(frameMilliseconds);
+      const runtimeDecision =
+        runtimeController.sampleRuntimeFrame(frameMilliseconds);
+
+      if (publicDecision.changed) {
+        expect(runtimeDecision).toEqual(publicDecision);
+      } else {
+        expect(runtimeDecision).toBeNull();
+      }
+    }
+
+    expect(runtimeController.snapshot().performance).toEqual(
+      publicController.snapshot().performance,
+    );
+  });
+
+  it('reserves the desktop runtime floor for low-quality adaptive minimum and recovers', () => {
+    expect(MINIMUM_ADAPTIVE_RESOLUTION_SCALE).toBe(0.35);
+    const controller = new CityStreamingController({
+      quality: 'low',
+      baseResolutionScale: 0.8,
+      frameWindowSize: 2,
+      slowWindowsToDegrade: 1,
+      fastWindowsToRecover: 1,
+    });
+
+    expect(controller.snapshot().performance.limits.resolutionScale).toBe(0.8);
+    sampleFrames(controller, 30, 2);
+    expect(controller.snapshot().performance.level).toBe('balanced');
+    expect(controller.snapshot().performance.limits.resolutionScale).toBeCloseTo(0.7);
+    sampleFrames(controller, 30, 2);
+    expect(controller.snapshot().performance).toMatchObject({
+      level: 'minimum',
+      limits: { resolutionScale: MINIMUM_ADAPTIVE_RESOLUTION_SCALE },
+    });
+
+    sampleFrames(controller, 10, 2);
+    expect(controller.snapshot().performance.level).toBe('balanced');
+    expect(controller.snapshot().performance.limits.resolutionScale).toBeCloseTo(0.7);
+    sampleFrames(controller, 10, 2);
+    expect(controller.snapshot().performance).toMatchObject({
+      level: 'full',
+      limits: { resolutionScale: 0.8 },
+    });
+
+    const mobile = new CityStreamingController({
+      platform: 'mobile',
+      quality: 'low',
+      baseResolutionScale: 0.8,
+      frameWindowSize: 2,
+      slowWindowsToDegrade: 1,
+    });
+    sampleFrames(mobile, 30, 4);
+    expect(mobile.snapshot().performance).toMatchObject({
+      level: 'minimum',
+      limits: { resolutionScale: MOBILE_MINIMUM_ADAPTIVE_RESOLUTION_SCALE },
+    });
+    expect(MOBILE_MINIMUM_ADAPTIVE_RESOLUTION_SCALE).toBe(0.4);
+  });
+
+  it('keeps high-quality and configured-scale behavior unchanged above adaptive minimum', () => {
+    const high = new CityStreamingController({
+      quality: 'high',
+      baseResolutionScale: 1,
+      frameWindowSize: 2,
+      slowWindowsToDegrade: 1,
+    });
+    sampleFrames(high, 30, 2);
+    expect(high.snapshot().performance.limits.resolutionScale).toBe(0.9);
+    sampleFrames(high, 30, 2);
+    expect(high.snapshot().performance.limits.resolutionScale).toBe(0.7);
+
+    const configuredMinimum = new CityStreamingController({
+      quality: 'low',
+      baseResolutionScale: 0.5,
+      frameWindowSize: 2,
+      slowWindowsToDegrade: 1,
+    });
+    sampleFrames(configuredMinimum, 30, 2);
+    expect(configuredMinimum.snapshot().performance).toMatchObject({
+      level: 'balanced',
+      limits: { resolutionScale: 0.5 },
+    });
+    sampleFrames(configuredMinimum, 30, 2);
+    expect(configuredMinimum.snapshot().performance).toMatchObject({
+      level: 'minimum',
+      limits: { resolutionScale: MINIMUM_ADAPTIVE_RESOLUTION_SCALE },
+    });
+  });
+
+  it('rejects non-finite configured resolution scales at both entry points', () => {
+    expect(() => new CityStreamingController({ baseResolutionScale: Number.NaN }))
+      .toThrowError('baseResolutionScale must be between 0.5 and 1');
+    expect(() => new CityStreamingController({
+      baseResolutionScale: Number.POSITIVE_INFINITY,
+    })).toThrowError('baseResolutionScale must be between 0.5 and 1');
+
+    const controller = new CityStreamingController();
+    expect(() => controller.setBaseResolutionScale(Number.NaN))
+      .toThrowError('base resolution scale must be between 0.5 and 1');
+    expect(() => controller.setBaseResolutionScale(Number.NEGATIVE_INFINITY))
+      .toThrowError('base resolution scale must be between 0.5 and 1');
   });
 
   it('recovers at a normal 60 Hz frame interval with the default fast threshold', () => {
@@ -277,6 +488,7 @@ describe('CityStreamingController failure boundaries and retries', () => {
     const controller = new CityStreamingController();
 
     expect(() => controller.sampleFrame(Number.NaN)).toThrow(/frame duration/);
+    expect(() => controller.sampleRuntimeFrame(Number.NaN)).toThrow(/frame duration/);
     expect(() => controller.updateCells('not-a-cell' as CellId)).toThrow(
       /Invalid cell id/,
     );

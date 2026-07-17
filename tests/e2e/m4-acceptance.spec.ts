@@ -23,7 +23,7 @@ interface QaApi {
     weaponAmmo: number;
     weaponDurability: number;
   } | null;
-  pedestrians(): readonly { id: string; x: number; z: number }[];
+  pedestrians(): readonly { id: string; behavior: string; x: number; z: number }[];
   combatants(): readonly QaCombatant[];
   selectWeapon(weaponId: string): unknown;
   setMoney(value: number): number;
@@ -107,9 +107,12 @@ test.describe('M4 combat, stealth, NPC, and wanted acceptance', () => {
     const stealthTarget = initialCombatants.find(({ role }) => role === 'gunner');
     if (!stealthTarget) throw new Error('Missing stealth target');
     await page.evaluate(() => (window as QaWindow).__HEATLINE_QA__?.selectWeapon('melee-tier-1'));
-    await placeBehindCombatant(page, stealthTarget.id);
+    // Crouch before entering the target's peripheral range so a loaded browser
+    // cannot advance awareness past the contextual-takedown threshold between
+    // the teleport and the next input event.
     await page.keyboard.down('c');
     await expect(world).toHaveAttribute('data-crouching', 'true');
+    await placeBehindCombatant(page, stealthTarget.id);
     await page.mouse.move(canvasCenter.x, canvasCenter.y);
     await page.mouse.down({ button: 'left' });
     await page.waitForTimeout(90);
@@ -153,8 +156,8 @@ test.describe('M4 combat, stealth, NPC, and wanted acceptance', () => {
       const api = (window as QaWindow).__HEATLINE_QA__;
       if (!api) throw new Error('HEATLINE QA API is unavailable');
       api.setWantedLevel(0);
-      const witness = api.pedestrians()[0];
-      if (!witness) throw new Error('Missing pedestrian witness');
+      const witness = api.pedestrians().find(({ behavior }) => behavior === 'wander');
+      if (!witness) throw new Error('Missing calm pedestrian witness');
       api.teleport(witness.x, witness.z);
       api.face(witness.x + 12, witness.z);
       api.selectWeapon('pistol-tier-1');

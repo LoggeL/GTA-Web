@@ -2,8 +2,12 @@ import {
   CoreSaveService,
   InMemorySaveAdapter,
   PersistenceWriteError,
+  SOLARA_GAMEPLAY_ANCHORS,
   SaveSlotReadError,
   createInitialSaveGame,
+  resolveSolaraActivityMarker,
+  resolveSolaraActivityTarget,
+  resolveSolaraMissionTarget,
   serializeSaveGame,
   type GameSettings,
   type PersistenceWriteOperation,
@@ -44,7 +48,7 @@ import {
 } from '../data';
 import {
   CityStreamingController,
-  baseResolutionScaleForQuality,
+  baseResolutionScaleForRuntime,
 } from '../game/CityStreamingController';
 import {
   DomInputAdapter,
@@ -183,13 +187,6 @@ const formatSavePlaytime = (seconds: number): string => {
 const errorMessage = (error: unknown): string => error instanceof Error
   ? error.message
   : String(error);
-
-const DISTRICT_TARGET_CENTERS: Readonly<Record<MissionDefinition['district'], { x: number; z: number }>> = {
-  'neon-strand': { x: -230, z: 70 },
-  'alta-vista': { x: 105, z: 80 },
-  'arroyo-heights': { x: 190, z: 285 },
-  breakwater: { x: 105, z: -235 },
-};
 
 const MISSION_INTERACTION_RADIUS_METERS = 12;
 const COLLECTIBLE_INTERACTION_RADIUS_METERS = 8;
@@ -675,10 +672,12 @@ export class App {
     const quality = this.#resolveQuality();
     mount.dataset.worldQuality = quality;
     mount.dataset.rendererClass = this.#softwareWebGlRenderer ? 'software' : 'hardware';
-    const resolutionScale = baseResolutionScaleForQuality(
+    const resolutionScale = baseResolutionScaleForRuntime(
       this.#settings.video.resolutionScale,
       this.#settings.video.quality,
       quality,
+      matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
+      this.#softwareWebGlRenderer,
     );
     const position = save.player.transform.position;
     this.#wantedRuntime = new WantedRuntime({
@@ -1771,13 +1770,11 @@ export class App {
   }
 
   #activityTarget(active: Readonly<ActiveActivityRun>): { x: number; z: number } {
-    const base = DISTRICT_TARGET_CENTERS[active.run.district];
-    const angle = ((active.run.seed % 360) + active.step * 97) * Math.PI / 180;
-    const radius = 34 + ((active.run.seed >>> (active.step % 12)) & 31);
-    return {
-      x: clampWorldCoordinate(base.x + Math.cos(angle) * radius),
-      z: clampWorldCoordinate(base.z + Math.sin(angle) * radius),
-    };
+    return resolveSolaraActivityTarget(
+      active.run.district,
+      active.run.seed,
+      active.step,
+    );
   }
 
   #setActivityWaypoint(): void {
@@ -3355,10 +3352,12 @@ export class App {
       || JSON.stringify(this.#settings.controls.bindings) !== JSON.stringify(settings.controls.bindings);
     this.#settings = settings;
     this.#applySettings();
-    const resolutionScale = baseResolutionScaleForQuality(
+    const resolutionScale = baseResolutionScaleForRuntime(
       settings.video.resolutionScale,
       settings.video.quality,
       this.#world?.layout.quality ?? this.#resolveQuality(),
+      matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
+      this.#softwareWebGlRenderer,
     );
     const adaptiveLimits = this.#cityStreaming?.setBaseResolutionScale(resolutionScale);
     this.#world?.setPresentation({
@@ -3549,10 +3548,12 @@ export class App {
     this.#cityStreaming = new CityStreamingController({
       platform: matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
       quality: world.layout.quality,
-      baseResolutionScale: baseResolutionScaleForQuality(
+      baseResolutionScale: baseResolutionScaleForRuntime(
         this.#settings.video.resolutionScale,
         this.#settings.video.quality,
         world.layout.quality,
+        matchMedia('(pointer: coarse)').matches ? 'mobile' : 'desktop',
+        this.#softwareWebGlRenderer,
       ),
     });
     const graph = buildRoadGraph(world.layout);
@@ -3612,8 +3613,9 @@ export class App {
     );
     ACTIVITIES.forEach((definition, index) => {
       if (!unlocked.has(definition.unlockFlag)) return;
-      const center = DISTRICT_TARGET_CENTERS[definition.districts[0]!];
-      const position = { x: center.x + index * 9 - 18, z: center.z + index * 7 - 14 };
+      const district = definition.districts[0];
+      if (district === undefined) return;
+      const position = resolveSolaraActivityMarker(district, index);
       markers.push({
         id: `activity:${definition.id}`,
         kind: 'activity',
@@ -4307,8 +4309,8 @@ export class App {
   #onWorldFrame(frameMilliseconds: number): void {
     const streaming = this.#cityStreaming;
     if (!streaming) return;
-    const decision = streaming.sampleFrame(frameMilliseconds);
-    if (!decision.changed) return;
+    const decision = streaming.sampleRuntimeFrame(frameMilliseconds);
+    if (!decision) return;
     this.#world?.setPresentation({ resolutionScale: decision.limits.resolutionScale });
     this.#applyCityStreaming();
     const mount = this.#root.querySelector<HTMLElement>('[data-world-mount]');
@@ -4334,6 +4336,8 @@ export class App {
     const population = world.getCitySimulationSnapshot();
     const mount = this.#root.querySelector<HTMLElement>('[data-world-mount]');
     if (!mount) return;
+    mount.dataset.performanceLevel = snapshot.performance.level;
+    mount.dataset.resolutionScale = snapshot.performance.limits.resolutionScale.toFixed(2);
     mount.dataset.visibleCells = String(visuals.visibleCellIds.length);
     mount.dataset.visibleStructures = String(visuals.structures.visible);
     mount.dataset.visibleProps = String(visuals.props.visible);
@@ -4448,29 +4452,16 @@ function missionObjectivePosition(
     ? { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z }
     : checkpoint
       ? { x: checkpoint.respawn.x, z: checkpoint.respawn.z }
-      : DISTRICT_TARGET_CENTERS[definition.district];
-  const hash = stableTextHash(`${definition.id}:${objective.id}`);
-  const angle = ((hash % 360) + targetIndex * 83) * Math.PI / 180;
-  const radius = definition.id === 'past-due' && objectiveIndex === 0 && targetIndex === 0
-    ? 28
-    : targetIndex === 0 ? 6 : 18 + (targetIndex % 3) * 7;
-  return {
-    x: clampWorldCoordinate(base.x + Math.cos(angle) * radius),
-    z: clampWorldCoordinate(base.z + Math.sin(angle) * radius),
-  };
-}
-
-function stableTextHash(value: string): number {
-  let hash = 2_166_136_261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return hash >>> 0;
-}
-
-function clampWorldCoordinate(value: number): number {
-  return Math.max(-560, Math.min(560, value));
+      : SOLARA_GAMEPLAY_ANCHORS[definition.district];
+  const targetDistrict = checkpoint?.respawn.district ?? definition.district;
+  return resolveSolaraMissionTarget({
+    district: targetDistrict,
+    missionId: definition.id,
+    objectiveId: objective.id,
+    objectiveIndex,
+    targetIndex,
+    base,
+  });
 }
 
 function formatDuration(milliseconds: number): string {

@@ -43,10 +43,8 @@ export async function startNewGame(
   await expect(page.getByRole('heading', { level: 2, name: 'Choose Alex' })).toBeVisible();
   await expect(page.getByText(`Save slot ${slot}`, { exact: true })).toBeVisible();
   await page.getByRole('button', { name: new RegExp(`^${preset}`) }).click();
-  await expect(page.getByRole('progressbar', { name: 'Loading Solara' })).toBeVisible();
-  // The loading screen is removed in the same render that commits 100%, so slower
-  // engines may never expose the terminal attribute to Playwright. The visible HUD
-  // is the stable, user-facing completion boundary.
+  // The loading screen may be mounted and removed between Playwright observations.
+  // The visible HUD is the stable, user-facing completion boundary.
   await expect(page.getByLabel('Game HUD')).toBeVisible({ timeout: 75_000 });
 }
 

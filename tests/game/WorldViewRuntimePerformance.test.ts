@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PerspectiveCamera, Vector3 } from 'three';
 
 import { WorldView } from '../../src/game/WorldView';
+import { MINIMUM_ADAPTIVE_RESOLUTION_SCALE } from '../../src/game/CityStreamingController';
 import type { CollisionRect } from '../../src/game/city';
 import type { SimulationObstacle } from '../../src/simulation';
 
@@ -71,5 +73,88 @@ describe('WorldView runtime collision derivations', () => {
     });
     expect(harness.activeCollisions()).toBe(interior);
     expect(harness.exteriorCollisionCache).toBe(exteriorCache);
+  });
+});
+
+interface PresentationHarness {
+  disposed: boolean;
+  reducedMotion: boolean;
+  cameraShake: number;
+  resolutionScale: number;
+  camera: PerspectiveCamera;
+  cameraShakeOffset: Vector3;
+  cameraImpactStrength: number;
+  resize: ReturnType<typeof vi.fn>;
+  setPresentation(options: {
+    readonly reducedMotion?: boolean;
+    readonly cameraShake?: number;
+    readonly resolutionScale?: number;
+  }): void;
+}
+
+interface ResizeHarness {
+  disposed: boolean;
+  resolutionScale: number;
+  layout: { readonly quality: 'low' | 'high' };
+  mount: { readonly clientWidth: number; readonly clientHeight: number };
+  renderer: {
+    setPixelRatio: ReturnType<typeof vi.fn>;
+    setSize: ReturnType<typeof vi.fn>;
+  };
+  camera: {
+    aspect: number;
+    updateProjectionMatrix: ReturnType<typeof vi.fn>;
+  };
+  resize(width?: number, height?: number): void;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('WorldView adaptive resolution presentation', () => {
+  it('accepts the runtime-only 0.35 floor and rejects non-finite presentation values', () => {
+    const harness = Object.create(WorldView.prototype) as unknown as PresentationHarness;
+    Object.assign(harness, {
+      disposed: false,
+      reducedMotion: false,
+      cameraShake: 1,
+      resolutionScale: 1,
+      camera: new PerspectiveCamera(),
+      cameraShakeOffset: new Vector3(),
+      cameraImpactStrength: 0,
+      resize: vi.fn(),
+    });
+
+    harness.setPresentation({ resolutionScale: 0.35 });
+    expect(harness.resolutionScale).toBe(MINIMUM_ADAPTIVE_RESOLUTION_SCALE);
+    expect(harness.resize).toHaveBeenCalledOnce();
+    expect(() => harness.setPresentation({ resolutionScale: Number.NaN }))
+      .toThrowError('resolutionScale must be finite');
+    expect(() => harness.setPresentation({ resolutionScale: Number.POSITIVE_INFINITY }))
+      .toThrowError('resolutionScale must be finite');
+  });
+
+  it('uses the same 0.35 contract as the renderer pixel-ratio floor', () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1 });
+    const setPixelRatio = vi.fn();
+    const setSize = vi.fn();
+    const updateProjectionMatrix = vi.fn();
+    const harness = Object.create(WorldView.prototype) as unknown as ResizeHarness;
+    Object.assign(harness, {
+      disposed: false,
+      resolutionScale: MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
+      layout: { quality: 'low' },
+      mount: { clientWidth: 640, clientHeight: 360 },
+      renderer: { setPixelRatio, setSize },
+      camera: { aspect: 1, updateProjectionMatrix },
+    });
+
+    harness.resize();
+
+    expect(setPixelRatio).toHaveBeenCalledWith(MINIMUM_ADAPTIVE_RESOLUTION_SCALE);
+    expect(setSize).toHaveBeenCalledWith(640, 360, false);
+    expect(harness.camera.aspect).toBeCloseTo(640 / 360);
+    expect(updateProjectionMatrix).toHaveBeenCalledOnce();
   });
 });

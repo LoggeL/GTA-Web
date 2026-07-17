@@ -1,25 +1,17 @@
+import {
+  SOLARA_DISTRICTS,
+  SOLARA_DISTRICT_IDS,
+  resolveSolaraPosition,
+  solaraCoordinateSalt,
+} from '../core/districts';
 import type {
   CollectibleCategoryId,
   CollectibleDefinition,
   CollectibleSetDefinition,
-  DistrictId,
   ItemGrant,
 } from './types';
 
 export const DEFAULT_COLLECTIBLE_SEED = 0x534f4c41;
-
-const DISTRICTS: readonly {
-  readonly id: DistrictId;
-  readonly centerX: number;
-  readonly centerZ: number;
-  readonly radiusX: number;
-  readonly radiusZ: number;
-}[] = [
-  { id: 'neon-strand', centerX: -230, centerZ: 70, radiusX: 125, radiusZ: 105 },
-  { id: 'alta-vista', centerX: 105, centerZ: 80, radiusX: 130, radiusZ: 120 },
-  { id: 'arroyo-heights', centerX: 190, centerZ: 285, radiusX: 145, radiusZ: 95 },
-  { id: 'breakwater', centerX: 105, centerZ: -235, radiusX: 165, radiusZ: 100 },
-];
 
 const COMPONENT_IDS = [
   'component-scrap',
@@ -80,6 +72,15 @@ function roundCoordinate(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+function preferredDistrictCoordinate(
+  minimum: number,
+  maximum: number,
+  random: () => number,
+): number {
+  const margin = 32;
+  return minimum + margin + random() * (maximum - minimum - margin * 2);
+}
+
 function collectibleItems(category: CollectibleCategoryId, ordinal: number): readonly ItemGrant[] {
   switch (category) {
     case 'salvage-cache': {
@@ -96,19 +97,39 @@ function collectibleItems(category: CollectibleCategoryId, ordinal: number): rea
 export function generateCollectibles(seed: number = DEFAULT_COLLECTIBLE_SEED): readonly CollectibleDefinition[] {
   const random = createRandom(seed);
   const definitions: CollectibleDefinition[] = [];
+  const occupiedPositions = new Set<string>();
   let globalOrdinal = 0;
 
   for (const rule of GENERATION_RULES) {
     for (let ordinal = 1; ordinal <= rule.count; ordinal += 1) {
-      const district = DISTRICTS[globalOrdinal % DISTRICTS.length];
-      if (district === undefined) {
+      const districtId = SOLARA_DISTRICT_IDS[globalOrdinal % SOLARA_DISTRICT_IDS.length];
+      if (districtId === undefined) {
         throw new Error('Collectible district table is empty.');
       }
-
-      const angle = random() * Math.PI * 2;
-      const radius = 0.28 + random() * 0.72;
-      const x = district.centerX + Math.cos(angle) * district.radiusX * radius;
-      const z = district.centerZ + Math.sin(angle) * district.radiusZ * radius;
+      const district = SOLARA_DISTRICTS[districtId];
+      const intent = rule.category === 'stunt-jump' ? 'road' : 'sidewalk';
+      let resolved: { readonly x: number; readonly z: number } | null = null;
+      for (let attempt = 0; attempt < 64; attempt += 1) {
+        const preferred = {
+          x: preferredDistrictCoordinate(district.minX, district.maxX, random),
+          z: preferredDistrictCoordinate(district.minZ, district.maxZ, random),
+        };
+        const candidate = resolveSolaraPosition(
+          districtId,
+          preferred,
+          intent,
+          solaraCoordinateSalt(`${seed}:${rule.category}:${ordinal}:${attempt}`),
+        );
+        const key = `${candidate.x.toFixed(1)}:${candidate.z.toFixed(1)}`;
+        if (!occupiedPositions.has(key)) {
+          occupiedPositions.add(key);
+          resolved = candidate;
+          break;
+        }
+      }
+      if (resolved === null) {
+        throw new Error(`Unable to place unique collectible ${rule.category}-${ordinal}`);
+      }
       const y = rule.category === 'signal-node' ? 3 + Math.floor(random() * 10) : 0;
       const suffix = ordinal.toString().padStart(2, '0');
 
@@ -117,12 +138,12 @@ export function generateCollectibles(seed: number = DEFAULT_COLLECTIBLE_SEED): r
         category: rule.category,
         ordinal,
         name: `${rule.displayName} ${suffix}`,
-        district: district.id,
+        district: districtId,
         position: {
-          district: district.id,
-          x: roundCoordinate(x),
+          district: districtId,
+          x: roundCoordinate(resolved.x),
           y,
-          z: roundCoordinate(z),
+          z: roundCoordinate(resolved.z),
         },
         revealRule: rule.revealRule,
         reward: {

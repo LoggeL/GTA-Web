@@ -195,6 +195,10 @@ export interface CitySimulationTickResult {
   weaponFire: WeaponFireResult | null;
 }
 
+export interface SimulationVisualCapabilities {
+  readonly supportsMultiDraw: boolean;
+}
+
 export interface CitySimulationOptions {
   seed?: number | string;
   quality?: SimulationQuality;
@@ -208,7 +212,7 @@ export interface CitySimulationOptions {
 }
 
 export interface CitySimulationApi {
-  attach(scene: Scene): void;
+  attach(scene: Scene, capabilities?: Readonly<SimulationVisualCapabilities>): void;
   detach(): void;
   setVisible(visible: boolean): void;
   setQuality(quality: SimulationQuality): void;
@@ -216,6 +220,7 @@ export interface CitySimulationApi {
   claimTrafficVehicle(id: string): TrafficVehicleSnapshot | null;
   despawnEnemy(targetId: string): boolean;
   tick(context: CitySimulationTick): CitySimulationTickResult;
+  advance(context: CitySimulationTick): WeaponFireResult | null;
   getSnapshot(): CitySimulationSnapshot;
   dispose(): void;
 }

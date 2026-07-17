@@ -1,4 +1,5 @@
 import { SeededRandom, type RandomSeed } from './random';
+import type { SolaraDistrictId } from './districts';
 
 export const GAME_STATE_VERSION = 1 as const;
 export const SAVE_GAME_VERSION = 4 as const;
@@ -6,7 +7,7 @@ export const SAVE_GAME_VERSION = 4 as const;
 export type SaveSlotId = 1 | 2 | 3;
 export type AlexPreset = 'masculine' | 'feminine';
 export type EndingChoice = 'rule' | 'expose';
-export type DistrictId = 'neon-strand' | 'alta-vista' | 'arroyo-heights' | 'breakwater';
+export type DistrictId = SolaraDistrictId;
 export type WeatherKind = 'clear' | 'rain';
 export type GameMode = 'boot' | 'menu' | 'loading' | 'playing' | 'paused';
 export type MissionRuntimePhase = 'inactive' | 'active' | 'checkpoint' | 'complete' | 'failed';

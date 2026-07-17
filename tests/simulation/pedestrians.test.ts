@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { PedestrianSystem } from '../../src/simulation/pedestrians';
-import { SimulationRandom } from '../../src/simulation/random';
+import { PLAYER_SPAWN, generateCity } from '../../src/game/city';
+import { distance2d } from '../../src/simulation/math';
+import {
+  PEDESTRIAN_CAPACITY,
+  PEDESTRIAN_RELOCATION_BUDGET_PER_TICK,
+  PEDESTRIAN_RELEVANCE_RADII,
+  PEDESTRIAN_SEPARATION_PAIR_BUDGET_PER_TICK,
+  PedestrianSystem,
+} from '../../src/simulation/pedestrians';
+import { SimulationRandom, simulationSeed } from '../../src/simulation/random';
 import type { CrimeEvent, SimulationRoadRecipe, WitnessReportEvent } from '../../src/simulation/types';
 
 const road: SimulationRoadRecipe = {
@@ -11,15 +19,18 @@ const road: SimulationRoadRecipe = {
   depth: 18,
 };
 
+const PRODUCTION_WORLD_SEED = 'heatline-solara-world-v1';
+const PEDESTRIAN_RANDOM_SALT = 0x9a712c;
+
 describe('pedestrian life and witnesses', () => {
   it('uses deterministic adaptive pools', () => {
     const reports: WitnessReportEvent[] = [];
     const first = new PedestrianSystem(new SimulationRandom('ped-seed'), 'low', [road], (event) => reports.push(event));
     const second = new PedestrianSystem(new SimulationRandom('ped-seed'), 'low', [road], () => undefined);
     expect(first.getSnapshot()).toEqual(second.getSnapshot());
-    expect(first.getSnapshot()).toHaveLength(18);
+    expect(first.getSnapshot()).toHaveLength(30);
     first.setQuality('high');
-    expect(first.getSnapshot()).toHaveLength(45);
+    expect(first.getSnapshot()).toHaveLength(72);
   });
 
   it('flees nearby serious crime, then submits one witness report', () => {
@@ -49,6 +60,54 @@ describe('pedestrian life and witnesses', () => {
       system.tick(0.1, 6 + frame * 0.1);
     }
     expect(reports).toHaveLength(reportCount);
+  });
+
+  it('finishes a witness lifecycle while its pooled slot is adaptively throttled', () => {
+    const reports: WitnessReportEvent[] = [];
+    const system = new PedestrianSystem(
+      new SimulationRandom('throttled-witness-seed'),
+      'high',
+      [road],
+      (event) => reports.push(event),
+    );
+    const witness = system.getSnapshot().at(-1);
+    if (!witness) throw new Error('Missing throttled witness');
+    const crime: CrimeEvent = {
+      id: 'crime-throttled-witness',
+      kind: 'assault',
+      sourceId: 'player',
+      position: { ...witness.position },
+      severity: 5,
+      simulationTime: 0,
+    };
+
+    system.observeCrime(crime);
+    expect(system.getNpcSnapshot().find(({ id }) => id === witness.id)?.state).toBe('flee');
+    expect(system.setActorLimit(10)).toBe(10);
+    expect(system.getSnapshot().some(({ id }) => id === witness.id)).toBe(false);
+
+    for (let frame = 0; frame < 60; frame += 1) {
+      system.tick(0.1, frame * 0.1);
+    }
+
+    const witnessReports = reports.filter((report) => (
+      report.crimeId === crime.id && report.witnessId === witness.id
+    ));
+    expect(witnessReports).toHaveLength(1);
+    expect(witnessReports[0]?.simulationTime).toBeLessThan(6);
+
+    expect(system.setActorLimit(PEDESTRIAN_CAPACITY.high)).toBe(PEDESTRIAN_CAPACITY.high);
+    expect(system.getNpcSnapshot().find(({ id }) => id === witness.id)).toMatchObject({
+      state: 'wander',
+      behavior: 'wander',
+      pendingCrimeId: null,
+    });
+    for (let frame = 0; frame < 20; frame += 1) {
+      system.tick(0.1, 6 + frame * 0.1);
+    }
+    expect(reports.filter((report) => (
+      report.crimeId === crime.id && report.witnessId === witness.id
+    ))).toHaveLength(1);
   });
 
   it('enters flee state through the general panic hook', () => {
@@ -113,4 +172,210 @@ describe('pedestrian life and witnesses', () => {
     for (let frame = 0; frame < 50; frame += 1) system.tick(0.1, frame * 0.1);
     expect(reports).toHaveLength(0);
   });
+
+  it('repopulates valid sidewalks densely and deterministically as the player crosses districts', () => {
+    const roads = generateCity('ambient-pedestrian-locality', 'high').roads;
+    const first = new PedestrianSystem(
+      new SimulationRandom('ambient-pedestrian-locality'),
+      'high',
+      roads,
+      () => undefined,
+    );
+    const second = new PedestrianSystem(
+      new SimulationRandom('ambient-pedestrian-locality'),
+      'high',
+      [...roads].reverse(),
+      () => undefined,
+    );
+    const playerPositions = [
+      { x: -250, y: 0, z: -250 },
+      { x: 250, y: 0, z: -250 },
+      { x: 250, y: 0, z: 250 },
+      { x: -250, y: 0, z: 250 },
+    ] as const;
+    for (const [index, playerPosition] of playerPositions.entries()) {
+      const ticksToDrainRelocations = Math.ceil(
+        PEDESTRIAN_CAPACITY.high / PEDESTRIAN_RELOCATION_BUDGET_PER_TICK,
+      ) + 4;
+      for (let tick = 0; tick < ticksToDrainRelocations; tick += 1) {
+        const before = new Map(first.getSnapshot().map((pedestrian) => [
+          pedestrian.id,
+          pedestrian,
+        ]));
+        const simulationTime = index * ticksToDrainRelocations * 0.01 + tick * 0.01;
+        first.tick(0.01, simulationTime, { playerPosition });
+        second.tick(0.01, simulationTime, { playerPosition });
+        const snapshot = first.getSnapshot();
+        expect(second.getSnapshot()).toEqual(snapshot);
+
+        const diagnostics = first.getRelevanceDiagnostics();
+        expect(diagnostics.lastTickRelocationAttempts)
+          .toBeLessThanOrEqual(PEDESTRIAN_RELOCATION_BUDGET_PER_TICK);
+        expect(diagnostics.lastTickRelocations)
+          .toBeLessThanOrEqual(diagnostics.lastTickRelocationAttempts);
+        expect(diagnostics.candidateRebuildCount).toBe(index + 1);
+        expect(diagnostics.cachedCandidateCount).toBeGreaterThan(0);
+
+        const relocated = snapshot.filter((pedestrian) => {
+          const prior = before.get(pedestrian.id);
+          return prior !== undefined && distance2d(prior.position, pedestrian.position) > 8;
+        });
+        expect(relocated).toHaveLength(diagnostics.lastTickRelocations);
+        expect(relocated.length).toBeLessThanOrEqual(PEDESTRIAN_RELOCATION_BUDGET_PER_TICK);
+        for (const pedestrian of relocated) {
+          expect(distance2d(pedestrian.position, playerPosition))
+            .toBeGreaterThanOrEqual(PEDESTRIAN_RELEVANCE_RADII.minimumSpawnDistance - 0.2);
+          expect(distance2d(pedestrian.position, playerPosition))
+            .toBeLessThanOrEqual(PEDESTRIAN_RELEVANCE_RADII.maximumSpawnDistance + 0.2);
+          expect(Math.min(...first.getNavigationGraph().nodes.map((node) =>
+            distance2d(node.position, pedestrian.position))))
+            .toBeLessThan(0.02);
+          for (const other of snapshot) {
+            if (other.id === pedestrian.id) continue;
+            expect(distance2d(pedestrian.position, other.position))
+              .toBeGreaterThanOrEqual(
+                PEDESTRIAN_RELEVANCE_RADII.minimumPedestrianSpacing - 0.05,
+              );
+          }
+        }
+      }
+
+      const snapshot = first.getSnapshot();
+      expect(snapshot).toHaveLength(PEDESTRIAN_CAPACITY.high);
+      expect(snapshot.filter((pedestrian) => (
+        distance2d(pedestrian.position, playerPosition)
+          <= PEDESTRIAN_RELEVANCE_RADII.recycleBeyondDistance + 0.2
+      )).length).toBeGreaterThanOrEqual(60);
+    }
+  });
+
+  it('preserves the moving-player pool and avoids pedestrian deadlock for five minutes', () => {
+    const roads = generateCity('ambient-pedestrian-five-minute-soak', 'low').roads;
+    const first = new PedestrianSystem(
+      new SimulationRandom('ambient-pedestrian-five-minute-soak'),
+      'low',
+      roads,
+      () => undefined,
+    );
+    const second = new PedestrianSystem(
+      new SimulationRandom('ambient-pedestrian-five-minute-soak'),
+      'low',
+      [...roads].reverse(),
+      () => undefined,
+    );
+    const expectedIds = first.getSnapshot().map(({ id }) => id);
+    const stationarySeconds = new Map<string, number>();
+    const maximumStationarySeconds = new Map<string, number>();
+    let minimumRelevantCount = Number.POSITIVE_INFINITY;
+
+    for (let frame = 0; frame < 3_000; frame += 1) {
+      const pathPhase = (frame % 1_200) / 1_200;
+      const playerPosition = {
+        x: pathPhase < 0.5
+          ? -450 + pathPhase * 1_800
+          : 1_350 - pathPhase * 1_800,
+        y: 0,
+        z: 0,
+      };
+      const context = { playerPosition } as const;
+      first.tick(0.1, frame * 0.1, context);
+      second.tick(0.1, frame * 0.1, context);
+      expect(first.getRelevanceDiagnostics().lastTickRelocationAttempts)
+        .toBeLessThanOrEqual(PEDESTRIAN_RELOCATION_BUDGET_PER_TICK);
+      expect(first.getRelevanceDiagnostics().lastTickRelocations)
+        .toBeLessThanOrEqual(PEDESTRIAN_RELOCATION_BUDGET_PER_TICK);
+      const snapshot = first.getNpcSnapshot();
+      expect(snapshot.map(({ id }) => id)).toEqual(expectedIds);
+      for (const pedestrian of snapshot) {
+        const stationary = pedestrian.speed < 0.05
+          ? (stationarySeconds.get(pedestrian.id) ?? 0) + 0.1
+          : 0;
+        stationarySeconds.set(pedestrian.id, stationary);
+        maximumStationarySeconds.set(
+          pedestrian.id,
+          Math.max(maximumStationarySeconds.get(pedestrian.id) ?? 0, stationary),
+        );
+        expect(Number.isFinite(pedestrian.position.x)).toBe(true);
+        expect(Number.isFinite(pedestrian.position.z)).toBe(true);
+        expect(pedestrian.recoveryCount).toBeLessThanOrEqual(4);
+      }
+      if (frame % 100 === 99) {
+        minimumRelevantCount = Math.min(
+          minimumRelevantCount,
+          snapshot.filter((pedestrian) => (
+            distance2d(pedestrian.position, playerPosition)
+              <= PEDESTRIAN_RELEVANCE_RADII.recycleBeyondDistance + 2
+          )).length,
+        );
+        expect(second.getNpcSnapshot()).toEqual(snapshot);
+      }
+    }
+
+    expect(minimumRelevantCount).toBeGreaterThanOrEqual(25);
+    expect(Math.max(...maximumStationarySeconds.values())).toBeLessThan(5);
+  });
+
+  it.each(['low', 'high'] as const)(
+    'keeps the exact production-seed %s pool locally separated for sixty seconds',
+    (quality) => {
+      const layout = generateCity(PRODUCTION_WORLD_SEED, quality);
+      const citySeed = simulationSeed(`${layout.seed}:city-life`);
+      const createSystem = (roads: readonly SimulationRoadRecipe[]) => new PedestrianSystem(
+        new SimulationRandom((citySeed ^ PEDESTRIAN_RANDOM_SALT) >>> 0),
+        quality,
+        roads,
+        () => undefined,
+      );
+      const first = createSystem(layout.roads);
+      const second = createSystem([...layout.roads].reverse());
+      const previousPositions = new Map(first.getSnapshot().map((pedestrian) => [
+        pedestrian.id,
+        { ...pedestrian.position },
+      ]));
+      const stationarySeconds = new Map<string, number>();
+      let maximumStationarySeconds = 0;
+      let minimumPairDistance = Number.POSITIVE_INFINITY;
+      let maximumPairChecks = 0;
+
+      for (let frame = 0; frame < 600; frame += 1) {
+        const simulationTime = (frame + 1) * 0.1;
+        const context = { playerPosition: PLAYER_SPAWN } as const;
+        first.tick(0.1, simulationTime, context);
+        second.tick(0.1, simulationTime, context);
+        const snapshot = first.getSnapshot();
+        maximumPairChecks = Math.max(
+          maximumPairChecks,
+          first.getRelevanceDiagnostics().lastTickSeparationPairChecks,
+        );
+
+        for (let firstIndex = 0; firstIndex < snapshot.length; firstIndex += 1) {
+          const pedestrian = snapshot[firstIndex];
+          if (!pedestrian) continue;
+          const previous = previousPositions.get(pedestrian.id);
+          const stationary = previous && distance2d(previous, pedestrian.position) < 0.01
+            ? (stationarySeconds.get(pedestrian.id) ?? 0) + 0.1
+            : 0;
+          stationarySeconds.set(pedestrian.id, stationary);
+          maximumStationarySeconds = Math.max(maximumStationarySeconds, stationary);
+          previousPositions.set(pedestrian.id, { ...pedestrian.position });
+
+          for (let secondIndex = firstIndex + 1; secondIndex < snapshot.length; secondIndex += 1) {
+            const other = snapshot[secondIndex];
+            if (!other) continue;
+            minimumPairDistance = Math.min(
+              minimumPairDistance,
+              distance2d(pedestrian.position, other.position),
+            );
+          }
+        }
+        if (frame % 60 === 59) expect(second.getSnapshot()).toEqual(snapshot);
+      }
+
+      expect(minimumPairDistance).toBeGreaterThanOrEqual(0.5);
+      expect(maximumStationarySeconds).toBeLessThan(5);
+      expect(maximumPairChecks).toBeLessThanOrEqual(
+        PEDESTRIAN_SEPARATION_PAIR_BUDGET_PER_TICK,
+      );
+    },
+  );
 });

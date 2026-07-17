@@ -5,8 +5,10 @@ import {
   FogExp2,
   HemisphereLight,
   MathUtils,
+  MeshStandardMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
+  ReinhardToneMapping,
   Scene,
   SRGBColorSpace,
   Vector3,
@@ -35,7 +37,10 @@ import {
   oppositeShoulder,
 } from './camera';
 import { cameraSafeFraction } from './collision';
-import type { DrawDensityLimits } from './CityStreamingController';
+import {
+  MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
+  type DrawDensityLimits,
+} from './CityStreamingController';
 import { PLAYER_SPAWN, VEHICLE_SPAWN, districtAt, generateCity } from './city';
 import type { CityLayout, CollisionRect } from './city';
 import { DefaultWorldControls } from './controls';
@@ -95,6 +100,8 @@ const DEFAULT_CAMERA_PITCH = 0.42;
 const CAMERA_TARGET_HEIGHT = 1.48;
 const TRAFFIC_INTERACTION_PREFIX = 'traffic:';
 const LOW_QUALITY_VISUAL_INTERVAL_SECONDS = 1 / 30;
+const LOW_QUALITY_ROAD_DRY_COLOR = new Color(0x26313b);
+const LOW_QUALITY_ROAD_WET_COLOR = new Color(0x141c24);
 
 const NO_SOFT_COVER: SoftCoverResult = Object.freeze({
   engaged: false,
@@ -292,7 +299,11 @@ export class WorldView {
     const quality = options.quality ?? 'high';
     this.reducedMotion = options.reducedMotion ?? false;
     this.cameraShake = normalizeCameraShakeIntensity(options.cameraShake ?? 1);
-    this.resolutionScale = MathUtils.clamp(options.resolutionScale ?? 1, 0.5, 1);
+    this.resolutionScale = MathUtils.clamp(
+      options.resolutionScale ?? 1,
+      0.5,
+      1,
+    );
     this.inputProvider = options.inputProvider ?? null;
     this.onSnapshot = options.onSnapshot ?? null;
     this.onFrame = options.onFrame ?? null;
@@ -347,7 +358,9 @@ export class WorldView {
       powerPreference: 'high-performance',
     });
     this.renderer.outputColorSpace = SRGBColorSpace;
-    this.renderer.toneMapping = ACESFilmicToneMapping;
+    this.renderer.toneMapping = quality === 'high'
+      ? ACESFilmicToneMapping
+      : ReinhardToneMapping;
     this.renderer.toneMappingExposure = 1.08;
     this.renderer.shadowMap.enabled = quality === 'high';
     this.renderer.shadowMap.type = PCFSoftShadowMap;
@@ -373,7 +386,10 @@ export class WorldView {
     this.sunLight.shadow.camera.far = 800;
     this.scene.add(this.hemisphereLight, this.sunLight);
 
-    this.cityVisuals = createCityVisuals(this.layout);
+    const visualCapabilities = {
+      supportsMultiDraw: this.renderer.extensions.has('WEBGL_multi_draw'),
+    } as const;
+    this.cityVisuals = createCityVisuals(this.layout, visualCapabilities);
     this.citySimulation = new CitySimulation({
       seed: `${this.layout.seed}:city-life`,
       quality,
@@ -390,7 +406,10 @@ export class WorldView {
     this.roadClosureVisual = new RoadClosureVisual();
     this.policeResponseVisual = new PoliceResponseVisual();
     this.avatarVisual = new AvatarVisual();
-    this.vehicleVisual = new VehicleVisual();
+    this.vehicleVisual = new VehicleVisual(initialVehicle.classId, {
+      quality,
+      ...visualCapabilities,
+    });
     this.rainField = new RainField(this.layout.seed, quality);
     this.scene.add(
       this.cityVisuals.root,
@@ -402,7 +421,7 @@ export class WorldView {
       this.vehicleVisual.root,
       this.rainField.points,
     );
-    this.citySimulation.attach(this.scene);
+    this.citySimulation.attach(this.scene, visualCapabilities);
     this.avatarVisual.sync(this.player);
     this.vehicleVisual.sync(this.vehicle, 0);
     this.activeVehiclePaint = this.vehicleVisual.setPaint(this.activeVehiclePaint);
@@ -477,7 +496,11 @@ export class WorldView {
       if (!Number.isFinite(options.resolutionScale)) {
         throw new TypeError('resolutionScale must be finite');
       }
-      const resolutionScale = MathUtils.clamp(options.resolutionScale, 0.5, 1);
+      const resolutionScale = MathUtils.clamp(
+        options.resolutionScale,
+        MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
+        1,
+      );
       if (resolutionScale !== this.resolutionScale) {
         this.resolutionScale = resolutionScale;
         this.resize();
@@ -1057,7 +1080,7 @@ export class WorldView {
             ...(playerThreatening || this.currentAim ? { threatening: true } : {}),
           }
         : undefined;
-      this.citySimulation.tick({
+      this.citySimulation.advance({
         deltaSeconds: dt,
         playerPosition: { ...actor.position },
         playerHeading: actor.heading,
@@ -1131,7 +1154,10 @@ export class WorldView {
     const safeHeight = Math.max(1, Math.floor(height));
     const maxPixelRatio = this.layout.quality === 'high' ? 2 : 1.25;
     this.renderer.setPixelRatio(
-      Math.max(0.5, Math.min(window.devicePixelRatio || 1, maxPixelRatio) * this.resolutionScale),
+      Math.max(
+        MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
+        Math.min(window.devicePixelRatio || 1, maxPixelRatio) * this.resolutionScale,
+      ),
     );
     this.renderer.setSize(safeWidth, safeHeight, false);
     this.camera.aspect = safeWidth / safeHeight;
@@ -1650,8 +1676,16 @@ export class WorldView {
     this.cityVisuals.buildingMaterials.forEach((material) => {
       material.emissiveIntensity = palette.buildingEmissiveIntensity;
     });
-    this.cityVisuals.roadMaterial.roughness = 0.82 - this.environment.rainIntensity * 0.42;
-    this.cityVisuals.roadMaterial.metalness = 0.05 + this.environment.rainIntensity * 0.24;
+    const roadMaterial = this.cityVisuals.roadMaterial;
+    if (roadMaterial instanceof MeshStandardMaterial) {
+      roadMaterial.roughness = 0.82 - this.environment.rainIntensity * 0.42;
+      roadMaterial.metalness = 0.05 + this.environment.rainIntensity * 0.24;
+    } else {
+      roadMaterial.color
+        .copy(LOW_QUALITY_ROAD_DRY_COLOR)
+        .lerp(LOW_QUALITY_ROAD_WET_COLOR, this.environment.rainIntensity);
+      this.cityVisuals.setRoadColor(roadMaterial.color);
+    }
   }
 
   private emitSnapshot(force: boolean): void {

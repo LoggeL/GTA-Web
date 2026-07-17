@@ -1,15 +1,26 @@
-import { InstancedMesh, Scene } from 'three';
-import { describe, expect, it } from 'vitest';
+import { InstancedMesh, Matrix4, Mesh, Scene } from 'three';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CitySimulation } from '../../src/simulation/CitySimulation';
 
-function firstInstanceMatrixVersion(scene: Scene): number {
+function firstVisibleVisualState(scene: Scene): readonly number[] {
   const visualRoot = scene.getObjectByName('city-simulation-visuals');
-  const mesh = visualRoot?.children.find((child): child is InstancedMesh => (
-    child instanceof InstancedMesh
+  const mesh = visualRoot?.children.find((child): child is Mesh => (
+    child.visible && child instanceof Mesh
   ));
   if (!mesh) throw new Error('Missing pooled simulation visual');
-  return mesh.instanceMatrix.version;
+  if (mesh instanceof InstancedMesh) {
+    const matrix = new Matrix4();
+    mesh.getMatrixAt(0, matrix);
+    return [...matrix.elements];
+  }
+  const position = mesh.geometry.getAttribute('position');
+  const sampledVertices = Math.min(4, mesh.geometry.drawRange.count);
+  const state = [mesh.geometry.drawRange.count];
+  for (let vertex = 0; vertex < sampledVertices; vertex += 1) {
+    state.push(position.getX(vertex), position.getY(vertex), position.getZ(vertex));
+  }
+  return state;
 }
 
 function tick(simulation: CitySimulation, deltaSeconds: number): void {
@@ -29,21 +40,21 @@ describe('CitySimulation visual cadence', () => {
       seedCombatants: false,
     });
     simulation.attach(scene);
-    const initialVersion = firstInstanceMatrixVersion(scene);
+    const initialMatrix = firstVisibleVisualState(scene);
 
     tick(simulation, 1 / 120);
     tick(simulation, 1 / 120);
     tick(simulation, 1 / 120);
     expect(simulation.getSnapshot().simulationTime).toBeCloseTo(3 / 120);
-    expect(firstInstanceMatrixVersion(scene)).toBe(initialVersion);
+    expect(firstVisibleVisualState(scene)).toEqual(initialMatrix);
 
     tick(simulation, 1 / 120);
     expect(simulation.getSnapshot().simulationTime).toBeCloseTo(4 / 120);
-    expect(firstInstanceMatrixVersion(scene)).toBe(initialVersion + 1);
+    expect(firstVisibleVisualState(scene)).not.toEqual(initialMatrix);
     simulation.dispose();
   });
 
-  it('retains per-tick visual updates at high quality', () => {
+  it('retains per-frame visual updates on the high-quality advance path', () => {
     const scene = new Scene();
     const simulation = new CitySimulation({
       seed: 'high-visual-cadence',
@@ -51,9 +62,40 @@ describe('CitySimulation visual cadence', () => {
       seedCombatants: false,
     });
     simulation.attach(scene);
-    const initialVersion = firstInstanceMatrixVersion(scene);
-    tick(simulation, 1 / 120);
-    expect(firstInstanceMatrixVersion(scene)).toBe(initialVersion + 1);
+    const initialMatrix = firstVisibleVisualState(scene);
+    const snapshotSpy = vi.spyOn(simulation, 'getSnapshot');
+    simulation.advance({
+      deltaSeconds: 1 / 120,
+      playerPosition: { x: 0, y: 0, z: 0 },
+      playerHeading: 0,
+    });
+    expect(snapshotSpy).toHaveBeenCalledOnce();
+    expect(firstVisibleVisualState(scene)).not.toEqual(initialMatrix);
+    simulation.dispose();
+  });
+
+  it('materializes low-quality snapshots only when the visual upload is due', () => {
+    const scene = new Scene();
+    const simulation = new CitySimulation({
+      seed: 'snapshot-free-low-runtime',
+      quality: 'low',
+      seedCombatants: false,
+    });
+    simulation.attach(scene);
+    const snapshotSpy = vi.spyOn(simulation, 'getSnapshot');
+    const context = {
+      deltaSeconds: 1 / 120,
+      playerPosition: { x: 0, y: 0, z: 0 },
+      playerHeading: 0,
+    };
+
+    simulation.advance(context);
+    simulation.advance(context);
+    simulation.advance(context);
+    expect(snapshotSpy).not.toHaveBeenCalled();
+
+    simulation.advance(context);
+    expect(snapshotSpy).toHaveBeenCalledOnce();
     simulation.dispose();
   });
 });

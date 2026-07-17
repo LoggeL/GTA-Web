@@ -22,6 +22,27 @@ const durationSeconds = Number.isFinite(configuredDuration) && configuredDuratio
   ? configuredDuration
   : 30;
 const stressDurationSeconds = Math.min(30, Math.max(12, durationSeconds));
+const disableMultiDraw = process.env.HEATLINE_DISABLE_MULTI_DRAW === '1';
+
+const disableMultiDrawInitScript = `
+  (() => {
+    for (const constructor of [
+      globalThis.WebGLRenderingContext,
+      globalThis.WebGL2RenderingContext,
+    ]) {
+      const prototype = constructor?.prototype;
+      const original = prototype?.getExtension;
+      if (!prototype || typeof original !== 'function') continue;
+      Object.defineProperty(prototype, 'getExtension', {
+        configurable: true,
+        value(name) {
+          if (name === 'WEBGL_multi_draw') return null;
+          return original.call(this, name);
+        },
+      });
+    }
+  })();
+`;
 
 test.describe('M8 browser performance and recovery', () => {
   test('runtime frame telemetry meets release targets during adjacent-cell driving', async ({
@@ -29,6 +50,9 @@ test.describe('M8 browser performance and recovery', () => {
     isMobile,
   }) => {
     test.setTimeout((durationSeconds + ADAPTATION_WARMUP_MILLISECONDS / 1_000 + 45) * 1_000);
+    if (disableMultiDraw) {
+      await page.addInitScript({ content: disableMultiDrawInitScript });
+    }
     await startNewGame(page, 1, 'Masculine Alex', '/?qa=1');
     await page.waitForFunction(() => Boolean((window as PerformanceWindow).__HEATLINE_QA__));
     await page.keyboard.press('e');

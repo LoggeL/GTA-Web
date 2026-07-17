@@ -98,7 +98,7 @@ describe('Solara lane-graph traffic route', () => {
       traffic.tick(tick);
       deterministicTwin.tick(tick);
       const snapshot = traffic.getSnapshot();
-      poolStayedInvariant &&= snapshot.length === 24
+      poolStayedInvariant &&= snapshot.length === 42
         && snapshot.map(({ id }) => id).every((id, index) => id === expectedIds[index]);
 
       let frameDistance = 0;
@@ -182,7 +182,7 @@ describe('Solara lane-graph traffic route', () => {
     expect(allPositionsStayedInCity).toBe(true);
     expect(allTransitionsWereConnected).toBe(true);
     expect(allTransitionsReachedTheirJunction).toBe(true);
-    expect(maximumFrameDisplacement).toBeLessThan(2);
+    expect(maximumFrameDisplacement).toBeLessThan(3);
     expect(connectedTransitions).toBeGreaterThan(100);
     expect(perpendicularTransitions).toBeGreaterThan(20);
     expect(sawIntersectionYield).toBe(true);

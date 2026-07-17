@@ -82,6 +82,7 @@ export type {
   SimulationPlayerInput,
   SimulationQuality,
   SimulationRoadRecipe,
+  SimulationVisualCapabilities,
   SimulationVec3,
   TrafficBehavior,
   TrafficVehicleSnapshot,

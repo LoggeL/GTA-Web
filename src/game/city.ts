@@ -1,4 +1,6 @@
+import { solaraDistrictAt } from '../core/districts';
 import { SeededRandom, hashSeed } from './random';
+import { AUTHORED_INTERIORS } from './InteriorRuntime';
 import type { DistrictId, Vec3Data, WorldQuality } from './types';
 
 export const CITY_SIZE = 1_200;
@@ -28,6 +30,12 @@ export interface BuildingRecipe {
   height: number;
   color: number;
   roofStyle: 'flat' | 'step' | 'spire';
+  facadeStyle: 'art-deco' | 'glass-grid' | 'stucco-arcade' | 'warehouse-bay';
+  storefrontStyle: 'awning' | 'lobby' | 'arcade' | 'loading-bay';
+  roofFeature: 'neon-crown' | 'antenna' | 'terrace' | 'water-tank' | 'gantry' | 'vents';
+  frontage: 'north' | 'east' | 'south' | 'west';
+  accentColor: number;
+  glassColor: number;
   landmark: boolean;
 }
 
@@ -40,7 +48,20 @@ export interface RoadRecipe {
   major: boolean;
 }
 
-export type PropKind = 'palm' | 'streetlight' | 'tree' | 'container' | 'bollard';
+export type PropKind =
+  | 'palm'
+  | 'streetlight'
+  | 'tree'
+  | 'container'
+  | 'bollard'
+  | 'bench'
+  | 'planter'
+  | 'kiosk'
+  | 'market-stall'
+  | 'transit-shelter'
+  | 'sculpture'
+  | 'cargo-pallet'
+  | 'pipe-stack';
 
 export interface PropRecipe {
   id: string;
@@ -153,6 +174,208 @@ const ROADS_PER_AXIS = 6;
 const ROAD_SPACING = 100;
 const LOCAL_ROAD_START = 50;
 const ROAD_WIDTH = 18;
+const MINIMUM_CURB_EDGE_CLEARANCE = 3.2;
+const PEDESTRIAN_SIDEWALK_MAX_EDGE_CLEARANCE = 4.4;
+const PEDESTRIAN_FOOTPRINT_RADIUS = 0.32;
+const PEDESTRIAN_PROP_MARGIN = 0.18;
+const BUILDING_ROAD_EDGE_SETBACK = 8.25;
+const PROP_BUILDING_MARGIN = 0.2;
+const PROP_PAIR_MARGIN = 0.15;
+const PORTAL_BUILDING_MARGIN = 0.2;
+const SAFE_EXTERIOR_PLAYER_RADIUS = 0.58;
+
+const AUTHORED_EXTERIOR_CLEARANCE_ZONES = AUTHORED_INTERIORS.flatMap(
+  (definition) => [
+    {
+      district: definition.portal.district,
+      position: definition.portal.position,
+      radius:
+        definition.portal.interactionRadiusMeters + PORTAL_BUILDING_MARGIN,
+    },
+    {
+      district: definition.portal.district,
+      position: definition.portal.safeExteriorTransform.position,
+      radius: SAFE_EXTERIOR_PLAYER_RADIUS + PORTAL_BUILDING_MARGIN,
+    },
+  ],
+);
+
+function localRoadWidth(index: number): number {
+  return index === 2 || index === 3 ? ROAD_WIDTH + 8 : ROAD_WIDTH;
+}
+
+const PROP_FOOTPRINT_HALF_EXTENTS = {
+  palm: { along: 0.17, lateral: 0.17 },
+  streetlight: { along: 0.065, lateral: 0.065 },
+  tree: { along: 0.225, lateral: 0.225 },
+  container: { along: 2.9, lateral: 1.225 },
+  bollard: { along: 0.11, lateral: 0.11 },
+  bench: { along: 1.2, lateral: 0.39 },
+  planter: { along: 0.625, lateral: 0.625 },
+  kiosk: { along: 1.45, lateral: 1.125 },
+  'market-stall': { along: 1.7, lateral: 1.15 },
+  'transit-shelter': { along: 2, lateral: 0.8 },
+  sculpture: { along: 1.12, lateral: 1.12 },
+  'cargo-pallet': { along: 1.175, lateral: 0.925 },
+  'pipe-stack': { along: 1.35, lateral: 0.725 },
+} as const satisfies Readonly<Record<
+  PropKind,
+  { readonly along: number; readonly lateral: number }
+>>;
+
+function propCurbEdgeClearance(kind: PropKind, scale: number): number {
+  const pedestrianSafeClearance =
+    PEDESTRIAN_SIDEWALK_MAX_EDGE_CLEARANCE
+    + PEDESTRIAN_FOOTPRINT_RADIUS
+    + PEDESTRIAN_PROP_MARGIN
+    + PROP_FOOTPRINT_HALF_EXTENTS[kind].lateral * scale;
+  return Math.max(MINIMUM_CURB_EDGE_CLEARANCE, pedestrianSafeClearance);
+}
+
+function stratifiedAcrossPosition(
+  index: number,
+  roadIndex: number,
+  verticalRoad: boolean,
+  count: number,
+  rng: SeededRandom,
+): number {
+  const slotsPerPass = ROADS_PER_AXIS * 2;
+  const strata = Math.max(1, Math.floor(count / slotsPerPass));
+  const passIndex = Math.floor(index / slotsPerPass);
+  const axisPhase = verticalRoad ? ROADS_PER_AXIS - 2 : ROADS_PER_AXIS - 1;
+  const stratum = (passIndex + roadIndex + axisPhase) % strata;
+  const usableLength = DISTRICT_SIZE - 50;
+  const stratumWidth = usableLength / strata;
+  const stratumCenter = 25 + (stratum + 0.5) * stratumWidth;
+  const jitter = Math.min(18, stratumWidth * 0.1);
+  return stratumCenter + rng.range(-jitter, jitter);
+}
+
+function propClearsPerpendicularRoads(
+  across: number,
+  kind: PropKind,
+  scale: number,
+): boolean {
+  const halfAlong = PROP_FOOTPRINT_HALF_EXTENTS[kind].along * scale;
+  for (let roadIndex = 0; roadIndex < ROADS_PER_AXIS; roadIndex += 1) {
+    const roadCenter = LOCAL_ROAD_START + roadIndex * ROAD_SPACING;
+    const pedestrianEnvelope =
+      PEDESTRIAN_SIDEWALK_MAX_EDGE_CLEARANCE
+      + PEDESTRIAN_FOOTPRINT_RADIUS
+      + PEDESTRIAN_PROP_MARGIN;
+    const requiredDistance =
+      localRoadWidth(roadIndex) / 2 + pedestrianEnvelope + halfAlong;
+    if (Math.abs(across - roadCenter) < requiredDistance) {
+      return false;
+    }
+  }
+  return across >= 25 && across <= DISTRICT_SIZE - 25;
+}
+
+function propClearsBuildings(
+  x: number,
+  z: number,
+  verticalRoad: boolean,
+  kind: PropKind,
+  scale: number,
+  buildings: readonly BuildingRecipe[],
+): boolean {
+  const footprint = PROP_FOOTPRINT_HALF_EXTENTS[kind];
+  const halfX = (verticalRoad ? footprint.lateral : footprint.along) * scale;
+  const halfZ = (verticalRoad ? footprint.along : footprint.lateral) * scale;
+  return buildings.every((building) => (
+    x + halfX + PROP_BUILDING_MARGIN <= building.position.x - building.width / 2
+    || x - halfX - PROP_BUILDING_MARGIN >= building.position.x + building.width / 2
+    || z + halfZ + PROP_BUILDING_MARGIN <= building.position.z - building.depth / 2
+    || z - halfZ - PROP_BUILDING_MARGIN >= building.position.z + building.depth / 2
+  ));
+}
+
+function propClearsPlacedProps(
+  x: number,
+  z: number,
+  verticalRoad: boolean,
+  kind: PropKind,
+  scale: number,
+  placedProps: readonly PropRecipe[],
+): boolean {
+  const footprint = PROP_FOOTPRINT_HALF_EXTENTS[kind];
+  const halfX = (verticalRoad ? footprint.lateral : footprint.along) * scale;
+  const halfZ = (verticalRoad ? footprint.along : footprint.lateral) * scale;
+  return placedProps.every((placed) => {
+    const placedFootprint = PROP_FOOTPRINT_HALF_EXTENTS[placed.kind];
+    const placedVertical = placed.rotation === Math.PI / 2;
+    const placedHalfX =
+      (placedVertical ? placedFootprint.lateral : placedFootprint.along)
+      * placed.scale;
+    const placedHalfZ =
+      (placedVertical ? placedFootprint.along : placedFootprint.lateral)
+      * placed.scale;
+    return (
+      x + halfX + PROP_PAIR_MARGIN <= placed.position.x - placedHalfX
+      || x - halfX - PROP_PAIR_MARGIN >= placed.position.x + placedHalfX
+      || z + halfZ + PROP_PAIR_MARGIN <= placed.position.z - placedHalfZ
+      || z - halfZ - PROP_PAIR_MARGIN >= placed.position.z + placedHalfZ
+    );
+  });
+}
+
+function findDistrictPropPosition(
+  district: Readonly<DistrictBounds>,
+  roadIndex: number,
+  verticalRoad: boolean,
+  preferredAcross: number,
+  preferredSide: number,
+  kind: PropKind,
+  scale: number,
+  buildings: readonly BuildingRecipe[],
+  placedProps: readonly PropRecipe[],
+): Vec3Data {
+  const curbDistance =
+    localRoadWidth(roadIndex) / 2 + propCurbEdgeClearance(kind, scale);
+  const roadCenter =
+    LOCAL_ROAD_START + roadIndex * ROAD_SPACING;
+  const alongCandidates = [
+    preferredAcross,
+    ...Array.from({ length: 12 }, (_, index) => {
+      const distance = (Math.floor(index / 2) + 1) * 12;
+      return preferredAcross + (index % 2 === 0 ? -distance : distance);
+    }),
+    ...Array.from({ length: 5 }, (_, blockIndex) => 100 + blockIndex * ROAD_SPACING),
+  ];
+  const seenAcross = new Set<number>();
+  for (const across of alongCandidates) {
+    const roundedAcross = Math.round(across * 1_000_000) / 1_000_000;
+    if (
+      seenAcross.has(roundedAcross)
+      || !propClearsPerpendicularRoads(across, kind, scale)
+    ) {
+      continue;
+    }
+    seenAcross.add(roundedAcross);
+    for (const side of [preferredSide, -preferredSide]) {
+      const lateral = roadCenter + side * curbDistance;
+      const x = district.minX + (verticalRoad ? lateral : across);
+      const z = district.minZ + (verticalRoad ? across : lateral);
+      if (
+        propClearsBuildings(x, z, verticalRoad, kind, scale, buildings)
+        && propClearsPlacedProps(
+          x,
+          z,
+          verticalRoad,
+          kind,
+          scale,
+          placedProps,
+        )
+      ) {
+        return { x, y: 0, z };
+      }
+    }
+  }
+  throw new Error(
+    `Unable to place ${kind} beside ${district.id} road ${roadIndex}`,
+  );
+}
 
 function districtHeightRange(district: DistrictId): readonly [number, number] {
   switch (district) {
@@ -167,16 +390,112 @@ function districtHeightRange(district: DistrictId): readonly [number, number] {
   }
 }
 
-function districtPropKind(district: DistrictId, rng: SeededRandom): PropKind {
+const DISTRICT_PROP_KINDS = {
+  'neon-strand': [
+    'palm',
+    'streetlight',
+    'bench',
+    'planter',
+    'kiosk',
+    'palm',
+    'bench',
+  ],
+  'alta-vista': [
+    'streetlight',
+    'tree',
+    'planter',
+    'transit-shelter',
+    'sculpture',
+    'bench',
+    'streetlight',
+  ],
+  'arroyo-heights': [
+    'tree',
+    'planter',
+    'market-stall',
+    'bench',
+    'kiosk',
+    'tree',
+    'streetlight',
+  ],
+  breakwater: [
+    'container',
+    'bollard',
+    'cargo-pallet',
+    'pipe-stack',
+    'streetlight',
+    'container',
+    'bollard',
+  ],
+} as const satisfies Readonly<Record<DistrictId, readonly PropKind[]>>;
+
+function districtPropKind(
+  district: DistrictId,
+  rng: SeededRandom,
+  index: number,
+): PropKind {
+  const palette = DISTRICT_PROP_KINDS[district];
+  return index < palette.length ? palette[index] ?? rng.pick(palette) : rng.pick(palette);
+}
+
+function districtBuildingStyle(district: DistrictId): Pick<
+  BuildingRecipe,
+  'facadeStyle' | 'storefrontStyle'
+> {
   switch (district) {
     case 'neon-strand':
-      return rng.next() > 0.28 ? 'palm' : 'streetlight';
+      return { facadeStyle: 'art-deco', storefrontStyle: 'awning' };
     case 'alta-vista':
-      return rng.next() > 0.45 ? 'streetlight' : 'tree';
+      return { facadeStyle: 'glass-grid', storefrontStyle: 'lobby' };
     case 'arroyo-heights':
-      return rng.next() > 0.3 ? 'tree' : 'streetlight';
+      return { facadeStyle: 'stucco-arcade', storefrontStyle: 'arcade' };
     case 'breakwater':
-      return rng.next() > 0.35 ? 'container' : 'bollard';
+      return { facadeStyle: 'warehouse-bay', storefrontStyle: 'loading-bay' };
+  }
+}
+
+function districtRoofFeature(
+  district: DistrictId,
+  landmark: boolean,
+  rng: SeededRandom,
+): BuildingRecipe['roofFeature'] {
+  if (landmark) {
+    switch (district) {
+      case 'neon-strand':
+        return 'neon-crown';
+      case 'alta-vista':
+        return 'antenna';
+      case 'arroyo-heights':
+        return 'water-tank';
+      case 'breakwater':
+        return 'gantry';
+    }
+  }
+  switch (district) {
+    case 'neon-strand':
+      return rng.pick(['neon-crown', 'terrace', 'vents'] as const);
+    case 'alta-vista':
+      return rng.pick(['antenna', 'terrace', 'vents'] as const);
+    case 'arroyo-heights':
+      return rng.pick(['terrace', 'water-tank', 'vents'] as const);
+    case 'breakwater':
+      return rng.pick(['gantry', 'vents', 'water-tank'] as const);
+  }
+}
+
+function districtAccentColors(
+  district: DistrictBounds,
+  rng: SeededRandom,
+): readonly [number, number] {
+  switch (district.id) {
+    case 'neon-strand':
+      return [rng.pick([0xff4fa3, 0x28e0d1, 0xffd357]), rng.pick([0x203b62, 0x4d2468])];
+    case 'alta-vista':
+      return [rng.pick([0x71d9ff, 0xe5c27a, 0x91a6bc]), rng.pick([0x17384f, 0x284f67])];
+    case 'arroyo-heights':
+      return [rng.pick([0xdc6b45, 0xf1c06b, 0x5d9875]), rng.pick([0x476f74, 0x675047])];
+    case 'breakwater':
+      return [rng.pick([0xf0a727, 0xb64f3f, 0x4b8f91]), rng.pick([0x30434a, 0x4a3c38])];
   }
 }
 
@@ -186,7 +505,7 @@ function addDistrictRoads(district: DistrictBounds, roads: RoadRecipe[]): void {
     const x = district.minX + localOffset;
     const z = district.minZ + localOffset;
     const major = index === 2 || index === 3;
-    const width = major ? ROAD_WIDTH + 8 : ROAD_WIDTH;
+    const width = localRoadWidth(index);
 
     roads.push(
       {
@@ -209,6 +528,80 @@ function addDistrictRoads(district: DistrictBounds, roads: RoadRecipe[]): void {
   }
 }
 
+function buildingClearsAuthoredExteriorZones(
+  district: DistrictId,
+  x: number,
+  z: number,
+  width: number,
+  depth: number,
+): boolean {
+  const minX = x - width / 2;
+  const maxX = x + width / 2;
+  const minZ = z - depth / 2;
+  const maxZ = z + depth / 2;
+  return AUTHORED_EXTERIOR_CLEARANCE_ZONES.every((zone) => {
+    if (zone.district !== district) {
+      return true;
+    }
+    const closestX = Math.max(minX, Math.min(zone.position.x, maxX));
+    const closestZ = Math.max(minZ, Math.min(zone.position.z, maxZ));
+    const deltaX = zone.position.x - closestX;
+    const deltaZ = zone.position.z - closestZ;
+    return deltaX * deltaX + deltaZ * deltaZ >= zone.radius * zone.radius;
+  });
+}
+
+function placeBuildingOutsideAuthoredZones(
+  district: DistrictId,
+  preferredX: number,
+  preferredZ: number,
+  width: number,
+  depth: number,
+  blockMinX: number,
+  blockMaxX: number,
+  blockMinZ: number,
+  blockMaxZ: number,
+): readonly [number, number] {
+  const minimumX = blockMinX + width / 2;
+  const maximumX = blockMaxX - width / 2;
+  const minimumZ = blockMinZ + depth / 2;
+  const maximumZ = blockMaxZ - depth / 2;
+  const offsets = [0, 6, -6, 12, -12, 18, -18, 24, -24, 30, -30];
+  const candidates = offsets
+    .flatMap((offsetX) => offsets.map((offsetZ) => ({ offsetX, offsetZ })))
+    .sort((left, right) => {
+      const leftDistance =
+        left.offsetX * left.offsetX + left.offsetZ * left.offsetZ;
+      const rightDistance =
+        right.offsetX * right.offsetX + right.offsetZ * right.offsetZ;
+      return (
+        leftDistance - rightDistance
+        || left.offsetX - right.offsetX
+        || left.offsetZ - right.offsetZ
+      );
+    });
+  const visited = new Set<string>();
+  for (const { offsetX, offsetZ } of candidates) {
+    const x = Math.min(
+      maximumX,
+      Math.max(minimumX, preferredX + offsetX),
+    );
+    const z = Math.min(
+      maximumZ,
+      Math.max(minimumZ, preferredZ + offsetZ),
+    );
+    const key = `${x.toFixed(6)}:${z.toFixed(6)}`;
+    if (visited.has(key)) {
+      continue;
+    }
+    visited.add(key);
+    if (buildingClearsAuthoredExteriorZones(district, x, z, width, depth)) {
+      return [x, z];
+    }
+  }
+  throw new Error(`Unable to reserve authored exterior clearance in ${district}`);
+}
+
 function addDistrictBuildings(
   district: DistrictBounds,
   rng: SeededRandom,
@@ -220,17 +613,47 @@ function addDistrictBuildings(
 
   for (let blockX = 0; blockX < 5; blockX += 1) {
     for (let blockZ = 0; blockZ < 5; blockZ += 1) {
-      const blockMinX = district.minX + LOCAL_ROAD_START + ROAD_WIDTH / 2 + blockX * ROAD_SPACING;
-      const blockMinZ = district.minZ + LOCAL_ROAD_START + ROAD_WIDTH / 2 + blockZ * ROAD_SPACING;
-      const blockExtent = ROAD_SPACING - ROAD_WIDTH;
+      const leftRoadCenter =
+        district.minX + LOCAL_ROAD_START + blockX * ROAD_SPACING;
+      const rightRoadCenter = leftRoadCenter + ROAD_SPACING;
+      const nearRoadCenter =
+        district.minZ + LOCAL_ROAD_START + blockZ * ROAD_SPACING;
+      const farRoadCenter = nearRoadCenter + ROAD_SPACING;
+      const blockMinX =
+        leftRoadCenter
+        + localRoadWidth(blockX) / 2
+        + BUILDING_ROAD_EDGE_SETBACK;
+      const blockMaxX =
+        rightRoadCenter
+        - localRoadWidth(blockX + 1) / 2
+        - BUILDING_ROAD_EDGE_SETBACK;
+      const blockMinZ =
+        nearRoadCenter
+        + localRoadWidth(blockZ) / 2
+        + BUILDING_ROAD_EDGE_SETBACK;
+      const blockMaxZ =
+        farRoadCenter
+        - localRoadWidth(blockZ + 1) / 2
+        - BUILDING_ROAD_EDGE_SETBACK;
+      const blockWidth = blockMaxX - blockMinX;
+      const blockDepth = blockMaxZ - blockMinZ;
 
       for (let plot = 0; plot < plotsPerBlock; plot += 1) {
         const isLeft = plot % 2 === 0;
         const isNear = plot < 2;
-        const plotWidth = plotsPerBlock === 3 && plot === 2 ? blockExtent * 0.62 : blockExtent * 0.42;
-        const plotDepth = plotsPerBlock === 3 && plot === 2 ? blockExtent * 0.34 : blockExtent * 0.43;
-        const baseX = blockMinX + (isLeft ? blockExtent * 0.25 : blockExtent * 0.73);
-        const baseZ = blockMinZ + (isNear ? blockExtent * 0.26 : blockExtent * 0.73);
+        const plotWidth =
+          plotsPerBlock === 3 && plot === 2
+            ? blockWidth * 0.62
+            : blockWidth * 0.42;
+        const plotDepth =
+          plotsPerBlock === 3 && plot === 2
+            ? blockDepth * 0.34
+            : blockDepth * 0.43;
+        const baseX =
+          plot === 2
+            ? (blockMinX + blockMaxX) / 2
+            : blockMinX + (isLeft ? blockWidth * 0.25 : blockWidth * 0.73);
+        const baseZ = blockMinZ + (isNear ? blockDepth * 0.26 : blockDepth * 0.73);
         const width = plotWidth * rng.range(0.72, 0.96);
         const depth = plotDepth * rng.range(0.72, 0.96);
         let height = rng.range(minimumHeight, maximumHeight);
@@ -249,15 +672,45 @@ function addDistrictBuildings(
 
         const jitterX = rng.range(-3.5, 3.5);
         const jitterZ = rng.range(-3.5, 3.5);
+        const preferredPositionX = Math.min(
+          blockMaxX - width / 2,
+          Math.max(blockMinX + width / 2, baseX + jitterX),
+        );
+        const preferredPositionZ = Math.min(
+          blockMaxZ - depth / 2,
+          Math.max(blockMinZ + depth / 2, baseZ + jitterZ),
+        );
+        const [positionX, positionZ] = placeBuildingOutsideAuthoredZones(
+          district.id,
+          preferredPositionX,
+          preferredPositionZ,
+          width,
+          depth,
+          blockMinX,
+          blockMaxX,
+          blockMinZ,
+          blockMaxZ,
+        );
+        const [accentColor, glassColor] = districtAccentColors(district, rng);
+        const buildingStyle = districtBuildingStyle(district.id);
+        const frontage: BuildingRecipe['frontage'] =
+          (blockX + blockZ) % 2 === 0
+            ? isNear ? 'north' : 'south'
+            : isLeft ? 'west' : 'east';
         buildings.push({
           id: `${district.id}-building-${blockX}-${blockZ}-${plot}`,
           district: district.id,
-          position: { x: baseX + jitterX, y: height / 2, z: baseZ + jitterZ },
+          position: { x: positionX, y: height / 2, z: positionZ },
           width,
           depth,
           height,
           color: rng.pick(district.buildingColors),
           roofStyle: landmark ? 'spire' : rng.pick(['flat', 'flat', 'step'] as const),
+          ...buildingStyle,
+          roofFeature: districtRoofFeature(district.id, landmark, rng),
+          frontage,
+          accentColor,
+          glassColor,
           landmark,
         });
       }
@@ -269,32 +722,63 @@ function addDistrictProps(
   district: DistrictBounds,
   rng: SeededRandom,
   quality: WorldQuality,
+  buildings: readonly BuildingRecipe[],
   props: PropRecipe[],
 ): void {
-  const count = quality === 'high' ? 46 : 22;
+  const count = quality === 'high' ? 88 : 40;
   for (let index = 0; index < count; index += 1) {
     const verticalRoad = index % 2 === 0;
-    const roadIndex = index % ROADS_PER_AXIS;
-    const across = rng.range(25, DISTRICT_SIZE - 25);
-    const curbOffset = (rng.next() > 0.5 ? 1 : -1) * (ROAD_WIDTH / 2 + 3.2);
-    const x = verticalRoad
-      ? district.minX + LOCAL_ROAD_START + roadIndex * ROAD_SPACING + curbOffset
-      : district.minX + across;
-    const z = verticalRoad
-      ? district.minZ + across
-      : district.minZ + LOCAL_ROAD_START + roadIndex * ROAD_SPACING + curbOffset;
-    const kind = districtPropKind(district.id, rng);
-    const color = kind === 'container'
-      ? rng.pick([0xd25d3d, 0x298c91, 0xd4a736, 0x526b86])
-      : 0xffffff;
+    const roadIndex = Math.floor(index / 2) % ROADS_PER_AXIS;
+    const across = stratifiedAcrossPosition(
+      index,
+      roadIndex,
+      verticalRoad,
+      count,
+      rng,
+    );
+    const curbSide = rng.next() > 0.5 ? 1 : -1;
+    const kind = districtPropKind(district.id, rng, index);
+    const color = (() => {
+      switch (kind) {
+        case 'container':
+        case 'cargo-pallet':
+        case 'pipe-stack':
+          return rng.pick([0xd25d3d, 0x298c91, 0xd4a736, 0x526b86]);
+        case 'bench':
+        case 'kiosk':
+        case 'market-stall':
+        case 'transit-shelter':
+        case 'sculpture':
+          return rng.pick([...district.buildingColors, district.emissiveColor]);
+        case 'planter':
+          return rng.pick([0xb26745, 0xd5aa68, 0x587c72]);
+        case 'palm':
+        case 'streetlight':
+        case 'tree':
+        case 'bollard':
+          return 0xffffff;
+      }
+    })();
+    const scale = rng.range(0.82, 1.18);
+    const position = findDistrictPropPosition(
+      district,
+      roadIndex,
+      verticalRoad,
+      across,
+      curbSide,
+      kind,
+      scale,
+      buildings,
+      props,
+    );
 
     props.push({
       id: `${district.id}-prop-${index}`,
       district: district.id,
       kind,
-      position: { x, y: 0, z },
-      rotation: verticalRoad ? 0 : Math.PI / 2,
-      scale: rng.range(0.82, 1.18),
+      position,
+      rotation: verticalRoad ? Math.PI / 2 : 0,
+      scale,
       color,
     });
   }
@@ -310,7 +794,7 @@ export function generateCity(seed: number | string = 'solara-v1', quality: World
   for (const district of DISTRICTS) {
     addDistrictRoads(district, roads);
     addDistrictBuildings(district, rng, quality, buildings);
-    addDistrictProps(district, rng, quality, props);
+    addDistrictProps(district, rng, quality, buildings, props);
   }
 
   roads.push(
@@ -355,10 +839,7 @@ export function generateCity(seed: number | string = 'solara-v1', quality: World
 }
 
 export function districtAt(x: number, z: number): DistrictId {
-  if (z < 0) {
-    return x < 0 ? 'neon-strand' : 'alta-vista';
-  }
-  return x < 0 ? 'arroyo-heights' : 'breakwater';
+  return solaraDistrictAt(x, z);
 }
 
 export function districtDefinition(id: DistrictId): DistrictBounds {

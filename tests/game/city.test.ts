@@ -17,7 +17,7 @@ describe('procedural Solara layout', () => {
     expect(first).toEqual(second);
     expect(first.roads).toHaveLength(50);
     expect(first.buildings).toHaveLength(300);
-    expect(first.props).toHaveLength(184);
+    expect(first.props).toHaveLength(352);
     expect(first.traversalObstacles).toHaveLength(2);
     expect(first.collisions).toHaveLength(first.buildings.length + first.traversalObstacles.length);
   });
@@ -29,7 +29,7 @@ describe('procedural Solara layout', () => {
 
     expect(different.buildings).not.toEqual(first.buildings);
     expect(low.buildings).toHaveLength(200);
-    expect(low.props).toHaveLength(88);
+    expect(low.props).toHaveLength(160);
     expect(low.roads).toHaveLength(first.roads.length);
   });
 

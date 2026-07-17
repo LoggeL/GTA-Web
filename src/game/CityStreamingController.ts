@@ -16,6 +16,13 @@ export type StreamingPlatform = 'desktop' | 'mobile';
 export type AdaptivePerformanceLevel = 'full' | 'balanced' | 'minimum';
 export type CellRetryStatus = 'waiting' | 'retrying' | 'exhausted';
 
+/**
+ * Runtime-only floor reserved for the sustained-pressure adaptive minimum.
+ * The persisted/user-visible resolution setting remains constrained to [0.5, 1].
+ */
+export const MINIMUM_ADAPTIVE_RESOLUTION_SCALE = 0.35;
+export const MOBILE_MINIMUM_ADAPTIVE_RESOLUTION_SCALE = 0.4;
+
 export interface ActorLimits {
   readonly traffic: number;
   readonly pedestrians: number;
@@ -153,8 +160,8 @@ const QUALITY_DRAW_DENSITY: Readonly<Record<WorldQuality, DrawDensityLimits>> = 
 
 const LEVEL_ACTOR_SCALE: Readonly<Record<AdaptivePerformanceLevel, number>> = {
   full: 1,
-  balanced: 0.75,
-  minimum: 0.5,
+  balanced: 0.8,
+  minimum: 0.6,
 };
 
 const LEVEL_DENSITY_SCALE: Readonly<
@@ -229,6 +236,31 @@ export function baseResolutionScaleForQuality(
 }
 
 /**
+ * Keeps automatic low quality inside a stable full-level budget on desktop
+ * software WebGL. Mobile has a separate 30 FPS target, while explicit user
+ * quality choices and hardware rendering retain their configured ceiling.
+ */
+export function baseResolutionScaleForRuntime(
+  configuredScale: number,
+  qualitySetting: WorldQuality | 'auto',
+  resolvedQuality: WorldQuality,
+  platform: StreamingPlatform,
+  softwareRenderer: boolean,
+): number {
+  const qualityScale = baseResolutionScaleForQuality(
+    configuredScale,
+    qualitySetting,
+    resolvedQuality,
+  );
+  return softwareRenderer
+    && platform === 'desktop'
+    && qualitySetting === 'auto'
+    && resolvedQuality === 'low'
+    ? Math.min(qualityScale, 0.5)
+    : qualityScale;
+}
+
+/**
  * Pure orchestration state for city visual residency and adaptive budgets.
  * Loading and rendering stay with the caller; this class only returns deterministic decisions.
  */
@@ -273,7 +305,11 @@ export class CityStreamingController {
     this.#slowWindowsToDegrade = options.slowWindowsToDegrade ?? 2;
     this.#fastWindowsToRecover = options.fastWindowsToRecover ?? 4;
 
-    if (this.#baseResolutionScale < 0.5 || this.#baseResolutionScale > 1) {
+    if (
+      !Number.isFinite(this.#baseResolutionScale)
+      || this.#baseResolutionScale < 0.5
+      || this.#baseResolutionScale > 1
+    ) {
       throw new RangeError('baseResolutionScale must be between 0.5 and 1');
     }
     for (const delay of this.#retryDelaysMilliseconds) {
@@ -483,13 +519,32 @@ export class CityStreamingController {
   }
 
   public sampleFrame(frameMilliseconds: number): AdaptivePerformanceDecision {
+    const reason = this.#recordAndEvaluateFrame(frameMilliseconds);
+    return this.#adaptivePerformanceDecision(reason);
+  }
+
+  /**
+   * Records a runtime frame without materializing rolling stats, limits, or a
+   * decision unless the adaptive performance level actually changes.
+   */
+  public sampleRuntimeFrame(
+    frameMilliseconds: number,
+  ): AdaptivePerformanceDecision | null {
+    const reason = this.#recordAndEvaluateFrame(frameMilliseconds);
+    return reason === 'degraded' || reason === 'recovered'
+      ? this.#adaptivePerformanceDecision(reason)
+      : null;
+  }
+
+  #recordAndEvaluateFrame(
+    frameMilliseconds: number,
+  ): AdaptivePerformanceDecision['reason'] {
     assertFiniteNonNegative(frameMilliseconds, 'frame duration');
     this.#frameSamples.push(frameMilliseconds);
     if (this.#frameSamples.length > this.#frameWindowSize) {
       this.#frameSamples.shift();
     }
     this.#samplesSinceEvaluation += 1;
-    const previousLevel = this.#performanceLevel();
     let reason: AdaptivePerformanceDecision['reason'] =
       this.#frameSamples.length < this.#frameWindowSize ? 'collecting' : 'stable';
 
@@ -498,13 +553,14 @@ export class CityStreamingController {
       && this.#samplesSinceEvaluation >= this.#frameWindowSize
     ) {
       this.#samplesSinceEvaluation = 0;
-      const frames = this.#frameStats();
+      const averageMilliseconds = this.#averageFrameMilliseconds();
+      const p95Milliseconds = this.#p95FrameMilliseconds();
       const slow =
-        frames.averageMilliseconds >= this.#slowFrameThresholdMilliseconds
-        || frames.p95Milliseconds >= this.#slowFrameThresholdMilliseconds * 1.35;
+        averageMilliseconds >= this.#slowFrameThresholdMilliseconds
+        || p95Milliseconds >= this.#slowFrameThresholdMilliseconds * 1.35;
       const fast =
-        frames.averageMilliseconds <= this.#fastFrameThresholdMilliseconds
-        && frames.p95Milliseconds < this.#slowFrameThresholdMilliseconds;
+        averageMilliseconds <= this.#fastFrameThresholdMilliseconds
+        && p95Milliseconds < this.#slowFrameThresholdMilliseconds;
 
       this.#slowWindowStreak = slow ? this.#slowWindowStreak + 1 : 0;
       this.#fastWindowStreak = fast ? this.#fastWindowStreak + 1 : 0;
@@ -528,9 +584,22 @@ export class CityStreamingController {
       }
     }
 
+    return reason;
+  }
+
+  #adaptivePerformanceDecision(
+    reason: AdaptivePerformanceDecision['reason'],
+  ): AdaptivePerformanceDecision {
     const level = this.#performanceLevel();
+    const changed = reason === 'degraded' || reason === 'recovered';
+    const previousLevelIndex = reason === 'degraded'
+      ? this.#performanceLevelIndex - 1
+      : reason === 'recovered'
+        ? this.#performanceLevelIndex + 1
+        : this.#performanceLevelIndex;
+    const previousLevel = PERFORMANCE_LEVELS[previousLevelIndex] ?? level;
     return {
-      changed: level !== previousLevel,
+      changed,
       reason,
       previousLevel,
       level,
@@ -650,6 +719,17 @@ export class CityStreamingController {
     const actorScale = LEVEL_ACTOR_SCALE[level];
     const baseDensity = QUALITY_DRAW_DENSITY[this.#quality];
     const levelDensity = LEVEL_DENSITY_SCALE[level];
+    const usesLowQualityAdaptiveMinimum =
+      this.#quality === 'low' && level === 'minimum';
+    const adaptiveMinimumResolutionScale = this.#platform === 'mobile'
+      ? MOBILE_MINIMUM_ADAPTIVE_RESOLUTION_SCALE
+      : MINIMUM_ADAPTIVE_RESOLUTION_SCALE;
+    const resolutionReduction = usesLowQualityAdaptiveMinimum
+      ? defaultResolutionScale('low') - adaptiveMinimumResolutionScale
+      : LEVEL_RESOLUTION_REDUCTION[level];
+    const resolutionFloor = usesLowQualityAdaptiveMinimum
+      ? adaptiveMinimumResolutionScale
+      : 0.5;
     const traffic = Math.max(
       1,
       Math.floor(TRAFFIC_CAPACITY[this.#quality] * actorScale),
@@ -679,8 +759,8 @@ export class CityStreamingController {
         shadows: clamp01(baseDensity.shadows * levelDensity.shadows),
       },
       resolutionScale: Math.max(
-        0.5,
-        this.#baseResolutionScale - LEVEL_RESOLUTION_REDUCTION[level],
+        resolutionFloor,
+        this.#baseResolutionScale - resolutionReduction,
       ),
     };
   }
@@ -694,11 +774,8 @@ export class CityStreamingController {
         estimatedFramesPerSecond: 0,
       };
     }
-    const total = this.#frameSamples.reduce((sum, value) => sum + value, 0);
-    const averageMilliseconds = total / this.#frameSamples.length;
-    const sorted = [...this.#frameSamples].sort((left, right) => left - right);
-    const p95Index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
-    const p95Milliseconds = sorted[p95Index] ?? 0;
+    const averageMilliseconds = this.#averageFrameMilliseconds();
+    const p95Milliseconds = this.#p95FrameMilliseconds();
     return {
       sampleCount: this.#frameSamples.length,
       averageMilliseconds,
@@ -706,5 +783,19 @@ export class CityStreamingController {
       estimatedFramesPerSecond:
         averageMilliseconds === 0 ? 0 : 1_000 / averageMilliseconds,
     };
+  }
+
+  #averageFrameMilliseconds(): number {
+    const total = this.#frameSamples.reduce((sum, value) => sum + value, 0);
+    return this.#frameSamples.length === 0
+      ? 0
+      : total / this.#frameSamples.length;
+  }
+
+  #p95FrameMilliseconds(): number {
+    if (this.#frameSamples.length === 0) return 0;
+    const sorted = [...this.#frameSamples].sort((left, right) => left - right);
+    const p95Index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+    return sorted[p95Index] ?? 0;
   }
 }
