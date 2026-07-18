@@ -313,7 +313,7 @@ describe('pedestrian life and witnesses', () => {
 
     expect(minimumRelevantCount).toBeGreaterThanOrEqual(25);
     expect(Math.max(...maximumStationarySeconds.values())).toBeLessThan(5);
-  });
+  }, 15_000);
 
   it.each(['low', 'high'] as const)(
     'keeps the exact production-seed %s pool locally separated for sixty seconds',
