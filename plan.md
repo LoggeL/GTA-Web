@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-19 01:29 CEST
+Last updated: 2026-07-19 01:34 CEST
 Plan status: Active
-Current focus: M13 — remove broken police actors and deployments
+Current focus: M13 complete — cop-free live preview verified; awaiting player feedback
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -351,11 +351,11 @@ Acceptance: active pedestrians must be solid to Alex on foot and in an occupied 
 
 Acceptance: a fast player-car impact must visibly and comedically “yeet” the contacted pedestrian along a finite ballistic arc without blood, injury detail, dismemberment, or realistic suffering. Launch distance, height, angular velocity, and flight duration are capped; the pedestrian may bounce once, must settle on the ground, and must resume a valid flee/wander lifecycle. Low and High rendering must show the same coherent whole-body tumble without adding actor draws or allocations to the hot path. Slow nudges remain the existing grounded shove, continuous overlap cannot relaunch or duplicate crime, airborne pedestrians cannot act as invisible vehicle walls, and authored obstacles remain solid.
 
-### M13 — Remove broken police actors — `IN PROGRESS`
+### M13 — Remove broken police actors — `COMPLETE`
 
 - [x] Replace the active police-presentation adapter with an allocation-free disabled implementation so officers, response cruisers, tactical vans, roadblocks, spike strips, helicopters, spotlights, and their collisions cannot enter the world.
 - [x] Remove police cruisers from deterministic ambient-traffic selection while retaining the vehicle definition only for save/schema and authored-content compatibility.
-- [ ] Preserve crime/wanted save and mission compatibility without spawning cops, pass focused static/browser checks, and publish a short muted preview.
+- [x] Preserve crime/wanted save and mission compatibility without spawning cops, pass focused static/browser checks, and publish a short muted preview.
 
 Acceptance: no police officer, response cruiser, tactical van, roadblock, spike strip, helicopter, spotlight, or ambient patrol cruiser may render, update, collide, or block traversal at any wanted level. The existing wanted/crime state may continue as compatibility data for saves and authored objectives, but it must not instantiate police world actors. The disabled presentation module must return one stable all-false snapshot and an empty collision list through its existing interface, allocate no response geometry/materials, and stay inert across exterior/interior transitions and levels 0–5. Ordinary civilian traffic density and vehicle pools remain unchanged.
 
@@ -471,6 +471,7 @@ Acceptance: no police officer, response cruiser, tactical van, roadblock, spike 
 | 2026-07-19 00:07 | M12 Preview 1 / M12 complete | Published and live-verified the comedic player-car pedestrian tumble. The exact source commit and `m12-preview-1` tag passed the Pages build, Chromium, Firefox, WebKit, artifact upload, and deployment jobs. All six public shell files are byte-identical to the reviewed local build. One deliberately short live Chromium drive-through used the real occupied-player-car sweep: the pedestrian entered `comedic-tumble`, rose above ground, displayed the BONK notice, settled back to `grounded`, and produced no page, console, or asset-request failure. | Source `90972e5db8f721547e6269c501e9fb7077d2ec17`; tag `m12-preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29662733013); [live preview](https://loggel.github.io/GTA-Web/?preview=m12-preview-1). Live smoke 1/1 in 4.6 s with visible Master 0 and output hard-muted before load. SHA-256: HTML `6b83c7489b7ca6422b5fad28689bd4871e4caa3cdaf6cf34356b132f37459d87`; app JS `4ff923329f56e621e19458b0246555bce366f9c79221726bd2fc1d3094292751`; Three.js `6b5cf8de5207e2266457731448b65bbc08f88efba3ea154d561a10b44d9144e6`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No performance matrix, long soak, hardware test, music playback, or reboot. |
 | 2026-07-19 01:23 | M13 police-removal kickoff | Opened a focused removal from direct player feedback. The existing world-facing police-presentation interface remains the single seam, but its production adapter will become deliberately inert: no response geometry, materials, transforms, visibility, or collisions at any wanted level. Ambient traffic selection separately removes the police-cruiser weight while retaining its registry entry for save/schema and authored-content compatibility. | M13 marked `IN PROGRESS`; `plan.md` remains the sole tracker. Crime/wanted data stays compatible so saves and mission objectives do not corrupt, but it may not create cops in the world. Scope covers officers, response and ambient cruisers, tactical vans, barricades/spikes, helicopter/spotlight, collision-cache invalidation, all-false snapshots, fixed civilian traffic capacity, one concise muted browser check, no hardware tests, no long soak, and no reboot. |
 | 2026-07-19 01:29 | M13 implementation and local acceptance | Replaced the former 700-plus-line police actor renderer/navigation implementation with one inert adapter behind the unchanged WorldView interface. It allocates only an empty hidden root, no actor children, geometry, materials, transforms, animation, or collisions; every level/phase returns the same frozen all-false snapshot and empty collision list. Police-cruiser traffic weights are zero in all districts, normal combat defeat now returns to the clinic instead of booking, response sirens were removed, and user-facing wanted copy now presents the save-compatible state as abstract city heat. | Focused gate: 3 files / 38 tests. Exact-source `npm run check`: 94/94 Vitest files, 652/652 tests, 5/5 release checks, strict TypeScript, full ESLint, production build, source/dist asset graph, and 1.60 MiB / 0.69 MiB budget green. One real local Chromium start passed in 2.1 s after load: hard-muted output, visible Master 0, Heat 5 retained for mission/save compatibility, all seven police response fields false/inactive/zero, no ambient police cruiser among the fixed traffic pool, and no page, console, or request failures. No performance matrix, long soak, hardware test, music playback, or reboot. Canonical sync, commit, Pages deployment, byte verification, and one short live smoke remain open. |
+| 2026-07-19 01:34 | M13 Preview 1 / M13 complete | Published and live-verified the cop-free world adapter and ambient-traffic selection. The exact source commit and `m13-preview-1` tag passed the Pages build, Chromium, Firefox, WebKit, artifact upload, and deployment jobs. All six public shell files are byte-identical to the reviewed local build. One deliberately short live Chromium Heat-5 check confirmed the save-compatible heat ladder without creating a police actor, patrol vehicle, barricade, helicopter, spotlight, or police collision. | Source `b8e60104fed1e3b37434d32f3feac6294228dd59`; tag `m13-preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29665383618); [live preview](https://loggel.github.io/GTA-Web/?preview=m13-preview-1). Live smoke 1/1 in 2.3 s with visible Master 0 and output hard-muted before load. SHA-256: HTML `754fb341ddbda545c17a881446c6f19e64dbf1e1b9396fb3dcbd2fc8f6a33ffd`; app JS `24fac6d991bf0208fb9b5cd29c03dcf875d396955129b6a3ec51ae5362915113`; Three.js `7da18655f7a8ec969b3efd706b2bae1eb7e139f42b95505b07c005c680b351cb`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No performance matrix, long soak, hardware test, music playback, or reboot. |
 
 ## Release record
 
@@ -478,14 +479,14 @@ Acceptance: no police officer, response cruiser, tactical van, roadblock, spike 
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
 - Current stable release: Final v1.0.0 (`v1.0.0`)
 - Stable release commit: `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`
-- Latest playable preview: M12 comedic-pedestrian-yeet Preview 1 (`m12-preview-1`)
-- Preview source commit: `90972e5db8f721547e6269c501e9fb7077d2ec17`
-- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m12-preview-1`
+- Latest playable preview: M13 cop-removal Preview 1 (`m13-preview-1`)
+- Preview source commit: `b8e60104fed1e3b37434d32f3feac6294228dd59`
+- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m13-preview-1`
 - Physical Android evidence runner commit: `4baaca6a667a146c02f82f07789ceae84d2bbd7b`
 - Stable deployment workflow: [GitHub Pages run 29559022071 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29559022071)
-- Latest preview workflow: [GitHub Pages run 29662733013 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29662733013)
+- Latest preview workflow: [GitHub Pages run 29665383618 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29665383618)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.69 MiB at the M12 preview gate
-- Published artifact size: 1.62 MiB at the M12 preview gate
-- Latest `npm run check`: 94/94 Vitest files, 657/657 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
-- Latest browser smoke test: M12 Pages passed Chromium, Firefox, and WebKit release jobs before deployment. The byte-verified live Preview 1 then passed one deliberately short Chromium drive-through in 4.6 seconds with hard-muted output and visible Master 0; a real occupied-player-car sweep launched one pedestrian into `comedic-tumble`, showed the BONK notice, and settled the same slot back to `grounded` without uncaught page, console, or asset-request failures. No additional performance matrix, long soak, hardware test, music playback, or reboot was run.
+- Current compressed shell: 0.69 MiB at the M13 preview gate
+- Published artifact size: 1.60 MiB at the M13 preview gate
+- Latest `npm run check`: 94/94 Vitest files, 652/652 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
+- Latest browser smoke test: M13 Pages passed Chromium, Firefox, and WebKit release jobs before deployment. The byte-verified live Preview 1 then passed one deliberately short Chromium Heat-5 start in 2.3 seconds with hard-muted output and visible Master 0; all police response fields remained false/zero/inactive, ambient traffic contained no police cruiser, the abstract heat HUD read `EXPOSED`, and no uncaught page, console, or asset-request failure occurred. No additional performance matrix, long soak, hardware test, music playback, or reboot was run.
