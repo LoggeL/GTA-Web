@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-19 00:01 CEST
+Last updated: 2026-07-19 00:07 CEST
 Plan status: Active
-Current focus: M12 — comedic vehicle-impact pedestrian tumbles
+Current focus: M12 complete — live preview verified; awaiting player feedback
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -343,11 +343,11 @@ Acceptance: ordinary traffic must visibly stop and queue at red lights, proceed 
 
 Acceptance: active pedestrians must be solid to Alex on foot and in an occupied vehicle. Fast movement may not tunnel through a pedestrian, exact overlaps must separate deterministically, static walls may not be bypassed by dynamic correction, and contact processing must remain bounded by the fixed 72-pedestrian pool. Vehicle impacts remain stylized and non-graphic, slow nudges do not fabricate wanted crime, and sustained overlap may not emit repeated hit-and-run reports.
 
-### M12 — Comedic pedestrian yeet — `IN PROGRESS`
+### M12 — Comedic pedestrian yeet — `COMPLETE`
 
 - [x] Launch a pedestrian only on a new material vehicle impact, with a bounded deterministic horizontal/upward impulse derived from contact speed and direction.
 - [x] Animate the complete pooled character as one coherent spinning, limb-flailing low-poly tumble, then land with one small cartoon bounce and recover into flee behavior.
-- [ ] Keep slow nudges grounded, prevent wall tunneling and pool growth, preserve hit-and-run debouncing, pass focused simulation/visual parity tests plus the standard build gate, and publish a short muted preview.
+- [x] Keep slow nudges grounded, prevent wall tunneling and pool growth, preserve hit-and-run debouncing, pass focused simulation/visual parity tests plus the standard build gate, and publish a short muted preview.
 
 Acceptance: a fast player-car impact must visibly and comedically “yeet” the contacted pedestrian along a finite ballistic arc without blood, injury detail, dismemberment, or realistic suffering. Launch distance, height, angular velocity, and flight duration are capped; the pedestrian may bounce once, must settle on the ground, and must resume a valid flee/wander lifecycle. Low and High rendering must show the same coherent whole-body tumble without adding actor draws or allocations to the hot path. Slow nudges remain the existing grounded shove, continuous overlap cannot relaunch or duplicate crime, airborne pedestrians cannot act as invisible vehicle walls, and authored obstacles remain solid.
 
@@ -460,6 +460,7 @@ Acceptance: a fast player-car impact must visibly and comedically “yeet” the
 | 2026-07-18 23:36 | M11 Preview 1 / M11 complete | Published and live-verified solid pedestrian collisions for Alex on foot and in the occupied player vehicle. The Pages workflow passed the exact source/build gate plus Chromium, Firefox, and WebKit release smokes before deployment. All six public shell files are byte-identical to the reviewed build. One additional live Chromium start—rather than a test matrix—hard-muted audio before load, set Master visibly to 0, and reached the Arroyo Heights HUD/WebGL world without console, request, or layout failures. | Source `ddca313b42d64fcaf4ea4ff09ea3bfba982cd2aa`; tag `m11-preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29661743369); [live preview](https://loggel.github.io/GTA-Web/?preview=m11-preview-1). Live smoke 1/1 in 3.2 s; exact 1280 px client/scroll width. SHA-256: HTML `a0a88624641775b42b41b1958c32438fda632bf3fd208bd7b0564376a86f037b`; app JS `d42046595c25713a94e98ff765cfa761778aa7ea6279e1f4899a97834b9c9420`; Three.js `c42119d26cacf67a5ee3c0c63f51be2b091bfaf1015d92101ec2278611a1fa9c`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No hardware tests, long soak, music playback, or reboot. |
 | 2026-07-18 23:46 | M12 comedic-yeet kickoff | Opened a deliberately stylized follow-up from direct player feedback. The existing pedestrian-collision interface stays unchanged: the in-process pedestrian module converts a new material vehicle contact into a bounded tumble, owns flight, obstacle response, landing, bounce, and recovery, and exposes only snapshot pose data to the visual adapter. | M12 marked `IN PROGRESS`; `plan.md` remains the sole tracker. Scope locks non-graphic comedy, speed threshold, deterministic capped impulse/spin, coherent whole-body Low/High pose, one bounce, airborne pass-through, wall safety, fixed pools/draws, crime/contact debouncing, Master 0, concise testing, no hardware tests, and no reboot. |
 | 2026-07-18 23:58 | M12 implementation and local acceptance | Material vehicle contacts now convert contact speed/normal into a capped sideways-biased launch, upward arc, two-axis spin, and fast flail phase. The fixed pedestrian slot remains authoritative throughout flight; obstacle-safe planar motion reflects softly, gravity permits one low-restitution cartoon bounce, a hard duration cap forces settlement, and landing resumes the existing flee lifecycle behind a 0.85-second vehicle-relaunch cooldown. Airborne/cooldown slots are excluded from vehicle contact while transient state remains active. The pooled visual adapter composes every torso/head/limb/accessory matrix beneath one tumble pivot in both High instancing and the one-draw Low merge. Relevant crimes now display `BONK! · witnesses definitely noticed`. | Focused gate: 3 files / 37 tests; exact-source standard gate: 94/94 Vitest files, 657/657 tests, 5/5 release checks, TypeScript, full ESLint, build, asset graph, and 1.62 MiB / 0.69 MiB budget green. A single real local Chromium drive-through passed in 4.6 s: audio output hard-muted, visible Master 0, pedestrian observed airborne in `comedic-tumble`, screenshot visually confirmed the coherent sideways flailing pose and BONK notice, then the same slot returned to `grounded`. A landing-overlap regression proves no immediate re-yeet. No performance matrix, long soak, hardware test, music playback, or reboot. Canonical sync, commit, Pages deployment, byte verification, and short live smoke remain open. |
+| 2026-07-19 00:07 | M12 Preview 1 / M12 complete | Published and live-verified the comedic player-car pedestrian tumble. The exact source commit and `m12-preview-1` tag passed the Pages build, Chromium, Firefox, WebKit, artifact upload, and deployment jobs. All six public shell files are byte-identical to the reviewed local build. One deliberately short live Chromium drive-through used the real occupied-player-car sweep: the pedestrian entered `comedic-tumble`, rose above ground, displayed the BONK notice, settled back to `grounded`, and produced no page, console, or asset-request failure. | Source `90972e5db8f721547e6269c501e9fb7077d2ec17`; tag `m12-preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29662733013); [live preview](https://loggel.github.io/GTA-Web/?preview=m12-preview-1). Live smoke 1/1 in 4.6 s with visible Master 0 and output hard-muted before load. SHA-256: HTML `6b83c7489b7ca6422b5fad28689bd4871e4caa3cdaf6cf34356b132f37459d87`; app JS `4ff923329f56e621e19458b0246555bce366f9c79221726bd2fc1d3094292751`; Three.js `6b5cf8de5207e2266457731448b65bbc08f88efba3ea154d561a10b44d9144e6`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No performance matrix, long soak, hardware test, music playback, or reboot. |
 
 ## Release record
 
@@ -467,14 +468,14 @@ Acceptance: a fast player-car impact must visibly and comedically “yeet” the
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
 - Current stable release: Final v1.0.0 (`v1.0.0`)
 - Stable release commit: `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`
-- Latest playable preview: M11 pedestrian-collision Preview 1 (`m11-preview-1`)
-- Preview source commit: `ddca313b42d64fcaf4ea4ff09ea3bfba982cd2aa`
-- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m11-preview-1`
+- Latest playable preview: M12 comedic-pedestrian-yeet Preview 1 (`m12-preview-1`)
+- Preview source commit: `90972e5db8f721547e6269c501e9fb7077d2ec17`
+- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m12-preview-1`
 - Physical Android evidence runner commit: `4baaca6a667a146c02f82f07789ceae84d2bbd7b`
 - Stable deployment workflow: [GitHub Pages run 29559022071 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29559022071)
-- Latest preview workflow: [GitHub Pages run 29661743369 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29661743369)
+- Latest preview workflow: [GitHub Pages run 29662733013 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29662733013)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.69 MiB at the M10 preview gate
-- Published artifact size: 1.61 MiB at the M10 preview gate
-- Latest `npm run check`: 94/94 Vitest files, 655/655 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
-- Latest browser smoke test: M11 Pages passed Chromium, Firefox, and WebKit release jobs before deployment. The byte-verified live Preview 1 then passed one deliberately short Chromium gameplay start in 3.2 seconds with hard-muted audio, visible Master 0, a valid HUD/WebGL world, exact 1280 px width, and no uncaught page, console, or asset-request failures. The existing deterministic five-minute pedestrian simulation passed; no additional long soak or hardware test was run, and the withdrawn reboot was not performed.
+- Current compressed shell: 0.69 MiB at the M12 preview gate
+- Published artifact size: 1.62 MiB at the M12 preview gate
+- Latest `npm run check`: 94/94 Vitest files, 657/657 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
+- Latest browser smoke test: M12 Pages passed Chromium, Firefox, and WebKit release jobs before deployment. The byte-verified live Preview 1 then passed one deliberately short Chromium drive-through in 4.6 seconds with hard-muted output and visible Master 0; a real occupied-player-car sweep launched one pedestrian into `comedic-tumble`, showed the BONK notice, and settled the same slot back to `grounded` without uncaught page, console, or asset-request failures. No additional performance matrix, long soak, hardware test, music playback, or reboot was run.
