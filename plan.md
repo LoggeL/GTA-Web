@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-18 17:07 CEST
+Last updated: 2026-07-18 17:14 CEST
 Plan status: Active
-Current focus: M10 — vehicle collisions, signal-aware driving intelligence, and working traffic lights
+Current focus: M10 complete — vehicle collisions, signal-aware driving intelligence, working traffic lights, world-grounded police, and building-embedded shops
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -320,7 +320,7 @@ Evidence boundary: the green Pixel 7 Playwright profile is viewport, DPR, user-a
 
 Acceptance: ordinary driving through all four districts must show visibly distinct, dressed streets and a materially busier nearby traffic field; pedestrians must read as intentional stylized people rather than primitive placeholders at gameplay distance; adaptive low quality must remain coherent; pools, memory, route recovery, ordinary transition bounds, and the user-approved 60/30 host-based performance targets remain green.
 
-### M10 — Traffic intelligence, collisions, and signals — `IN PROGRESS`
+### M10 — Traffic intelligence, collisions, and signals — `COMPLETE`
 
 - [x] Add deterministic vehicle-to-vehicle collision detection and physical separation with bounded penetration correction, impact speed response, and no pool growth.
 - [x] Deepen ambient driving intelligence with predictive following, smooth queueing, obstruction braking, fair intersection decisions, and bounded blocked-route recovery.
@@ -331,7 +331,7 @@ Acceptance: ordinary driving through all four districts must show visibly distin
 - [x] Compose front-wheel steering yaw and rolling rotation around the correct local axle without wobble or steering-axis contamination.
 - [x] Replace player-relative floating police presentation with world-space, ground-snapped, navigation-aware response actors that remain coherent across movement, teleport, interiors, streaming, and wanted transitions.
 - [x] Embed every shop entrance into a real building façade and transition into a spatially coherent shop interior instead of presenting a freestanding portal prop; preserve interaction reliability, safe transforms, streaming, and mobile bounds.
-- [ ] Pass focused adversarial collision/signal/traffic soaks, full static and browser gates, desktop/compact visual QA, unchanged performance/pool bounds, and publish a verified playable M10 preview.
+- [x] Pass focused adversarial collision/signal/traffic soaks, full static and browser gates, desktop/compact visual QA, unchanged performance/pool bounds, and publish a verified playable M10 preview.
 
 Acceptance: ordinary traffic must visibly stop and queue at red lights, proceed on green, avoid entering blocked intersections, and react deterministically to rear, side, and crossing conflicts. No ambient pair may remain interpenetrating after the collision solver, signals may never grant conflicting greens, long-run routes must recover without permanent gridlock, and both quality levels must keep stable fixed pools and the existing 60/30 host-based performance targets. Player steering must match the requested direction on desktop and touch; steered front wheels must roll around their local axle without wobble; police response must remain anchored to navigable world ground rather than the player frame; and every shop entrance must read as part of an actual building and enter reliably on desktop and compact touch.
 
@@ -438,6 +438,7 @@ Acceptance: ordinary traffic must visibly stop and queue at red lights, proceed 
 | 2026-07-18 16:53 | M10 test-scope correction | The user asked not to overdo testing, so the optional 20-minute-per-device Playwright soak was stopped during its first desktop course and removed from this preview's release gate. No runtime error had appeared before the manual interruption; an interrupted test is not counted as a pass. | Release confidence rests on the already-complete exact-source gates: 94/94 Vitest files and 648/648 tests, 5/5 release checks, Chromium 40 applicable passed / 30 intended skips, Firefox 1/1, WebKit 1/1, performance 4/4, and deterministic five-minute Low/High traffic soaks. Only concise visual High/Low QA, publication, byte verification, and live smoke remain. Master stays 0; no hardware tests and no reboot. |
 | 2026-07-18 17:01 | M10 concise visual release gate | Completed the user-requested concise local visual pass instead of expanding the test scope. Desktop High and compact 844×390 Low both loaded the exact production build with working intersections, live signal lenses, visible ambient traffic/pedestrians, coherent HUD/minimap, and no browser warning or error. Settings authoritatively showed Master 0 before both profiles. | High: 42 traffic, 72 pedestrians, 262 props, 1,197 structure parts, 9 resident cells, zero horizontal overflow. Low after persisted-profile reload: 18 traffic, 30 pedestrians, 40 props, 540 structure parts, 9 resident cells, exact 844 px client/scroll width. Local visual QA is closed; source parity, publication, byte verification, and live desktop/mobile smoke remain. No hardware tests and no reboot. |
 | 2026-07-18 17:07 | M10 Preview 1 CI timing corrective | Pushed source commit `5586460c3f6d32f6ee1a7160d70fade0162953c4` and tag `m10-preview-1`. The Pages build stopped before artifact upload because the pre-existing M9 pedestrian five-minute deterministic soak exceeded Vitest's generic 5-second per-test limit on the shared CI host (6.7 s). All 647 other tests and all three release-browser jobs passed; no gameplay assertion failed. Independent audit confirmed the test performs two complete 3,000-frame simulations plus per-frame/per-NPC assertions and therefore needs an explicit local budget rather than a global relaxation. | [Failed workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29649234775). Minimal corrective preserves all frames and assertions and adds only a 15-second timeout to that one soak. Targeted exact file is green locally: 10/10 tests in 1.74 s, including the five-minute simulation in 1.22 s. Preview 1 remains an undeployed source marker; the corrective will publish as Preview 2. Master stays 0; no hardware tests and no reboot. |
+| 2026-07-18 17:14 | M10 Preview 2 / M10 complete | Published the CI-corrected exact source as the regular playable traffic-intelligence preview. The full Pages workflow passed build, Chromium, Firefox, WebKit, artifact upload, and deployment. All six live files are byte-identical to the locally reviewed production build. Live desktop High and compact Low both loaded an existing campaign save at the authored Moreno garage area with fixed populations, exact viewport width, and no browser warning/error; Settings showed Master 0 before gameplay. | Source `adeb4a78d99fd3cc04b3883972c28cf392c97242`; tag `m10-preview-2`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29649424339); [live preview](https://loggel.github.io/GTA-Web/?preview=m10-preview-2). Live High 1280×720: 42 traffic, 72 pedestrians, 258 props, 1,197 structure parts, 9 resident cells. Live Low 844×390: 18 traffic, 30 pedestrians, 43 props, 540 structure parts, 9 resident cells, exact 844 px scroll width. SHA-256: HTML `5084e5d2168300d891fca05c4678c13c890de53c9c4363ca7945927964cc406b`; app JS `67a5f41e92ba87f3afe658c1a757c71e3436154542251cddedce2c4cb6a26cca`; Three.js `c42119d26cacf67a5ee3c0c63f51be2b091bfaf1015d92101ec2278611a1fa9c`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No hardware tests and no reboot. |
 
 ## Release record
 
@@ -445,14 +446,14 @@ Acceptance: ordinary traffic must visibly stop and queue at red lights, proceed 
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
 - Current stable release: Final v1.0.0 (`v1.0.0`)
 - Stable release commit: `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`
-- Latest playable preview: M9 city-life Preview 1 (`m9-preview-1`)
-- Preview source commit: `c4d012c0c218fc57543651d243d3b531fc04f3a5`
-- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m9-preview-1`
+- Latest playable preview: M10 traffic-intelligence Preview 2 (`m10-preview-2`)
+- Preview source commit: `adeb4a78d99fd3cc04b3883972c28cf392c97242`
+- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m10-preview-2`
 - Physical Android evidence runner commit: `4baaca6a667a146c02f82f07789ceae84d2bbd7b`
 - Stable deployment workflow: [GitHub Pages run 29559022071 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29559022071)
-- Latest preview workflow: [GitHub Pages run 29586806404 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29586806404)
+- Latest preview workflow: [GitHub Pages run 29649424339 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29649424339)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.68 MiB at the M9 preview gate
-- Published artifact size: 1.57 MiB at the M9 preview gate
-- Latest `npm run check`: 90/90 Vitest files, 606/606 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
-- Latest browser smoke test: M9 Chromium passed 37 applicable scenarios with 29 intentional device skips and 0 failures; Firefox and WebKit passed 1/1 each. Two desktop performance repeats passed 2/2, followed by the complete desktop/mobile travel, far-teleport/pool/heap stress, and WebGL context-recovery matrix at 6/6. Live High 1280×720 and Low 844×390 gameplay loaded the byte-verified repository-base assets with the expected enriched populations, exact viewport widths, coherent exterior/interior transitions, and no unexpected browser errors. Physical hardware testing remains outside the user-approved scope and was not run.
+- Current compressed shell: 0.69 MiB at the M10 preview gate
+- Published artifact size: 1.61 MiB at the M10 preview gate
+- Latest `npm run check`: 94/94 Vitest files, 648/648 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
+- Latest browser smoke test: M10 Chromium passed 40 applicable scenarios with 30 intentional device skips and 0 failures; Firefox and WebKit passed 1/1 each. The complete desktop/mobile adjacent-driving and far-teleport/residency/pool/heap performance matrix passed 4/4, with deterministic five-minute Low/High simulation soaks retained; the optional 20-minute Playwright soak was excluded at the user's request to avoid over-testing. Live High 1280×720 and Low 844×390 gameplay loaded the byte-verified repository-base assets with expected fixed populations, exact viewport widths, Master 0, and no browser warning/error. Physical hardware testing remains outside the user-approved scope and was not run; the withdrawn reboot was not performed.
