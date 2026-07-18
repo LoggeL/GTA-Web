@@ -2721,7 +2721,7 @@ const VEHICLE_VISUAL_PALETTES: Readonly<Record<VehicleClassId, VehicleVisualPale
 };
 const VEHICLE_TIRE_COLOR = new Color(0x0e1215);
 const VEHICLE_HUB_COLOR = new Color(0x85929a);
-const VEHICLE_LOW_WHEEL_SHADER_KEY = 'vehicle-low-merged-wheel-v1';
+const VEHICLE_LOW_WHEEL_SHADER_KEY = 'vehicle-low-merged-wheel-v2';
 
 interface VehicleMergedWheelAttributes {
   readonly center: readonly [number, number, number];
@@ -2817,7 +2817,7 @@ vec3 vehicleAnimateWheelDirection( vec3 value ) {
   if ( vehicleWheelRole.x <= 0.0 ) return value;
   float steer = -vehicleWheelSteering * 0.36 * vehicleWheelRole.y;
   float spin = vehicleWheelTravel * vehicleWheelRole.z;
-  return vehicleRotateX( vehicleRotateY( value, steer ), spin );
+  return vehicleRotateY( vehicleRotateX( value, spin ), steer );
 }
 
 vec3 vehicleAnimateWheelPosition( vec3 value ) {
@@ -2851,6 +2851,19 @@ export type VehicleVisualPaint = 'factory' | keyof typeof VEHICLE_VISUAL_PAINTS;
 
 function isVehicleVisualPaint(value: string): value is VehicleVisualPaint {
   return value === 'factory' || Object.hasOwn(VEHICLE_VISUAL_PAINTS, value);
+}
+
+function setVehicleWheelOrientation(
+  target: Object3D,
+  spin: number,
+  steeringYaw: number,
+): void {
+  // The cylinder is authored on Y, laid across the car by the final Z quarter
+  // turn, rolled around the vehicle-local X axle, then yawed as one assembly.
+  // Keeping steering outermost prevents roll from pitching the steered axle.
+  target.rotation.set(0, steeringYaw, 0);
+  target.rotateX(spin);
+  target.rotateZ(Math.PI / 2);
 }
 
 export class VehicleVisual {
@@ -3396,7 +3409,7 @@ export class VehicleVisual {
       if (!wheel) continue;
       const spin = this.wheelTravel / wheel.radius;
       const steer = wheel.steerable ? -steering * 0.36 : 0;
-      wheel.marker.rotation.set(spin, steer, Math.PI / 2);
+      setVehicleWheelOrientation(wheel.marker, spin, steer);
     }
     if (batches.lowMerged && batches.lowWheelUniforms) {
       batches.lowWheelUniforms.travel.value = this.wheelTravel;
@@ -3410,7 +3423,7 @@ export class VehicleVisual {
       const spin = this.wheelTravel / wheel.radius;
       const steer = wheel.steerable ? -steering * 0.36 : 0;
       dummy.position.set(...wheel.position);
-      dummy.rotation.set(spin, steer, Math.PI / 2);
+      setVehicleWheelOrientation(dummy, spin, steer);
       dummy.scale.set(wheel.radius, wheel.width, wheel.radius);
       dummy.updateMatrix();
       batches.tires.setMatrixAt(index, dummy.matrix);

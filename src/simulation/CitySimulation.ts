@@ -6,6 +6,7 @@ import { directionFromHeading } from './math';
 import { PEDESTRIAN_CAPACITY, PedestrianSystem } from './pedestrians';
 import { SimulationRandom, simulationSeed } from './random';
 import { TRAFFIC_CAPACITY, TrafficSystem } from './traffic';
+import type { TrafficSignalSystemSnapshot } from './traffic-signals';
 import type {
   ActorPopulationLimits,
   CitySimulationOptions,
@@ -16,6 +17,8 @@ import type {
   CrimeEvent,
   CrimeReportInput,
   EnemyDamageEvent,
+  ExternalTrafficCollisionResult,
+  ExternalTrafficVehicleState,
   PlayerDamageEvent,
   SimulationQuality,
   SimulationVisualCapabilities,
@@ -194,6 +197,7 @@ export class CitySimulation {
     this.traffic.tick({
       deltaSeconds: dt,
       playerPosition: context.playerPosition,
+      externalVehicle: context.externalVehicle ?? null,
       sirenPosition: input?.sirenActive ? context.playerPosition : null,
       sirenRadius: 24,
       obstructions: context.obstructions ?? [],
@@ -336,6 +340,26 @@ export class CitySimulation {
     this.triggerPanic(claimed.position, 18, 2.5);
     this.visuals?.update(this.getSnapshot());
     return claimed;
+  }
+
+  /**
+   * Returns the independently clocked signal state without expanding the
+   * high-frequency CitySimulationSnapshot contract.
+   */
+  public getTrafficSignalSnapshot(): TrafficSignalSystemSnapshot {
+    this.assertAlive();
+    return this.traffic.getTrafficSignalSnapshot();
+  }
+
+  /**
+   * Resolves the player vehicle against ambient traffic after the traffic tick
+   * has captured both its previous and current transforms.
+   */
+  public resolveTrafficVehicleCollision(
+    state: Readonly<ExternalTrafficVehicleState>,
+  ): ExternalTrafficCollisionResult {
+    this.assertAlive();
+    return this.traffic.resolveExternalVehicleCollision(state);
   }
 
   public spawnEnemy(role: CombatRole, position: Readonly<SimulationVec3>): string | null {

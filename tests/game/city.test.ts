@@ -4,6 +4,7 @@ import {
   DISTRICTS,
   PLAYER_SPAWN,
   VEHICLE_SPAWN,
+  VEHICLE_SPAWN_HEADING,
   districtAt,
   generateCity,
 } from '../../src/game/city';
@@ -47,5 +48,13 @@ describe('procedural Solara layout', () => {
     expect(districtAt(1, 1)).toBe('breakwater');
     expect(circleIntersectsBuildings(PLAYER_SPAWN.x, PLAYER_SPAWN.z, 0.58, city.collisions)).toBe(false);
     expect(circleIntersectsBuildings(VEHICLE_SPAWN.x, VEHICLE_SPAWN.z, 1.48, city.collisions)).toBe(false);
+    const spawnRoad = city.roads.find((road) => (
+      Math.abs(VEHICLE_SPAWN.x - road.position.x) <= road.width / 2
+      && Math.abs(VEHICLE_SPAWN.z - road.position.z) <= road.depth / 2
+    ));
+    expect(spawnRoad).toBeDefined();
+    expect((spawnRoad?.width ?? 0) > (spawnRoad?.depth ?? 0)).toBe(true);
+    expect(Math.abs(-Math.sin(VEHICLE_SPAWN_HEADING))).toBeCloseTo(1);
+    expect(Math.abs(-Math.cos(VEHICLE_SPAWN_HEADING))).toBeCloseTo(0);
   });
 });

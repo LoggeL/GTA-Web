@@ -1,3 +1,4 @@
+import { PLAYER_SPAWN } from '../../src/game/city';
 import { enterMainMenu, expectPlayableWorldShell, openApplication, startNewGame } from './helpers';
 import { expect, test } from './fixtures';
 
@@ -68,7 +69,10 @@ test.describe('M0 mobile landscape browser smoke', () => {
     await expect(sprint).not.toHaveClass(/is-active/);
 
     await page.waitForFunction(() => Boolean((window as QaWindow).__HEATLINE_QA__));
-    await page.evaluate(() => (window as QaWindow).__HEATLINE_QA__?.teleport(-248, 243.5));
+    await page.evaluate(
+      ({ x, z }) => (window as QaWindow).__HEATLINE_QA__?.teleport(x, z),
+      { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z },
+    );
     const interact = touchControls.locator('[data-touch-action="interact"]');
     await interact.dispatchEvent('pointerdown');
     await expect(world).toHaveAttribute('data-player-mode', 'vehicle');

@@ -14,6 +14,7 @@ import {
   type Page,
 } from '@playwright/test';
 
+import { VEHICLE_SPAWN } from '../../src/game/city';
 import {
   calculateTransitionWindows,
   evaluatePhysicalAcceptanceGates,
@@ -232,7 +233,10 @@ async function enterVehicleWithTouch(page: Page): Promise<{
   };
 }> {
   await page.waitForFunction(() => Boolean((window as PerformanceWindow).__HEATLINE_QA__));
-  await page.evaluate(() => (window as PerformanceWindow).__HEATLINE_QA__?.teleport(-248, 243.5));
+  await page.evaluate(
+    ({ x, z }) => (window as PerformanceWindow).__HEATLINE_QA__?.teleport(x, z),
+    { x: VEHICLE_SPAWN.x, z: VEHICLE_SPAWN.z },
+  );
   const controls = page.locator('[data-touch-layout]');
   await expect(controls).toHaveAttribute('data-touch-layout', 'on-foot');
   const interact = controls.locator('[data-touch-action="interact"]');
@@ -240,7 +244,10 @@ async function enterVehicleWithTouch(page: Page): Promise<{
   await expect(page.getByLabel('3D game world')).toHaveAttribute('data-player-mode', 'vehicle');
   await interact.dispatchEvent('pointerup', { pointerId: 41, pointerType: 'touch' });
   await expect(controls).toHaveAttribute('data-touch-layout', 'vehicle');
-  await page.evaluate(() => (window as PerformanceWindow).__HEATLINE_QA__?.face(-248, 500));
+  await page.evaluate(
+    ({ x, z }) => (window as PerformanceWindow).__HEATLINE_QA__?.face(x, z),
+    { x: VEHICLE_SPAWN.x, z: VEHICLE_SPAWN.z + 300 },
+  );
 
   const stick = controls.getByRole('group', { name: 'Steering and throttle stick' });
   const bounds = await stick.boundingBox();

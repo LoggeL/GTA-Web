@@ -1,3 +1,4 @@
+import { PLAYER_SPAWN } from '../../src/game/city';
 import { startNewGame } from '../e2e/helpers';
 import { expect, test } from '../e2e/fixtures';
 import {
@@ -183,6 +184,7 @@ test.describe('M8 browser performance and recovery', () => {
       durationMilliseconds,
       cadenceMilliseconds,
       transitionTimeoutMilliseconds,
+      spawn,
     }) => {
       const world = document.querySelector<HTMLElement>('[data-world-mount]');
       const api = (window as PerformanceWindow).__HEATLINE_QA__;
@@ -194,7 +196,7 @@ test.describe('M8 browser performance and recovery', () => {
         { x: 330, z: 330 },
         { x: -330, z: 330 },
         { x: 0, z: 0 },
-        { x: -248, z: 244 },
+        spawn,
       ];
       const samples: RuntimeSample[] = [];
       const teleports: TeleportTiming[] = [];
@@ -273,6 +275,7 @@ test.describe('M8 browser performance and recovery', () => {
       durationMilliseconds: stressDurationSeconds * 1_000,
       cadenceMilliseconds: STRESS_CADENCE_MILLISECONDS,
       transitionTimeoutMilliseconds: STRESS_TRANSITION_TIMEOUT_MILLISECONDS,
+      spawn: { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z },
     });
     await page.requestGC();
     const heapAfter = await readHeapBytes(page);

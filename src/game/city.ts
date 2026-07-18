@@ -6,8 +6,9 @@ import type { DistrictId, Vec3Data, WorldQuality } from './types';
 export const CITY_SIZE = 1_200;
 export const CITY_HALF_SIZE = CITY_SIZE / 2;
 export const DISTRICT_SIZE = CITY_SIZE / 2;
-export const PLAYER_SPAWN: Readonly<Vec3Data> = Object.freeze({ x: -248, y: 0, z: 248 });
-export const VEHICLE_SPAWN: Readonly<Vec3Data> = Object.freeze({ x: -248, y: 0.48, z: 243.5 });
+export const PLAYER_SPAWN: Readonly<Vec3Data> = Object.freeze({ x: -208, y: 0, z: 244 });
+export const VEHICLE_SPAWN: Readonly<Vec3Data> = Object.freeze({ x: -208, y: 0.48, z: 241 });
+export const VEHICLE_SPAWN_HEADING = Math.PI / 2;
 
 export interface DistrictBounds {
   id: DistrictId;
@@ -198,6 +199,20 @@ const AUTHORED_EXTERIOR_CLEARANCE_ZONES = AUTHORED_INTERIORS.flatMap(
       radius: SAFE_EXTERIOR_PLAYER_RADIUS + PORTAL_BUILDING_MARGIN,
     },
   ],
+);
+
+const AUTHORED_EXTERIOR_BUILDING_ZONES = AUTHORED_INTERIORS.map(
+  (definition) => ({
+    district: definition.portal.district,
+    minX: definition.exteriorBuilding.position.x
+      - definition.exteriorBuilding.width / 2,
+    maxX: definition.exteriorBuilding.position.x
+      + definition.exteriorBuilding.width / 2,
+    minZ: definition.exteriorBuilding.position.z
+      - definition.exteriorBuilding.depth / 2,
+    maxZ: definition.exteriorBuilding.position.z
+      + definition.exteriorBuilding.depth / 2,
+  }),
 );
 
 function localRoadWidth(index: number): number {
@@ -539,7 +554,7 @@ function buildingClearsAuthoredExteriorZones(
   const maxX = x + width / 2;
   const minZ = z - depth / 2;
   const maxZ = z + depth / 2;
-  return AUTHORED_EXTERIOR_CLEARANCE_ZONES.every((zone) => {
+  const clearsEntrances = AUTHORED_EXTERIOR_CLEARANCE_ZONES.every((zone) => {
     if (zone.district !== district) {
       return true;
     }
@@ -549,6 +564,13 @@ function buildingClearsAuthoredExteriorZones(
     const deltaZ = zone.position.z - closestZ;
     return deltaX * deltaX + deltaZ * deltaZ >= zone.radius * zone.radius;
   });
+  return clearsEntrances && AUTHORED_EXTERIOR_BUILDING_ZONES.every((zone) => (
+    zone.district !== district
+    || maxX + PORTAL_BUILDING_MARGIN <= zone.minX
+    || minX - PORTAL_BUILDING_MARGIN >= zone.maxX
+    || maxZ + PORTAL_BUILDING_MARGIN <= zone.minZ
+    || minZ - PORTAL_BUILDING_MARGIN >= zone.maxZ
+  ));
 }
 
 function placeBuildingOutsideAuthoredZones(
@@ -718,6 +740,63 @@ function addDistrictBuildings(
   }
 }
 
+const INTERIOR_HOST_REPLACEMENT_IDS: Readonly<Record<string, readonly string[]>> = {
+  'interior-host:moreno-garage': [
+    'arroyo-heights-building-3-1-2',
+    'arroyo-heights-building-3-1-1',
+  ],
+  'interior-host:juno-grid': ['neon-strand-building-2-2-0'],
+  'interior-host:malik-office': ['alta-vista-building-3-2-0'],
+  'interior-host:priya-workshop': ['breakwater-building-3-3-0'],
+  'interior-host:syndicate-tower': ['alta-vista-building-2-4-0'],
+};
+
+/**
+ * Replaces one density-equivalent procedural plot per authored interior. The
+ * host therefore participates in normal city collisions and streaming without
+ * growing either low- or high-quality structure budgets.
+ */
+function embedAuthoredInteriorBuildings(
+  district: DistrictId,
+  buildings: BuildingRecipe[],
+): void {
+  for (const definition of AUTHORED_INTERIORS) {
+    if (definition.portal.district !== district) continue;
+    const replacementIds = INTERIOR_HOST_REPLACEMENT_IDS[
+      definition.exteriorBuilding.id
+    ];
+    if (!replacementIds) {
+      throw new Error(`Missing city plot for ${definition.exteriorBuilding.id}`);
+    }
+    let replacementIndex = -1;
+    for (const replacementId of replacementIds) {
+      replacementIndex = buildings.findIndex(({ id }) => id === replacementId);
+      if (replacementIndex >= 0) break;
+    }
+    if (replacementIndex < 0) {
+      throw new Error(`Unable to embed ${definition.exteriorBuilding.id} in ${district}`);
+    }
+    const host = definition.exteriorBuilding;
+    buildings.splice(replacementIndex, 1, {
+      id: host.id,
+      district,
+      position: { ...host.position },
+      width: host.width,
+      depth: host.depth,
+      height: host.height,
+      color: host.color,
+      roofStyle: host.roofStyle,
+      facadeStyle: host.facadeStyle,
+      storefrontStyle: host.storefrontStyle,
+      roofFeature: host.roofFeature,
+      frontage: host.frontage,
+      accentColor: host.accentColor,
+      glassColor: host.glassColor,
+      landmark: host.landmark,
+    });
+  }
+}
+
 function addDistrictProps(
   district: DistrictBounds,
   rng: SeededRandom,
@@ -794,6 +873,7 @@ export function generateCity(seed: number | string = 'solara-v1', quality: World
   for (const district of DISTRICTS) {
     addDistrictRoads(district, roads);
     addDistrictBuildings(district, rng, quality, buildings);
+    embedAuthoredInteriorBuildings(district.id, buildings);
     addDistrictProps(district, rng, quality, buildings, props);
   }
 

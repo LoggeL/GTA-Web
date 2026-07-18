@@ -35,6 +35,14 @@ const LONG_X_PROP_KINDS = new Set<PropKind>([
 ]);
 
 const PRODUCTION_WORLD_SEED = 'heatline-solara-world-v1';
+const SAVE_SLOT_WORLD_SEEDS = [
+  PRODUCTION_WORLD_SEED,
+  'slot-1-1721300400000',
+  'slot-2-1721300400001',
+  'slot-3-1721300400002',
+  // Formerly overlapped the command-tower host in low quality.
+  'shop-audit-133',
+] as const;
 const PEDESTRIAN_SIDEWALK_MAX_EDGE_CLEARANCE = 4.4;
 const PEDESTRIAN_FOOTPRINT_RADIUS = 0.32;
 const PEDESTRIAN_PROP_MARGIN = 0.18;
@@ -218,19 +226,46 @@ describe('district city enrichment', () => {
   );
 
   it.each(['low', 'high'] as const)(
-    'reserves every authored production %s portal and safe exterior transform',
+    'embeds every authored production %s entrance in its collision-backed host building',
     (quality) => {
       const layout = generateCity(PRODUCTION_WORLD_SEED, quality);
 
       for (const definition of AUTHORED_INTERIORS) {
+        const host = layout.buildings.find(
+          ({ id }) => id === definition.portal.attachment.hostBuildingId,
+        );
+        expect(host, `${definition.portal.id} host building`).toBeDefined();
+        expect(host).toMatchObject(definition.exteriorBuilding);
+        if (!host) continue;
+        const hostMinX = host.position.x - host.width / 2;
+        const hostMaxX = host.position.x + host.width / 2;
+        const hostMinZ = host.position.z - host.depth / 2;
+        const hostMaxZ = host.position.z + host.depth / 2;
+        expect(layout.buildings.filter((candidate) => (
+          candidate.id !== host.id
+          && candidate.position.x + candidate.width / 2 > hostMinX
+          && candidate.position.x - candidate.width / 2 < hostMaxX
+          && candidate.position.z + candidate.depth / 2 > hostMinZ
+          && candidate.position.z - candidate.depth / 2 < hostMaxZ
+        )), `${definition.portal.id} overlapping buildings`).toEqual([]);
+
+        const facade = definition.portal.attachment.position;
+        const onHostFrontage = host.frontage === 'north'
+          ? facade.z === host.position.z - host.depth / 2
+          : host.frontage === 'south'
+            ? facade.z === host.position.z + host.depth / 2
+            : host.frontage === 'west'
+              ? facade.x === host.position.x - host.width / 2
+              : facade.x === host.position.x + host.width / 2;
+        expect(onHostFrontage, `${definition.portal.id} facade`).toBe(true);
         expect(
           circleIntersectsBuildings(
             definition.portal.position.x,
             definition.portal.position.z,
-            definition.portal.interactionRadiusMeters,
+            PLAYER_RADIUS,
             layout.collisions,
           ),
-          `${definition.portal.id} interaction zone`,
+          `${definition.portal.id} actor footprint`,
         ).toBe(false);
         expect(
           circleIntersectsBuildings(
@@ -241,6 +276,43 @@ describe('district city enrichment', () => {
           ),
           `${definition.portal.id} safe transform`,
         ).toBe(false);
+      }
+    },
+  );
+
+  it.each(['low', 'high'] as const)(
+    'reserves every authored %s host footprint across save-slot world seeds',
+    (quality) => {
+      for (const seed of SAVE_SLOT_WORLD_SEEDS) {
+        const layout = generateCity(seed, quality);
+        for (const definition of AUTHORED_INTERIORS) {
+          const host = layout.buildings.find(
+            ({ id }) => id === definition.exteriorBuilding.id,
+          );
+          expect(host, `${seed}:${definition.id}`).toBeDefined();
+          if (!host) continue;
+          const hostMinX = host.position.x - host.width / 2;
+          const hostMaxX = host.position.x + host.width / 2;
+          const hostMinZ = host.position.z - host.depth / 2;
+          const hostMaxZ = host.position.z + host.depth / 2;
+          const overlaps = layout.buildings.filter((candidate) => (
+            candidate.id !== host.id
+            && candidate.position.x + candidate.width / 2 > hostMinX
+            && candidate.position.x - candidate.width / 2 < hostMaxX
+            && candidate.position.z + candidate.depth / 2 > hostMinZ
+            && candidate.position.z - candidate.depth / 2 < hostMaxZ
+          ));
+          expect(overlaps, `${seed}:${definition.id} overlaps`).toEqual([]);
+          expect(layout.collisions).toContainEqual({
+            id: host.id,
+            minX: hostMinX,
+            maxX: hostMaxX,
+            minZ: hostMinZ,
+            maxZ: hostMaxZ,
+            height: host.height,
+            kind: 'solid',
+          });
+        }
       }
     },
   );
@@ -320,23 +392,26 @@ describe('district city enrichment', () => {
     },
   );
 
-  it.each([
-    { quality: 'low', minimumNearby: 2, minimumKinds: 2 },
-    { quality: 'high', minimumNearby: 4, minimumKinds: 4 },
-  ] as const)(
-    'keeps the production $quality spawn intentionally dressed',
-    ({ quality, minimumNearby, minimumKinds }) => {
+  it.each(['low', 'high'] as const)(
+    'anchors the production %s spawn to the authored Moreno Garage forecourt',
+    (quality) => {
       const layout = generateCity(PRODUCTION_WORLD_SEED, quality);
-      const nearbyProps = layout.props.filter((prop) =>
-        Math.hypot(
-          prop.position.x - PLAYER_SPAWN.x,
-          prop.position.z - PLAYER_SPAWN.z,
-        ) <= 60,
+      const garage = AUTHORED_INTERIORS.find(({ id }) => id === 'moreno-garage');
+      const host = layout.buildings.find(
+        ({ id }) => id === garage?.portal.attachment.hostBuildingId,
       );
 
-      expect(nearbyProps.length).toBeGreaterThanOrEqual(minimumNearby);
-      expect(new Set(nearbyProps.map((prop) => prop.kind)).size)
-        .toBeGreaterThanOrEqual(minimumKinds);
+      expect(garage).toBeDefined();
+      expect(host).toBeDefined();
+      expect(Math.hypot(
+        (host?.position.x ?? 0) - PLAYER_SPAWN.x,
+        (host?.position.z ?? 0) - PLAYER_SPAWN.z,
+      )).toBeLessThan(30);
+      expect(host).toMatchObject({
+        facadeStyle: 'stucco-arcade',
+        storefrontStyle: 'arcade',
+        roofFeature: 'water-tank',
+      });
     },
   );
 

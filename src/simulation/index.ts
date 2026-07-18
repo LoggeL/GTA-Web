@@ -21,6 +21,11 @@ export {
 } from './npcReactions';
 export { PEDESTRIAN_CAPACITY, PedestrianSystem } from './pedestrians';
 export { TRAFFIC_CAPACITY } from './traffic';
+export {
+  TRAFFIC_SIGNAL_STOP_LINE_DISTANCE,
+  TRAFFIC_SIGNAL_TIMING,
+  TrafficSignalSystem,
+} from './traffic-signals';
 export { WEAPON_DEFINITIONS } from './weapons';
 export type {
   CombatNpcAction,
@@ -75,6 +80,8 @@ export type {
   CrimeKind,
   CrimeReportInput,
   EnemyDamageEvent,
+  ExternalTrafficCollisionResult,
+  ExternalTrafficVehicleState,
   PedestrianBehavior,
   PedestrianSnapshot,
   PlayerDamageEvent,
@@ -92,3 +99,11 @@ export type {
   WeaponType,
   WitnessReportEvent,
 } from './types';
+export type {
+  TrafficSignalApproach,
+  TrafficSignalAspect,
+  TrafficSignalJunctionSnapshot,
+  TrafficSignalOrientation,
+  TrafficSignalPhase,
+  TrafficSignalSystemSnapshot,
+} from './traffic-signals';

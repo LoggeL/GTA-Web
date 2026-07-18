@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { generateCity } from '../../src/game/city';
+import { generateCity, PLAYER_SPAWN } from '../../src/game/city';
 import type { CityLayout } from '../../src/game/city';
 import {
   buildRoadGraph,
@@ -51,7 +51,7 @@ describe('road graph and deterministic A* routing', () => {
     const graph = buildRoadGraph(generateCity('slot-2-browser-route', 'high'));
     const route = findRoadRoute(
       graph,
-      { x: -248, z: 248 },
+      { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z },
       { x: 350, z: -350 },
     );
     expect(route).not.toBeNull();

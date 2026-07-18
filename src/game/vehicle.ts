@@ -65,6 +65,18 @@ export interface VehicleSurfaceState {
   readonly durabilityMultiplier?: number;
 }
 
+/**
+ * Damage-relevant evidence from the traffic collision solver. The normal points
+ * from the player/external vehicle toward the ambient vehicle.
+ */
+export interface DynamicTrafficImpact {
+  readonly ambientVehicleId: string;
+  readonly impactSpeed: number;
+  readonly impactNormal: { readonly x: number; readonly z: number } | null;
+}
+
+const DYNAMIC_TRAFFIC_DAMAGE_SPEED_THRESHOLD = 2.5;
+
 export function createVehicleState(
   position: Readonly<Vec3Data>,
   vehicleClassId: VehicleClassId = DEFAULT_VEHICLE_CLASS_ID,
@@ -125,6 +137,89 @@ function positiveMultiplier(value: number | undefined, label: string): number {
     throw new RangeError(`${label} multiplier must be finite and positive`);
   }
   return resolved;
+}
+
+function classifyDynamicTrafficImpactSide(
+  state: Readonly<VehicleSimulationState>,
+  externalToAmbientNormal: Readonly<{ x: number; z: number }>,
+): VehicleImpactSnapshot['side'] {
+  // Collision damage classifies the surface normal facing the external vehicle,
+  // while the traffic solver reports the opposite direction.
+  const normalX = -externalToAmbientNormal.x;
+  const normalZ = -externalToAmbientNormal.z;
+  const forwardX = -Math.sin(state.heading);
+  const forwardZ = -Math.cos(state.heading);
+  const rightX = Math.cos(state.heading);
+  const rightZ = -Math.sin(state.heading);
+  const forwardDot = normalX * forwardX + normalZ * forwardZ;
+  const rightDot = normalX * rightX + normalZ * rightZ;
+  if (Math.abs(forwardDot) >= Math.abs(rightDot)) {
+    return forwardDot <= 0 ? 'front' : 'rear';
+  }
+  return rightDot <= 0 ? 'right' : 'left';
+}
+
+/**
+ * Applies one player/external-vehicle impact from the ambient traffic solver.
+ * Negligible contacts do not replace the retained impact evidence.
+ */
+export function applyDynamicTrafficImpact(
+  state: VehicleSimulationState,
+  impact: Readonly<DynamicTrafficImpact>,
+  surface: Readonly<VehicleSurfaceState> = {},
+): VehicleImpactSnapshot | null {
+  if (!Number.isFinite(impact.impactSpeed) || impact.impactSpeed < 0) {
+    throw new RangeError('dynamic traffic impact speed must be finite and non-negative');
+  }
+  if (impact.impactSpeed <= DYNAMIC_TRAFFIC_DAMAGE_SPEED_THRESHOLD || impact.impactNormal === null) {
+    return null;
+  }
+  if (
+    !Number.isFinite(impact.impactNormal.x)
+    || !Number.isFinite(impact.impactNormal.z)
+  ) {
+    throw new RangeError('dynamic traffic impact normal must be finite');
+  }
+  if (Math.hypot(impact.impactNormal.x, impact.impactNormal.z) <= 0.000001) {
+    return null;
+  }
+
+  const ambientVehicleId = impact.ambientVehicleId.trim();
+  if (ambientVehicleId.length === 0) {
+    throw new RangeError('dynamic traffic ambient vehicle id must not be empty');
+  }
+  const profile = requireVehicleDriveProfile(state.vehicleClassId);
+  const durabilityMultiplier = positiveMultiplier(
+    surface.durabilityMultiplier,
+    'vehicle durability',
+  );
+  const armorDamageMultiplier = 1 - state.upgrades.armor * 0.08;
+  const collisionMassScale = Math.sqrt(profile.massKg / REFERENCE_VEHICLE_MASS_KG);
+  const equivalentImpactSpeed = impact.impactSpeed
+    * collisionMassScale
+    * armorDamageMultiplier
+    / durabilityMultiplier;
+  const side = classifyDynamicTrafficImpactSide(state, impact.impactNormal);
+  const damage = applyVehicleDamage(state.integrity, profile, {
+    kind: 'collision',
+    impactSpeedMetersPerSecond: equivalentImpactSpeed,
+    side,
+  });
+  const snapshot: VehicleImpactSnapshot = {
+    side,
+    normalSpeedMetersPerSecond: impact.impactSpeed,
+    equivalentImpactSpeedMetersPerSecond: equivalentImpactSpeed,
+    blockedX: false,
+    blockedZ: false,
+    collisionId: `traffic:${ambientVehicleId}`,
+    bodyDamage: damage.bodyDamage,
+    engineDamage: damage.engineDamage,
+    tireDamage: damage.tireDamage,
+  };
+  state.integrity = damage.integrity;
+  state.health = state.integrity.engineHealth;
+  state.lastImpact = snapshot;
+  return snapshot;
 }
 
 function applyRollingDrag(
@@ -228,7 +323,9 @@ export function stepVehicle(
     * motionAuthority;
   const velocityBeforeTurn = vehicleWorldVelocity(state);
   const direction = state.speed >= 0 ? 1 : -1;
-  state.heading += state.steering
+  // Heading zero faces -Z, so a positive right-axis request must reduce
+  // heading to turn the nose toward +X.
+  state.heading -= state.steering
     * direction
     * steeringAuthority
     * handling.turnRateRadiansPerSecond

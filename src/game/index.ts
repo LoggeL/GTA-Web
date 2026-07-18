@@ -6,6 +6,7 @@ export {
   PLAYER_SPAWN,
   TRAVERSAL_OBSTACLES,
   VEHICLE_SPAWN,
+  VEHICLE_SPAWN_HEADING,
   districtAt,
   generateCity,
 } from './city';

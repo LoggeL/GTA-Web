@@ -4,7 +4,14 @@ import type { DistrictId } from '../game/types';
 import { buildRoadGraph } from '../navigation/road-graph';
 import { directionFromHeading, distance2d, headingFromDirection, moveTowards } from './math';
 import { SimulationRandom } from './random';
+import {
+  TRAFFIC_SIGNAL_STOP_LINE_DISTANCE,
+  TrafficSignalSystem,
+} from './traffic-signals';
+import type { TrafficSignalSystemSnapshot } from './traffic-signals';
 import type {
+  ExternalTrafficCollisionResult,
+  ExternalTrafficVehicleState,
   SimulationObstacle,
   SimulationQuality,
   SimulationRoadRecipe,
@@ -30,28 +37,40 @@ export const TRAFFIC_RELEVANCE_RADII = Object.freeze({
 export const TRAFFIC_LOCAL_AVOIDANCE = Object.freeze({
   minimumCenterDistance: 2.4,
   followingLateralTolerance: 2.2,
-  maximumNeighborDistance: 30,
-  predictionSeconds: 2.2,
+  maximumNeighborDistance: 42,
+  predictionSeconds: 3.2,
   conflictDistance: 3.6,
   brakingMetersPerSecondSquared: 9,
   maximumIntersectionWaitSeconds: 0.6,
   intersectionPrioritySeconds: 2,
   intersectionCreepSpeed: 1.2,
   intersectionStopDistance: 3.4,
-  transitionAbandonSeconds: 0.8,
+  transitionAbandonSeconds: 1.4,
   pairPasses: 2,
+  collisionPasses: 3,
 });
 
-/** Fixed-pool ceiling for predictive vehicle-to-vehicle work on one tick. */
+/** Fixed-pool ceiling for predictive and contact vehicle-to-vehicle work on one tick. */
 export const TRAFFIC_AVOIDANCE_PAIR_BUDGET_PER_TICK = (
   TRAFFIC_CAPACITY.high
   * (TRAFFIC_CAPACITY.high - 1)
   / 2
-  * (TRAFFIC_LOCAL_AVOIDANCE.pairPasses + 1)
+  * (
+    TRAFFIC_LOCAL_AVOIDANCE.pairPasses
+    + TRAFFIC_LOCAL_AVOIDANCE.collisionPasses
+    + 1
+  )
+  + TRAFFIC_CAPACITY.high
+);
+
+/** External/player contact resolution checks each fixed ambient slot at most twice. */
+export const TRAFFIC_EXTERNAL_COLLISION_PAIR_BUDGET_PER_CALL = (
+  TRAFFIC_CAPACITY.high * 2
 );
 
 export interface TrafficAvoidanceDiagnostics {
   readonly lastTickPairChecks: number;
+  readonly lastTickCollisionResolutions: number;
 }
 
 interface TrafficAgent {
@@ -69,6 +88,7 @@ interface TrafficAgent {
   direction: 1 | -1;
   blockedSeconds: number;
   recoveryRemaining: number;
+  recoveryAttempts: number;
   panicRemaining: number;
   intersectionWaitSeconds: number;
   intersectionPriorityRemaining: number;
@@ -77,6 +97,10 @@ interface TrafficAgent {
   routeStep: number;
   lastJunction: TrafficRoadJunction | null;
   plannedTransition: PlannedRoadTransition | null;
+  collisionRadius: number;
+  signalSpeedCap: number;
+  signalPriority: -1 | 0 | 1;
+  permissiveLeftYield: boolean;
 }
 
 interface TrafficRoadJunction {
@@ -99,9 +123,16 @@ interface PlannedRoadTransition extends RoadTransitionOption {
   readonly triggerAhead: number;
 }
 
+interface SweptCircleContact {
+  readonly time: number;
+  readonly normalX: number;
+  readonly normalZ: number;
+}
+
 export interface TrafficTickContext {
   deltaSeconds: number;
   playerPosition?: SimulationVec3;
+  externalVehicle?: Readonly<ExternalTrafficVehicleState> | null;
   sirenPosition: SimulationVec3 | null;
   sirenRadius: number;
   obstructions: readonly SimulationObstacle[];
@@ -123,6 +154,83 @@ const RELEVANCE_REFRESH_SECONDS = 0.5;
 const RELEVANCE_REBASE_DISTANCE = 42;
 const JUNCTION_SPAWN_CLEARANCE = 12;
 const PLACEMENT_ATTEMPTS_PER_ROAD = 4;
+const CONTACT_EPSILON = 0.01;
+const DEFAULT_EXTERNAL_COLLISION_RADIUS = 1.35;
+const SIGNAL_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED = 6.5;
+const SIGNAL_YELLOW_REACTION_SECONDS = 0.65;
+const OBSTACLE_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED = 3.2;
+
+function normalizedContactNormal(
+  deltaX: number,
+  deltaZ: number,
+  fallbackHeading: number,
+  deterministicSign: 1 | -1,
+): { readonly x: number; readonly z: number } {
+  const length = Math.hypot(deltaX, deltaZ);
+  if (length > 0.000001) {
+    return { x: deltaX / length, z: deltaZ / length };
+  }
+  const direction = directionFromHeading(fallbackHeading);
+  return { x: direction.x * deterministicSign, z: direction.z * deterministicSign };
+}
+
+function sweptCircleContact(
+  startDeltaX: number,
+  startDeltaZ: number,
+  endDeltaX: number,
+  endDeltaZ: number,
+  minimumDistance: number,
+  fallbackHeading: number,
+  deterministicSign: 1 | -1,
+): SweptCircleContact | null {
+  const minimumDistanceSquared = minimumDistance * minimumDistance;
+  const startDistanceSquared = startDeltaX * startDeltaX + startDeltaZ * startDeltaZ;
+  const endDistanceSquared = endDeltaX * endDeltaX + endDeltaZ * endDeltaZ;
+  const relativeDeltaX = endDeltaX - startDeltaX;
+  const relativeDeltaZ = endDeltaZ - startDeltaZ;
+  const quadraticA = relativeDeltaX * relativeDeltaX + relativeDeltaZ * relativeDeltaZ;
+  if (
+    startDistanceSquared >= minimumDistanceSquared
+    && quadraticA > 0.0000001
+  ) {
+    const quadraticB = 2 * (
+      startDeltaX * relativeDeltaX
+      + startDeltaZ * relativeDeltaZ
+    );
+    const quadraticC = startDistanceSquared - minimumDistanceSquared;
+    const discriminant = quadraticB * quadraticB - 4 * quadraticA * quadraticC;
+    if (discriminant >= 0) {
+      const entryTime = (-quadraticB - Math.sqrt(discriminant)) / (2 * quadraticA);
+      if (entryTime >= 0 && entryTime <= 1) {
+        const contactDeltaX = startDeltaX + relativeDeltaX * entryTime;
+        const contactDeltaZ = startDeltaZ + relativeDeltaZ * entryTime;
+        const normal = normalizedContactNormal(
+          contactDeltaX,
+          contactDeltaZ,
+          fallbackHeading,
+          deterministicSign,
+        );
+        return { time: entryTime, normalX: normal.x, normalZ: normal.z };
+      }
+    }
+  }
+
+  if (endDistanceSquared < minimumDistanceSquared) {
+    // Existing overlaps and numerical edge cases still need deterministic
+    // endpoint separation, but a separated start always takes the swept entry
+    // above so center-crossing impacts remain on their starting side.
+    const normal = normalizedContactNormal(
+      endDeltaX,
+      endDeltaZ,
+      fallbackHeading,
+      deterministicSign,
+    );
+    return { time: 1, normalX: normal.x, normalZ: normal.z };
+  }
+
+  // The pair began overlapped and separated during this step; do not rewind it.
+  return null;
+}
 
 function normalizedRoads(roads: readonly SimulationRoadRecipe[] | undefined): readonly SimulationRoadRecipe[] {
   const valid = roads?.filter((road) => road.width > 2 && road.depth > 2) ?? [];
@@ -285,6 +393,8 @@ export class TrafficSystem {
   private readonly random: SimulationRandom;
   private readonly agents: TrafficAgent[];
   private readonly junctionsByRoad: readonly (readonly TrafficRoadJunction[])[];
+  private readonly signals: TrafficSignalSystem;
+  private readonly signalJunctionIds: ReadonlySet<string>;
   private quality: SimulationQuality;
   private requestedActorLimit = TRAFFIC_CAPACITY.high;
   private relevanceAnchor: SimulationVec3 | null = null;
@@ -292,7 +402,11 @@ export class TrafficSystem {
   private readonly peerSpeedCaps = new Float64Array(TRAFFIC_CAPACITY.high);
   private readonly peerYieldKinds = new Uint8Array(TRAFFIC_CAPACITY.high);
   private readonly nearestConflictDistances = new Float64Array(TRAFFIC_CAPACITY.high);
+  private readonly previousPositionX = new Float64Array(TRAFFIC_CAPACITY.high);
+  private readonly previousPositionZ = new Float64Array(TRAFFIC_CAPACITY.high);
+  private previousPositionsValid = false;
   private lastTickPairChecks = 0;
+  private lastTickCollisionResolutions = 0;
   private nextIntersectionTicket = 1;
 
   public constructor(
@@ -304,6 +418,10 @@ export class TrafficSystem {
     this.quality = quality;
     this.roads = normalizedRoads(roads);
     this.junctionsByRoad = buildTrafficJunctions(this.roads);
+    this.signals = new TrafficSignalSystem(this.roads);
+    this.signalJunctionIds = new Set(
+      this.signals.getSnapshot().junctions.map(({ id }) => id),
+    );
     this.agents = Array.from({ length: TRAFFIC_CAPACITY.high }, (_, index) => this.createAgent(index));
     this.applyActiveCount();
   }
@@ -327,7 +445,14 @@ export class TrafficSystem {
   }
 
   public getAvoidanceDiagnostics(): TrafficAvoidanceDiagnostics {
-    return { lastTickPairChecks: this.lastTickPairChecks };
+    return {
+      lastTickPairChecks: this.lastTickPairChecks,
+      lastTickCollisionResolutions: this.lastTickCollisionResolutions,
+    };
+  }
+
+  public getTrafficSignalSnapshot(): TrafficSignalSystemSnapshot {
+    return this.signals.getSnapshot();
   }
 
   public triggerPanic(position: Readonly<SimulationVec3>, radius: number, duration: number): void {
@@ -340,10 +465,13 @@ export class TrafficSystem {
 
   public tick(context: TrafficTickContext): void {
     const dt = Math.min(0.1, Math.max(0, context.deltaSeconds));
+    this.signals.tick(dt);
     if (context.playerPosition && this.isFinitePosition(context.playerPosition)) {
       this.maintainPlayerRelevance(context.playerPosition, dt);
     }
-    this.prepareLocalAvoidance(dt);
+    this.capturePreviousPositions();
+    this.prepareSignalControls(dt);
+    this.prepareLocalAvoidance(dt, context.externalVehicle);
     for (const [agentIndex, agent] of this.agents.entries()) {
       if (!agent.active) {
         this.tickInactiveAgent(agent, dt);
@@ -368,10 +496,15 @@ export class TrafficSystem {
 
       const sirenNearby = context.sirenPosition !== null
         && distance2d(agent.position, context.sirenPosition) <= context.sirenRadius;
-      const obstructed = this.isObstructed(agent, context.obstructions);
+      const obstacleSpeedCap = this.obstacleSpeedCap(agent, context.obstructions);
+      const obstacleYield = Number.isFinite(obstacleSpeedCap)
+        && obstacleSpeedCap < agent.cruiseSpeed;
+      const obstacleBlocked = obstacleSpeedCap <= 0.15;
       const peerYieldKind = this.peerYieldKinds[agentIndex] ?? 0;
-      const intersectionYield = !obstructed && (peerYieldKind & 2) !== 0;
+      const intersectionYield = !obstacleYield && (peerYieldKind & 2) !== 0;
       const followingYield = (peerYieldKind & 1) !== 0;
+      const signalYield = agent.signalPriority < 0;
+      const peerSpeedCap = this.peerSpeedCaps[agentIndex] ?? Number.POSITIVE_INFINITY;
 
       let targetSpeed = agent.cruiseSpeed;
       if (agent.panicRemaining > 0) {
@@ -381,25 +514,35 @@ export class TrafficSystem {
         agent.intersectionWaitSeconds = 0;
       } else if (sirenNearby) {
         agent.behavior = 'siren-yield';
-        targetSpeed = 1.5;
+        targetSpeed = Math.min(1.5, agent.signalSpeedCap, obstacleSpeedCap, peerSpeedCap);
         agent.blockedSeconds = 0;
         agent.intersectionWaitSeconds = Math.max(0, agent.intersectionWaitSeconds - dt * 2);
-      } else if (obstructed || intersectionYield || followingYield) {
-        agent.behavior = intersectionYield ? 'intersection-yield' : 'yield';
-        if (obstructed) {
-          targetSpeed = 0;
-        } else if (followingYield) {
-          targetSpeed = Math.min(targetSpeed, this.peerSpeedCaps[agentIndex] ?? targetSpeed);
-        } else if (intersectionYield) {
-          targetSpeed = (this.nearestConflictDistances[agentIndex]
-            ?? Number.POSITIVE_INFINITY) > TRAFFIC_LOCAL_AVOIDANCE.intersectionStopDistance
+      } else if (signalYield || obstacleYield || intersectionYield || followingYield) {
+        const intersectionSpeedCap = intersectionYield
+          ? (this.nearestConflictDistances[agentIndex]
+              ?? Number.POSITIVE_INFINITY) > TRAFFIC_LOCAL_AVOIDANCE.intersectionStopDistance
             ? TRAFFIC_LOCAL_AVOIDANCE.intersectionCreepSpeed
-            : 0;
-        }
-        agent.blockedSeconds = obstructed
+            : 0
+          : Number.POSITIVE_INFINITY;
+        targetSpeed = Math.min(
+          targetSpeed,
+          agent.signalSpeedCap,
+          obstacleSpeedCap,
+          peerSpeedCap,
+          intersectionSpeedCap,
+        );
+        agent.behavior = signalYield
+          ? 'signal-yield'
+          : intersectionYield
+            ? 'intersection-yield'
+            : 'yield';
+        agent.blockedSeconds = obstacleBlocked
           ? agent.blockedSeconds + dt
           : Math.max(0, agent.blockedSeconds - dt * 2);
-        const canRequestIntersectionPriority = intersectionYield && !followingYield;
+      const canRequestIntersectionPriority = intersectionYield
+          && !followingYield
+          && !signalYield
+          || agent.permissiveLeftYield;
         agent.intersectionWaitSeconds = canRequestIntersectionPriority
           ? agent.intersectionWaitSeconds + dt
           : Math.max(0, agent.intersectionWaitSeconds - dt * 2);
@@ -422,23 +565,27 @@ export class TrafficSystem {
         agent.behavior = 'cruise';
         agent.blockedSeconds = Math.max(0, agent.blockedSeconds - dt * 2);
         agent.intersectionWaitSeconds = Math.max(0, agent.intersectionWaitSeconds - dt * 2);
+        agent.recoveryAttempts = Math.max(0, agent.recoveryAttempts - dt);
       }
 
       if (agent.blockedSeconds > 1.5) {
         agent.behavior = 'recover';
         agent.recoveryRemaining = 0.8;
+        agent.recoveryAttempts += 1;
         agent.blockedSeconds = 0;
         continue;
       }
 
       const acceleration = targetSpeed > agent.speed ? 5.5 : 9;
       agent.speed = moveTowards(agent.speed, targetSpeed, acceleration * dt);
-      const peerSpeedCap = this.peerSpeedCaps[agentIndex] ?? Number.POSITIVE_INFINITY;
-      if (Number.isFinite(peerSpeedCap)) {
-        agent.speed = Math.min(agent.speed, Math.max(0, peerSpeedCap));
-      }
+      agent.speed = Math.min(
+        agent.speed,
+        Math.max(0, peerSpeedCap),
+        Math.max(0, agent.signalSpeedCap),
+      );
       this.advanceAgent(agent, dt, true);
     }
+    this.resolveVehicleCollisions();
   }
 
   /**
@@ -495,6 +642,161 @@ export class TrafficSystem {
     return claimed;
   }
 
+  /**
+   * Resolves a player or other externally simulated vehicle against the fixed
+   * ambient pool. The returned transform/velocities belong to the caller,
+   * while equal-and-opposite contact response is applied to ambient agents.
+   */
+  public resolveExternalVehicleCollision(
+    state: Readonly<ExternalTrafficVehicleState>,
+  ): ExternalTrafficCollisionResult {
+    if (
+      !this.isFinitePosition(state.position)
+      || (state.previousPosition && !this.isFinitePosition(state.previousPosition))
+      || !Number.isFinite(state.heading)
+      || !Number.isFinite(state.speed)
+      || (state.lateralSpeed !== undefined && !Number.isFinite(state.lateralSpeed))
+    ) {
+      throw new RangeError('external traffic vehicle state must be finite');
+    }
+    const radius = state.radius ?? DEFAULT_EXTERNAL_COLLISION_RADIUS;
+    if (!Number.isFinite(radius) || radius <= 0) {
+      throw new RangeError('external traffic vehicle radius must be finite and positive');
+    }
+
+    const previous = state.previousPosition ?? state.position;
+    const position: SimulationVec3 = { ...state.position };
+    let speed = state.speed;
+    let lateralSpeed = state.lateralSpeed ?? 0;
+    let impactSpeed = 0;
+    let impactNormal: { readonly x: number; readonly z: number } | null = null;
+    let primaryAmbientVehicleId: string | null = null;
+    let pairChecks = 0;
+    const ambientVehicleIds = new Set<string>();
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      let contactsThisPass = 0;
+      for (const [agentIndex, agent] of this.agents.entries()) {
+        if (!agent.active) continue;
+        pairChecks += 1;
+        const minimumDistance = radius + agent.collisionRadius;
+        const canSweep = pass === 0 && this.previousPositionsValid;
+        const startDeltaX = canSweep
+          ? (this.previousPositionX[agentIndex] ?? agent.position.x) - previous.x
+          : agent.position.x - position.x;
+        const startDeltaZ = canSweep
+          ? (this.previousPositionZ[agentIndex] ?? agent.position.z) - previous.z
+          : agent.position.z - position.z;
+        const endDeltaX = agent.position.x - position.x;
+        const endDeltaZ = agent.position.z - position.z;
+        const contact = sweptCircleContact(
+          startDeltaX,
+          startDeltaZ,
+          endDeltaX,
+          endDeltaZ,
+          minimumDistance,
+          state.heading,
+          agent.id < 'external-vehicle' ? -1 : 1,
+        );
+        if (!contact) continue;
+        contactsThisPass += 1;
+        if (primaryAmbientVehicleId === null) {
+          primaryAmbientVehicleId = agent.id;
+          impactNormal = { x: contact.normalX, z: contact.normalZ };
+        }
+
+        if (canSweep && contact.time < 1) {
+          position.x = previous.x + (position.x - previous.x) * contact.time;
+          position.z = previous.z + (position.z - previous.z) * contact.time;
+          const priorAgentX = this.previousPositionX[agentIndex] ?? agent.position.x;
+          const priorAgentZ = this.previousPositionZ[agentIndex] ?? agent.position.z;
+          agent.position.x = priorAgentX
+            + (agent.position.x - priorAgentX) * contact.time;
+          agent.position.z = priorAgentZ
+            + (agent.position.z - priorAgentZ) * contact.time;
+        }
+
+        const currentDeltaX = agent.position.x - position.x;
+        const currentDeltaZ = agent.position.z - position.z;
+        const currentDistance = Math.hypot(currentDeltaX, currentDeltaZ);
+        const correction = Math.max(
+          CONTACT_EPSILON,
+          minimumDistance + CONTACT_EPSILON - currentDistance,
+        ) / 2;
+        position.x -= contact.normalX * correction;
+        position.z -= contact.normalZ * correction;
+        agent.position.x += contact.normalX * correction;
+        agent.position.z += contact.normalZ * correction;
+
+        const externalForward = directionFromHeading(state.heading);
+        const externalRightX = -externalForward.z;
+        const externalRightZ = externalForward.x;
+        const externalVelocityX = externalForward.x * speed
+          + externalRightX * lateralSpeed;
+        const externalVelocityZ = externalForward.z * speed
+          + externalRightZ * lateralSpeed;
+        const ambientForward = directionFromHeading(agent.heading);
+        const ambientVelocityX = ambientForward.x * agent.speed;
+        const ambientVelocityZ = ambientForward.z * agent.speed;
+        const relativeNormalVelocity = (
+          ambientVelocityX - externalVelocityX
+        ) * contact.normalX + (
+          ambientVelocityZ - externalVelocityZ
+        ) * contact.normalZ;
+        const closingSpeed = Math.max(0, -relativeNormalVelocity);
+        if (closingSpeed > 0.05) {
+          const impulse = closingSpeed * 0.54;
+          const resolvedExternalX = externalVelocityX - impulse * contact.normalX;
+          const resolvedExternalZ = externalVelocityZ - impulse * contact.normalZ;
+          const resolvedAmbientX = ambientVelocityX + impulse * contact.normalX;
+          const resolvedAmbientZ = ambientVelocityZ + impulse * contact.normalZ;
+          speed = resolvedExternalX * externalForward.x
+            + resolvedExternalZ * externalForward.z;
+          lateralSpeed = resolvedExternalX * externalRightX
+            + resolvedExternalZ * externalRightZ;
+          agent.speed = Math.max(
+            -2.4,
+            Math.min(
+              agent.cruiseSpeed * 1.08,
+              resolvedAmbientX * ambientForward.x
+                + resolvedAmbientZ * ambientForward.z,
+            ),
+          );
+          if (
+            closingSpeed > impactSpeed + 0.000001
+            || (
+              Math.abs(closingSpeed - impactSpeed) <= 0.000001
+              && agent.id < (primaryAmbientVehicleId ?? agent.id)
+            )
+          ) {
+            impactSpeed = closingSpeed;
+            impactNormal = { x: contact.normalX, z: contact.normalZ };
+            primaryAmbientVehicleId = agent.id;
+          }
+        }
+        ambientVehicleIds.add(agent.id);
+      }
+      if (contactsThisPass === 0) break;
+    }
+    for (const [agentIndex, agent] of this.agents.entries()) {
+      if (!ambientVehicleIds.has(agent.id)) continue;
+      this.previousPositionX[agentIndex] = agent.position.x;
+      this.previousPositionZ[agentIndex] = agent.position.z;
+    }
+
+    return {
+      collided: ambientVehicleIds.size > 0,
+      position,
+      speed,
+      lateralSpeed,
+      impactSpeed,
+      impactNormal,
+      primaryAmbientVehicleId,
+      ambientVehicleIds: [...ambientVehicleIds],
+      pairChecks,
+    };
+  }
+
   private createAgent(index: number): TrafficAgent {
     const roadIndex = index % this.roads.length;
     const road = this.roads[roadIndex];
@@ -516,6 +818,7 @@ export class TrafficSystem {
       direction: this.random.next() > 0.5 ? 1 : -1,
       blockedSeconds: 0,
       recoveryRemaining: 0,
+      recoveryAttempts: 0,
       panicRemaining: 0,
       intersectionWaitSeconds: 0,
       intersectionPriorityRemaining: 0,
@@ -524,6 +827,10 @@ export class TrafficSystem {
       routeStep: 0,
       lastJunction: null,
       plannedTransition: null,
+      collisionRadius: VEHICLES[0]?.arcadeHandling.collisionRadiusMeters ?? 1.48,
+      signalSpeedCap: Number.POSITIVE_INFINITY,
+      signalPriority: 0,
+      permissiveLeftYield: false,
     };
     this.placeOnRoad(agent, this.random.range(-0.48, 0.48));
     this.assignVehicleClass(agent);
@@ -872,12 +1179,292 @@ export class TrafficSystem {
     }
   }
 
-  private prepareLocalAvoidance(deltaSeconds: number): void {
+  private capturePreviousPositions(): void {
+    for (const [index, agent] of this.agents.entries()) {
+      this.previousPositionX[index] = agent.position.x;
+      this.previousPositionZ[index] = agent.position.z;
+    }
+    this.previousPositionsValid = true;
+  }
+
+  private prepareSignalControls(deltaSeconds: number): void {
+    for (const agent of this.agents) {
+      agent.signalSpeedCap = Number.POSITIVE_INFINITY;
+      agent.signalPriority = 0;
+      agent.permissiveLeftYield = false;
+      if (!agent.active) continue;
+      const road = this.roadFor(agent);
+      let upcomingJunction: TrafficRoadJunction | null = null;
+      let upcomingAhead = Number.POSITIVE_INFINITY;
+      for (const junction of this.junctionsByRoad[agent.roadIndex] ?? []) {
+        if (!this.signalJunctionIds.has(junction.id)) continue;
+        const ahead = distanceAhead(agent, junction.position);
+        if (
+          ahead < -JUNCTION_RELEASE_DISTANCE
+          || ahead > TRAFFIC_LOCAL_AVOIDANCE.maximumNeighborDistance
+        ) {
+          continue;
+        }
+        if (
+          ahead < upcomingAhead - JUNCTION_EPSILON
+          || (
+            Math.abs(ahead - upcomingAhead) <= JUNCTION_EPSILON
+            && (
+              upcomingJunction === null
+              || junction.id < upcomingJunction.id
+            )
+          )
+        ) {
+          upcomingJunction = junction;
+          upcomingAhead = ahead;
+        }
+      }
+      if (!upcomingJunction) continue;
+
+      const distanceToStopLine = upcomingAhead - TRAFFIC_SIGNAL_STOP_LINE_DISTANCE;
+      const aspect = this.signals.aspectFor(upcomingJunction.id, road);
+      if (distanceToStopLine < -JUNCTION_EPSILON) {
+        // Once a car has genuinely crossed the bar it must clear the
+        // junction, even if the phase changes inside the conflict envelope.
+        // Equality is still a legal stop at the bar, not permission to run it.
+        agent.signalPriority = 1;
+        continue;
+      }
+
+      const exitIsClear = this.hasClearSignalExit(agent, upcomingJunction);
+      const isPermissiveLeft = agent.plannedTransition?.kind === 'left';
+      const hasLeftAuthority = isPermissiveLeft && agent.intersectionTicket > 0;
+      const yieldsPermissiveLeft = isPermissiveLeft
+        && this.hasConflictingOpposingMovement(
+          agent,
+          upcomingJunction,
+          hasLeftAuthority,
+        );
+      const yieldsProtectedLeft = !isPermissiveLeft
+        && this.hasOpposingProtectedLeft(agent, upcomingJunction);
+      if (
+        aspect === 'green'
+        && exitIsClear
+        && !yieldsPermissiveLeft
+        && !yieldsProtectedLeft
+      ) {
+        agent.signalPriority = 1;
+        continue;
+      }
+      if (
+        aspect === 'green'
+        && exitIsClear
+        && isPermissiveLeft
+        && yieldsPermissiveLeft
+      ) {
+        agent.permissiveLeftYield = true;
+      }
+
+      const forwardSpeed = Math.max(0, agent.speed);
+      const stoppingDistance = forwardSpeed * forwardSpeed
+        / (2 * SIGNAL_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED);
+      const yellowCommitDistance = stoppingDistance
+        + forwardSpeed * SIGNAL_YELLOW_REACTION_SECONDS;
+      if (
+        aspect === 'yellow'
+        && exitIsClear
+        && !yieldsPermissiveLeft
+        && !yieldsProtectedLeft
+        && distanceToStopLine <= yellowCommitDistance
+      ) {
+        agent.signalPriority = 1;
+        continue;
+      }
+
+      agent.signalPriority = -1;
+      const brakingCap = Math.sqrt(
+        2
+        * SIGNAL_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED
+        * Math.max(0, distanceToStopLine),
+      );
+      const oneTickCap = Math.max(0, distanceToStopLine)
+        / Math.max(0.001, deltaSeconds);
+      agent.signalSpeedCap = Math.min(brakingCap, oneTickCap);
+    }
+  }
+
+  private hasConflictingOpposingMovement(
+    agent: Readonly<TrafficAgent>,
+    junction: Readonly<TrafficRoadJunction>,
+    committedOnly: boolean,
+  ): boolean {
+    const directionX = -Math.sin(agent.heading);
+    const directionZ = -Math.cos(agent.heading);
+    const maximumDistance = TRAFFIC_LOCAL_AVOIDANCE.maximumNeighborDistance;
+    const agentAhead = Math.max(0, distanceAhead(agent, junction.position));
+    const leftClearSeconds = (
+      agentAhead + TRAFFIC_LOCAL_AVOIDANCE.conflictDistance
+    ) / Math.max(6, agent.speed) + 0.5;
+    for (const other of this.agents) {
+      if (
+        !other.active
+        || other === agent
+        || !junction.roadIndices.includes(other.roadIndex)
+      ) {
+        continue;
+      }
+      const otherDirectionX = -Math.sin(other.heading);
+      const otherDirectionZ = -Math.cos(other.heading);
+      const headingAlignment = directionX * otherDirectionX
+        + directionZ * otherDirectionZ;
+      if (headingAlignment > -0.78) continue;
+      const otherTransition = other.plannedTransition;
+      if (
+        otherTransition?.junction.id === junction.id
+        && otherTransition.kind === 'left'
+      ) {
+        continue;
+      }
+      const otherAhead = distanceAhead(other, junction.position);
+      if (otherAhead < -TRAFFIC_LOCAL_AVOIDANCE.conflictDistance) continue;
+      if (committedOnly) {
+        const distanceToStopLine = otherAhead - TRAFFIC_SIGNAL_STOP_LINE_DISTANCE;
+        const stoppingDistance = Math.max(0, other.speed) ** 2
+          / (2 * SIGNAL_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED);
+        if (
+          distanceToStopLine < -JUNCTION_EPSILON
+          || (
+            other.speed > 1
+            && distanceToStopLine
+              <= stoppingDistance
+                + other.speed * SIGNAL_YELLOW_REACTION_SECONDS
+          )
+        ) {
+          return true;
+        }
+        continue;
+      }
+      const opposingArrivalSeconds = Math.max(0, otherAhead)
+        / Math.max(6, other.speed);
+      if (
+        otherAhead <= maximumDistance
+        && opposingArrivalSeconds <= leftClearSeconds + 0.35
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasOpposingProtectedLeft(
+    agent: Readonly<TrafficAgent>,
+    junction: Readonly<TrafficRoadJunction>,
+  ): boolean {
+    const agentAhead = distanceAhead(agent, junction.position);
+    const distanceToStopLine = agentAhead - TRAFFIC_SIGNAL_STOP_LINE_DISTANCE;
+    const stoppingDistance = Math.max(0, agent.speed) ** 2
+      / (2 * SIGNAL_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED);
+    if (
+      distanceToStopLine < -JUNCTION_EPSILON
+      || (
+        agent.speed > 1
+        && distanceToStopLine
+          <= stoppingDistance + agent.speed * SIGNAL_YELLOW_REACTION_SECONDS
+      )
+    ) {
+      // A through/right driver that can no longer stop comfortably keeps its
+      // initial priority; the protected left begins behind that cleared car.
+      return false;
+    }
+    const directionX = -Math.sin(agent.heading);
+    const directionZ = -Math.cos(agent.heading);
+    for (const other of this.agents) {
+      if (
+        !other.active
+        || other === agent
+        || other.intersectionTicket <= 0
+        || other.plannedTransition?.kind !== 'left'
+        || other.plannedTransition.junction.id !== junction.id
+      ) {
+        continue;
+      }
+      const otherDirectionX = -Math.sin(other.heading);
+      const otherDirectionZ = -Math.cos(other.heading);
+      const headingAlignment = directionX * otherDirectionX
+        + directionZ * otherDirectionZ;
+      if (headingAlignment > -0.78) continue;
+      const otherAhead = distanceAhead(other, junction.position);
+      if (
+        otherAhead >= -TRAFFIC_LOCAL_AVOIDANCE.conflictDistance
+        && otherAhead <= TRAFFIC_LOCAL_AVOIDANCE.maximumNeighborDistance
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasClearSignalExit(
+    agent: Readonly<TrafficAgent>,
+    junction: Readonly<TrafficRoadJunction>,
+  ): boolean {
+    const transition = agent.plannedTransition;
+    const exitRoadIndex = transition?.roadIndex ?? agent.roadIndex;
+    const exitRoad = this.roads[exitRoadIndex];
+    if (!exitRoad) return false;
+    const exitDirectionSign = transition?.direction ?? agent.direction;
+    const exitLaneOffset = transition
+      ? laneOffsetForRoad(exitRoad, transition.direction)
+      : agent.laneOffset;
+    const exitHeading = transition
+      ? roadHeading(exitRoad, exitDirectionSign)
+      : agent.heading;
+    const exitDirectionX = -Math.sin(exitHeading);
+    const exitDirectionZ = -Math.cos(exitHeading);
+    const minimumExitProgress = transition
+      ? -JUNCTION_EPSILON
+      : -TRAFFIC_SIGNAL_STOP_LINE_DISTANCE;
+    for (const other of this.agents) {
+      if (!other.active || other === agent) continue;
+      if (
+        distance2d(other.position, junction.position)
+          < TRAFFIC_SIGNAL_STOP_LINE_DISTANCE - JUNCTION_EPSILON
+      ) {
+        // Do not enter behind a stale turn or a car still clearing the prior
+        // phase. This makes the all-red interval effective under congestion.
+        return false;
+      }
+      if (other.roadIndex !== exitRoadIndex) continue;
+      const otherDirectionX = -Math.sin(other.heading);
+      const otherDirectionZ = -Math.cos(other.heading);
+      const headingAlignment = exitDirectionX * otherDirectionX
+        + exitDirectionZ * otherDirectionZ;
+      if (headingAlignment < 0.78) continue;
+      const deltaX = other.position.x - junction.position.x;
+      const deltaZ = other.position.z - junction.position.z;
+      const aheadFromJunction = deltaX * exitDirectionX + deltaZ * exitDirectionZ;
+      if (
+        aheadFromJunction < minimumExitProgress
+        || aheadFromJunction
+          > JUNCTION_RELEASE_DISTANCE + agent.collisionRadius + other.collisionRadius
+      ) {
+        continue;
+      }
+      const sideways = roadIsVertical(exitRoad)
+        ? Math.abs(other.position.x - (exitRoad.position.x + exitLaneOffset))
+        : Math.abs(other.position.z - (exitRoad.position.z + exitLaneOffset));
+      if (sideways <= TRAFFIC_LOCAL_AVOIDANCE.followingLateralTolerance) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private prepareLocalAvoidance(
+    deltaSeconds: number,
+    externalVehicle: Readonly<ExternalTrafficVehicleState> | null | undefined,
+  ): void {
     this.peerSpeedCaps.fill(Number.POSITIVE_INFINITY);
     this.peerYieldKinds.fill(0);
     this.nearestConflictDistances.fill(Number.POSITIVE_INFINITY);
     this.lastTickPairChecks = 0;
     this.prepareNearestConflictDistances();
+    this.prepareExternalVehicleAvoidance(externalVehicle, deltaSeconds);
 
     for (let pass = 0; pass < TRAFFIC_LOCAL_AVOIDANCE.pairPasses; pass += 1) {
       for (let firstIndex = 0; firstIndex < this.agents.length; firstIndex += 1) {
@@ -901,6 +1488,292 @@ export class TrafficSystem {
         }
       }
     }
+  }
+
+  private prepareExternalVehicleAvoidance(
+    externalVehicle: Readonly<ExternalTrafficVehicleState> | null | undefined,
+    deltaSeconds: number,
+  ): void {
+    if (
+      !externalVehicle
+      || !this.isFinitePosition(externalVehicle.position)
+      || !Number.isFinite(externalVehicle.heading)
+      || !Number.isFinite(externalVehicle.speed)
+      || (
+        externalVehicle.lateralSpeed !== undefined
+        && !Number.isFinite(externalVehicle.lateralSpeed)
+      )
+    ) {
+      return;
+    }
+    const externalRadius = externalVehicle.radius ?? DEFAULT_EXTERNAL_COLLISION_RADIUS;
+    if (!Number.isFinite(externalRadius) || externalRadius <= 0) return;
+
+    const externalDirectionX = -Math.sin(externalVehicle.heading);
+    const externalDirectionZ = -Math.cos(externalVehicle.heading);
+    const externalRightX = -externalDirectionZ;
+    const externalRightZ = externalDirectionX;
+    const externalVelocityX = externalDirectionX * externalVehicle.speed
+      + externalRightX * (externalVehicle.lateralSpeed ?? 0);
+    const externalVelocityZ = externalDirectionZ * externalVehicle.speed
+      + externalRightZ * (externalVehicle.lateralSpeed ?? 0);
+    const externalSpeedMagnitude = Math.hypot(externalVelocityX, externalVelocityZ);
+    const maximumDistance = TRAFFIC_LOCAL_AVOIDANCE.maximumNeighborDistance;
+
+    for (const [agentIndex, agent] of this.agents.entries()) {
+      if (!agent.active || agent.behavior === 'recover') continue;
+      this.lastTickPairChecks += 1;
+      const deltaX = externalVehicle.position.x - agent.position.x;
+      const deltaZ = externalVehicle.position.z - agent.position.z;
+      const distanceSquared = deltaX * deltaX + deltaZ * deltaZ;
+      if (distanceSquared > maximumDistance * maximumDistance) continue;
+      const directionX = -Math.sin(agent.heading);
+      const directionZ = -Math.cos(agent.heading);
+      const ahead = deltaX * directionX + deltaZ * directionZ;
+      const combinedRadius = agent.collisionRadius + externalRadius;
+      if (ahead <= -combinedRadius || ahead > maximumDistance) continue;
+      const sideways = Math.abs(deltaX * directionZ - deltaZ * directionX);
+      const headingAlignment = directionX * externalDirectionX
+        + directionZ * externalDirectionZ;
+      const externalAlongSpeed = externalVelocityX * directionX
+        + externalVelocityZ * directionZ;
+
+      if (
+        sideways <= combinedRadius + 0.75
+        && (headingAlignment > 0.35 || externalSpeedMagnitude <= 0.5)
+      ) {
+        this.applyExternalFollowingLimit(
+          agentIndex,
+          agent,
+          ahead,
+          combinedRadius,
+          Math.max(0, externalAlongSpeed),
+          deltaSeconds,
+        );
+        continue;
+      }
+
+      const agentSpeed = Math.max(0, this.predictedSpeed(agentIndex, agent));
+      const relativeVelocityX = externalVelocityX - directionX * agentSpeed;
+      const relativeVelocityZ = externalVelocityZ - directionZ * agentSpeed;
+      const relativeSpeedSquared = relativeVelocityX * relativeVelocityX
+        + relativeVelocityZ * relativeVelocityZ;
+      if (relativeSpeedSquared <= 0.000001) continue;
+      const closestTime = Math.min(
+        TRAFFIC_LOCAL_AVOIDANCE.predictionSeconds,
+        Math.max(
+          0,
+          -(deltaX * relativeVelocityX + deltaZ * relativeVelocityZ)
+            / relativeSpeedSquared,
+        ),
+      );
+      if (closestTime <= 0) continue;
+      const closestX = deltaX + relativeVelocityX * closestTime;
+      const closestZ = deltaZ + relativeVelocityZ * closestTime;
+      const predictiveClearance = combinedRadius + 0.75;
+      if (
+        closestX * closestX + closestZ * closestZ
+          >= predictiveClearance * predictiveClearance
+      ) {
+        continue;
+      }
+      const availableDistance = Math.max(
+        0,
+        agentSpeed * closestTime - combinedRadius - 0.75,
+      );
+      const brakingCap = Math.sqrt(
+        2
+        * TRAFFIC_LOCAL_AVOIDANCE.brakingMetersPerSecondSquared
+        * availableDistance,
+      );
+      const oneTickCap = availableDistance / Math.max(0.001, deltaSeconds);
+      this.setPeerLimit(agentIndex, 2, Math.min(brakingCap, oneTickCap));
+    }
+  }
+
+  private applyExternalFollowingLimit(
+    followerIndex: number,
+    follower: Readonly<TrafficAgent>,
+    centerDistance: number,
+    combinedRadius: number,
+    leaderSpeed: number,
+    deltaSeconds: number,
+  ): void {
+    const followerSpeed = Math.max(0, this.predictedSpeed(followerIndex, follower));
+    const relativeStoppingDistance = Math.max(
+      0,
+      (followerSpeed * followerSpeed - leaderSpeed * leaderSpeed)
+        / (2 * TRAFFIC_LOCAL_AVOIDANCE.brakingMetersPerSecondSquared),
+    );
+    const desiredDistance = combinedRadius
+      + Math.max(3, followerSpeed * 0.9)
+      + relativeStoppingDistance;
+    if (centerDistance >= desiredDistance) return;
+
+    const availableDistance = Math.max(0, centerDistance - combinedRadius);
+    const brakingCap = Math.sqrt(
+      leaderSpeed * leaderSpeed
+      + 2 * TRAFFIC_LOCAL_AVOIDANCE.brakingMetersPerSecondSquared * availableDistance,
+    );
+    const oneTickCap = availableDistance / Math.max(0.001, deltaSeconds);
+    this.setPeerLimit(followerIndex, 1, Math.min(brakingCap, oneTickCap));
+  }
+
+  private resolveVehicleCollisions(): void {
+    this.lastTickCollisionResolutions = 0;
+    for (
+      let pass = 0;
+      pass < TRAFFIC_LOCAL_AVOIDANCE.collisionPasses;
+      pass += 1
+    ) {
+      let contactsThisPass = 0;
+      for (let firstIndex = 0; firstIndex < this.agents.length; firstIndex += 1) {
+        const first = this.agents[firstIndex];
+        if (!first?.active) continue;
+        for (
+          let secondIndex = firstIndex + 1;
+          secondIndex < this.agents.length;
+          secondIndex += 1
+        ) {
+          const second = this.agents[secondIndex];
+          if (!second?.active) continue;
+          this.lastTickPairChecks += 1;
+          const minimumDistance = first.collisionRadius + second.collisionRadius;
+          const startDeltaX = pass === 0
+            ? (this.previousPositionX[secondIndex] ?? second.position.x)
+              - (this.previousPositionX[firstIndex] ?? first.position.x)
+            : second.position.x - first.position.x;
+          const startDeltaZ = pass === 0
+            ? (this.previousPositionZ[secondIndex] ?? second.position.z)
+              - (this.previousPositionZ[firstIndex] ?? first.position.z)
+            : second.position.z - first.position.z;
+          const endDeltaX = second.position.x - first.position.x;
+          const endDeltaZ = second.position.z - first.position.z;
+          const contact = sweptCircleContact(
+            startDeltaX,
+            startDeltaZ,
+            endDeltaX,
+            endDeltaZ,
+            minimumDistance,
+            first.heading,
+            first.id < second.id ? 1 : -1,
+          );
+          if (!contact) continue;
+          contactsThisPass += 1;
+
+          if (pass === 0 && contact.time < 1) {
+            const priorFirstX = this.previousPositionX[firstIndex] ?? first.position.x;
+            const priorFirstZ = this.previousPositionZ[firstIndex] ?? first.position.z;
+            const priorSecondX = this.previousPositionX[secondIndex] ?? second.position.x;
+            const priorSecondZ = this.previousPositionZ[secondIndex] ?? second.position.z;
+            first.position.x = priorFirstX
+              + (first.position.x - priorFirstX) * contact.time;
+            first.position.z = priorFirstZ
+              + (first.position.z - priorFirstZ) * contact.time;
+            second.position.x = priorSecondX
+              + (second.position.x - priorSecondX) * contact.time;
+            second.position.z = priorSecondZ
+              + (second.position.z - priorSecondZ) * contact.time;
+          }
+
+          const currentDistance = distance2d(first.position, second.position);
+          const separation = Math.max(
+            CONTACT_EPSILON,
+            minimumDistance + CONTACT_EPSILON - currentDistance,
+          );
+          const firstPinnedAtSignal = first.signalPriority < 0
+            && first.signalSpeedCap <= 0.15;
+          const secondPinnedAtSignal = second.signalPriority < 0
+            && second.signalSpeedCap <= 0.15;
+          if (firstPinnedAtSignal && !secondPinnedAtSignal) {
+            second.position.x += contact.normalX * separation;
+            second.position.z += contact.normalZ * separation;
+          } else if (secondPinnedAtSignal && !firstPinnedAtSignal) {
+            first.position.x -= contact.normalX * separation;
+            first.position.z -= contact.normalZ * separation;
+          } else {
+            const correction = separation / 2;
+            first.position.x -= contact.normalX * correction;
+            first.position.z -= contact.normalZ * correction;
+            second.position.x += contact.normalX * correction;
+            second.position.z += contact.normalZ * correction;
+          }
+          this.applyAmbientImpact(first, second, contact.normalX, contact.normalZ);
+          this.lastTickCollisionResolutions += 1;
+        }
+      }
+      if (contactsThisPass === 0) break;
+    }
+    for (const agent of this.agents) {
+      if (!agent.active || agent.signalPriority >= 0) continue;
+      agent.speed = Math.min(agent.speed, Math.max(0, agent.signalSpeedCap));
+    }
+  }
+
+  private applyAmbientImpact(
+    first: TrafficAgent,
+    second: TrafficAgent,
+    normalX: number,
+    normalZ: number,
+  ): void {
+    const firstDirection = directionFromHeading(first.heading);
+    const secondDirection = directionFromHeading(second.heading);
+    const firstVelocityX = firstDirection.x * first.speed;
+    const firstVelocityZ = firstDirection.z * first.speed;
+    const secondVelocityX = secondDirection.x * second.speed;
+    const secondVelocityZ = secondDirection.z * second.speed;
+    const relativeNormalVelocity = (
+      secondVelocityX - firstVelocityX
+    ) * normalX + (
+      secondVelocityZ - firstVelocityZ
+    ) * normalZ;
+    const closingSpeed = Math.max(0, -relativeNormalVelocity);
+    if (closingSpeed <= 0.05) return;
+
+    const headingAlignment = firstDirection.x * secondDirection.x
+      + firstDirection.z * secondDirection.z;
+    if (headingAlignment > 0.65) {
+      // Near-equal-mass impulse: the rear car sheds speed while transferring a
+      // small, bounded amount of momentum to the leader.
+      const impulse = closingSpeed * 0.54;
+      const resolvedFirstX = firstVelocityX - impulse * normalX;
+      const resolvedFirstZ = firstVelocityZ - impulse * normalZ;
+      const resolvedSecondX = secondVelocityX + impulse * normalX;
+      const resolvedSecondZ = secondVelocityZ + impulse * normalZ;
+      first.speed = Math.max(
+        0,
+        Math.min(
+          first.cruiseSpeed * 1.08,
+          resolvedFirstX * firstDirection.x + resolvedFirstZ * firstDirection.z,
+        ),
+      );
+      second.speed = Math.max(
+        0,
+        Math.min(
+          second.cruiseSpeed * 1.08,
+          resolvedSecondX * secondDirection.x + resolvedSecondZ * secondDirection.z,
+        ),
+      );
+      return;
+    }
+
+    if (headingAlignment < -0.35) {
+      first.speed = Math.min(Math.max(0, first.speed) * 0.12, 1.2);
+      second.speed = Math.min(Math.max(0, second.speed) * 0.12, 1.2);
+      if (first.roadIndex === second.roadIndex) {
+        const yieldingAgent = this.hasTrafficPriority(first, second) ? second : first;
+        if (yieldingAgent.behavior !== 'recover') {
+          this.reverseAgentRoute(yieldingAgent);
+        }
+      }
+      return;
+    }
+
+    // For a side impact, established unsignalized priority decides which car
+    // can clear the conflict first; both still lose speed.
+    const firstHasPriority = this.hasTrafficPriority(first, second);
+    first.speed = Math.max(0, first.speed) * (firstHasPriority ? 0.52 : 0.16);
+    second.speed = Math.max(0, second.speed) * (firstHasPriority ? 0.16 : 0.52);
   }
 
   private prepareNearestConflictDistances(): void {
@@ -1127,7 +2000,7 @@ export class TrafficSystem {
     centerDistance: number,
     deltaSeconds: number,
   ): void {
-    const minimumDistance = TRAFFIC_LOCAL_AVOIDANCE.minimumCenterDistance;
+    const minimumDistance = follower.collisionRadius + leader.collisionRadius;
     const leaderSpeed = Math.max(0, this.predictedSpeed(leaderIndex, leader));
     const followerSpeed = Math.max(0, this.predictedSpeed(followerIndex, follower));
     const relativeStoppingDistance = Math.max(
@@ -1136,7 +2009,7 @@ export class TrafficSystem {
         / (2 * TRAFFIC_LOCAL_AVOIDANCE.brakingMetersPerSecondSquared),
     );
     const desiredDistance = minimumDistance
-      + Math.max(2.5, followerSpeed * 0.55)
+      + Math.max(3, followerSpeed * 0.9)
       + relativeStoppingDistance;
     if (centerDistance >= desiredDistance) return;
 
@@ -1154,6 +2027,13 @@ export class TrafficSystem {
     distanceToConflict: number,
     deltaSeconds: number,
   ): void {
+    const agent = this.agents[agentIndex];
+    if (agent?.signalPriority === 1) {
+      // A vehicle already released by a green/yellow phase (or clearing the
+      // stop bar) must leave the conflict envelope during the all-red buffer.
+      // Re-applying unsignalized priority here can strand it in the junction.
+      return;
+    }
     const availableDistance = Math.max(
       0,
       distanceToConflict - TRAFFIC_LOCAL_AVOIDANCE.minimumCenterDistance,
@@ -1175,7 +2055,7 @@ export class TrafficSystem {
   private predictedSpeed(agentIndex: number, agent: Readonly<TrafficAgent>): number {
     const speedCap = this.peerSpeedCaps[agentIndex] ?? Number.POSITIVE_INFINITY;
     return agent.speed >= 0
-      ? Math.min(agent.speed, speedCap)
+      ? Math.min(agent.speed, speedCap, agent.signalSpeedCap)
       : agent.speed;
   }
 
@@ -1183,6 +2063,9 @@ export class TrafficSystem {
     first: Readonly<TrafficAgent>,
     second: Readonly<TrafficAgent>,
   ): boolean {
+    if (first.signalPriority !== second.signalPriority) {
+      return first.signalPriority > second.signalPriority;
+    }
     const firstPriority = first.intersectionTicket > 0;
     const secondPriority = second.intersectionTicket > 0;
     if (firstPriority !== secondPriority) return firstPriority;
@@ -1201,6 +2084,9 @@ export class TrafficSystem {
     second: Readonly<TrafficAgent>,
     secondDistanceToConflict: number,
   ): boolean {
+    if (first.signalPriority !== second.signalPriority) {
+      return first.signalPriority > second.signalPriority;
+    }
     const committedDistance = TRAFFIC_LOCAL_AVOIDANCE.minimumCenterDistance;
     const firstCommitted = Math.abs(firstDistanceToConflict) <= committedDistance;
     const secondCommitted = Math.abs(secondDistanceToConflict) <= committedDistance;
@@ -1216,28 +2102,62 @@ export class TrafficSystem {
       if (Math.abs(distanceDifference) > 0.000001) return distanceDifference < 0;
     }
     if (firstDistanceToConflict >= 0 && secondDistanceToConflict >= 0) {
-      const arrivalDifference = firstDistanceToConflict - secondDistanceToConflict;
-      if (Math.abs(arrivalDifference) > 0.25) return arrivalDifference < 0;
+      const firstArrivalSeconds = firstDistanceToConflict / Math.max(
+        TRAFFIC_LOCAL_AVOIDANCE.intersectionCreepSpeed,
+        first.speed,
+      );
+      const secondArrivalSeconds = secondDistanceToConflict / Math.max(
+        TRAFFIC_LOCAL_AVOIDANCE.intersectionCreepSpeed,
+        second.speed,
+      );
+      const arrivalDifference = firstArrivalSeconds - secondArrivalSeconds;
+      if (Math.abs(arrivalDifference) > 0.35) return arrivalDifference < 0;
     }
     return this.hasTrafficPriority(first, second);
   }
 
-  private isObstructed(agent: TrafficAgent, obstacles: readonly SimulationObstacle[]): boolean {
+  private obstacleSpeedCap(
+    agent: Readonly<TrafficAgent>,
+    obstacles: readonly SimulationObstacle[],
+  ): number {
     const direction = directionFromHeading(agent.heading);
+    const forwardSpeed = Math.max(0, agent.speed);
+    const stoppingDistance = forwardSpeed * forwardSpeed
+      / (2 * TRAFFIC_LOCAL_AVOIDANCE.brakingMetersPerSecondSquared);
+    const lookahead = Math.min(
+      TRAFFIC_LOCAL_AVOIDANCE.maximumNeighborDistance,
+      Math.max(14, stoppingDistance + forwardSpeed * 1.1 + 7),
+    );
+    let speedCap = Number.POSITIVE_INFINITY;
     for (const obstacle of obstacles) {
       const deltaX = obstacle.x - agent.position.x;
       const deltaZ = obstacle.z - agent.position.z;
       const ahead = deltaX * direction.x + deltaZ * direction.z;
       const sideways = Math.abs(deltaX * direction.z - deltaZ * direction.x);
-      if (ahead > 0 && ahead < 10 && sideways < obstacle.radius + 1.2) {
-        return true;
-      }
+      if (
+        ahead <= 0
+        || ahead > lookahead
+        || sideways >= obstacle.radius + 1.35
+      ) continue;
+      const availableDistance = Math.max(0, ahead - obstacle.radius - 1.4);
+      speedCap = Math.min(
+        speedCap,
+        Math.sqrt(
+          2
+          * OBSTACLE_COMFORTABLE_BRAKING_METERS_PER_SECOND_SQUARED
+          * availableDistance,
+        ),
+      );
     }
 
-    return false;
+    return speedCap;
   }
 
   private finishLocalRecovery(agent: TrafficAgent): void {
+    if (agent.recoveryAttempts >= 2) {
+      this.reverseAgentRoute(agent);
+      agent.recoveryAttempts = 0;
+    }
     agent.speed = 0;
     agent.behavior = 'cruise';
     agent.blockedSeconds = 0;
@@ -1249,8 +2169,19 @@ export class TrafficSystem {
     agent.plannedTransition = null;
   }
 
+  private reverseAgentRoute(agent: TrafficAgent): void {
+    const road = this.roadFor(agent);
+    agent.direction = agent.direction === 1 ? -1 : 1;
+    agent.laneOffset = laneOffsetForRoad(road, agent.direction);
+    agent.heading = roadHeading(road, agent.direction);
+    agent.lastJunction = null;
+    agent.plannedTransition = null;
+    agent.transitionWaitSeconds = 0;
+  }
+
   private recycleAgent(agent: TrafficAgent): void {
     if (this.relevanceAnchor && this.placeAgentNearPlayer(agent, this.relevanceAnchor)) {
+      this.syncPreviousPosition(agent);
       return;
     }
     agent.roadIndex = (agent.roadIndex + 1 + this.random.integer(0, this.roads.length - 1)) % this.roads.length;
@@ -1258,6 +2189,14 @@ export class TrafficSystem {
     this.resetAgentForPlacement(agent);
     this.placeOnRoad(agent, this.random.range(-0.45, 0.45));
     this.assignVehicleClass(agent);
+    this.syncPreviousPosition(agent);
+  }
+
+  private syncPreviousPosition(agent: TrafficAgent): void {
+    const agentIndex = this.agents.indexOf(agent);
+    if (agentIndex < 0) return;
+    this.previousPositionX[agentIndex] = agent.position.x;
+    this.previousPositionZ[agentIndex] = agent.position.z;
   }
 
   private resetAgentForPlacement(agent: TrafficAgent): void {
@@ -1265,11 +2204,18 @@ export class TrafficSystem {
     agent.behavior = 'cruise';
     agent.blockedSeconds = 0;
     agent.recoveryRemaining = 0;
+    agent.recoveryAttempts = 0;
     agent.panicRemaining = 0;
     agent.intersectionWaitSeconds = 0;
+    agent.intersectionPriorityRemaining = 0;
+    agent.intersectionTicket = 0;
+    agent.transitionWaitSeconds = 0;
     agent.routeStep = 0;
     agent.lastJunction = null;
     agent.plannedTransition = null;
+    agent.signalSpeedCap = Number.POSITIVE_INFINITY;
+    agent.signalPriority = 0;
+    agent.permissiveLeftYield = false;
   }
 
   private maintainPlayerRelevance(
@@ -1294,9 +2240,14 @@ export class TrafficSystem {
     const recyclable = this.agents
       .filter((agent) => (
         agent.active
-        && agent.behavior === 'cruise'
-        && agent.panicRemaining <= 0
-        && agent.recoveryRemaining <= 0
+        && (
+          rebasing
+          || (
+            agent.behavior === 'cruise'
+            && agent.panicRemaining <= 0
+            && agent.recoveryRemaining <= 0
+          )
+        )
         && distance2d(agent.position, playerPosition)
           > TRAFFIC_RELEVANCE_RADII.recycleBeyondDistance
       ))
@@ -1401,5 +2352,8 @@ export class TrafficSystem {
       agent.position.z.toFixed(3),
     ].join(':'));
     agent.classId = chooseTrafficVehicleClass(classRandom, districtForRoad(road));
+    agent.collisionRadius = VEHICLES.find(({ id }) => id === agent.classId)
+      ?.arcadeHandling.collisionRadiusMeters
+      ?? 1.48;
   }
 }

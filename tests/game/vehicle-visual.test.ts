@@ -2,7 +2,6 @@ import {
   Box3,
   Color,
   DynamicDrawUsage,
-  Euler,
   InstancedMesh,
   Matrix3,
   Matrix4,
@@ -244,7 +243,7 @@ describe('class-aware vehicle visuals', () => {
     expect(uniformState.travel.value).toBe(0);
     expect(uniformState.steering.value).toBe(0);
     expect(lowVehicleMaterial.customProgramCacheKey())
-      .toBe('vehicle-low-merged-wheel-v1');
+      .toBe('vehicle-low-merged-wheel-v2');
     const shader = {
       uniforms: {} as Record<string, unknown>,
       vertexShader: ShaderLib.lambert.vertexShader,
@@ -255,7 +254,7 @@ describe('class-aware vehicle visuals', () => {
     expect(shader.vertexShader).toContain('attribute vec3 vehicleWheelCenter;');
     expect(shader.vertexShader).toContain('attribute vec3 vehicleWheelRole;');
     expect(shader.vertexShader).toContain(
-      'vehicleRotateX( vehicleRotateY( value, steer ), spin )',
+      'vehicleRotateY( vehicleRotateX( value, spin ), steer )',
     );
     expect(shader.vertexShader.match(/#include <beginnormal_vertex>/g)).toHaveLength(1);
     expect(shader.vertexShader.match(/#include <begin_vertex>/g)).toHaveLength(1);
@@ -332,7 +331,7 @@ describe('class-aware vehicle visuals', () => {
     high.dispose();
   });
 
-  it('matches the r180 Euler wheel matrix for merged positions and normals', () => {
+  it('steers around Y after wheel roll without contaminating the rolling axle', () => {
     const visual = new VehicleVisual('sports', {
       quality: 'low',
       supportsMultiDraw: true,
@@ -369,7 +368,9 @@ describe('class-aware vehicle visuals', () => {
     const steer = -0.18;
     const animated = new Object3D();
     animated.position.copy(center);
-    animated.rotation.copy(new Euler(spin, steer, Math.PI / 2, 'XYZ'));
+    animated.rotation.set(0, steer, 0);
+    animated.rotateX(spin);
+    animated.rotateZ(Math.PI / 2);
     animated.scale.copy(rest.scale);
     animated.updateMatrix();
     const inverseRest = rest.matrix.clone().invert();
@@ -378,6 +379,8 @@ describe('class-aware vehicle visuals', () => {
       .invert();
     const animatedNormal = new Matrix3().getNormalMatrix(animated.matrix);
 
+    let maximumLegacyPositionError = 0;
+    let maximumLegacyNormalError = 0;
     for (const index of [
       offset,
       offset + Math.floor(count / 3),
@@ -386,11 +389,19 @@ describe('class-aware vehicle visuals', () => {
       const restPosition = vectorAt(positions, index);
       const sourcePosition = restPosition.clone().applyMatrix4(inverseRest);
       const matrixPosition = sourcePosition.clone().applyMatrix4(animated.matrix);
-      const shaderPosition = rotateX(
+      const shaderPosition = rotateY(
+        rotateX(restPosition.clone().sub(center), spin),
+        steer,
+      ).add(center);
+      expect(shaderPosition.distanceTo(matrixPosition)).toBeLessThan(1e-5);
+      const legacyPosition = rotateX(
         rotateY(restPosition.clone().sub(center), steer),
         spin,
       ).add(center);
-      expect(shaderPosition.distanceTo(matrixPosition)).toBeLessThan(1e-5);
+      maximumLegacyPositionError = Math.max(
+        maximumLegacyPositionError,
+        legacyPosition.distanceTo(matrixPosition),
+      );
 
       const restNormal = vectorAt(normals, index).normalize();
       const sourceNormal = restNormal
@@ -401,12 +412,22 @@ describe('class-aware vehicle visuals', () => {
         .clone()
         .applyMatrix3(animatedNormal)
         .normalize();
-      const shaderNormal = rotateX(
+      const shaderNormal = rotateY(
+        rotateX(restNormal, spin),
+        steer,
+      ).normalize();
+      expect(shaderNormal.distanceTo(matrixNormal)).toBeLessThan(1e-5);
+      const legacyNormal = rotateX(
         rotateY(restNormal, steer),
         spin,
       ).normalize();
-      expect(shaderNormal.distanceTo(matrixNormal)).toBeLessThan(1e-5);
+      maximumLegacyNormalError = Math.max(
+        maximumLegacyNormalError,
+        legacyNormal.distanceTo(matrixNormal),
+      );
     }
+    expect(maximumLegacyPositionError).toBeGreaterThan(0.01);
+    expect(maximumLegacyNormalError).toBeGreaterThan(0.01);
 
     visual.dispose();
   });
@@ -511,11 +532,22 @@ describe('class-aware vehicle visuals', () => {
 
     expect(visual.root.position.toArray()).toEqual([4, 0.48, -8]);
     expect(visual.root.rotation.y).toBeCloseTo(0.7);
-    expect(sportsWheels.every((wheel) => wheel.rotation.x !== 0)).toBe(true);
-    expect(sportsWheels.filter((wheel) => wheel.userData.steerable).map((wheel) => wheel.rotation.y))
-      .toEqual([-0.18, -0.18]);
-    expect(sportsWheels.filter((wheel) => !wheel.userData.steerable).map((wheel) => wheel.rotation.y))
-      .toEqual([0, 0]);
+    const firstTireAxle = new Vector3(0, 1, 0).transformDirection(firstTireMatrix);
+    expect(firstTireAxle.y).toBeCloseTo(0, 6);
+    expect(firstTireAxle.z).not.toBeCloseTo(0, 6);
+    for (const wheel of sportsWheels) {
+      const axle = new Vector3(0, 1, 0).applyQuaternion(wheel.quaternion);
+      expect(axle.y).toBeCloseTo(0, 6);
+      if (wheel.userData.steerable) {
+        expect(axle.z).not.toBeCloseTo(0, 6);
+      } else {
+        expect(axle.z).toBeCloseTo(0, 6);
+      }
+    }
+    const firstWheelAxle = new Vector3(0, 1, 0).applyQuaternion(
+      sportsWheels[0]?.quaternion ?? new Object3D().quaternion,
+    );
+    expect(firstTireAxle.distanceTo(firstWheelAxle)).toBeLessThan(1e-6);
     expect(firstTireMatrix.equals(new Matrix4())).toBe(false);
 
     const motorcycle = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'motorcycle');
@@ -524,8 +556,18 @@ describe('class-aware vehicle visuals', () => {
     visual.sync(motorcycle, 0.25);
     const motorcycleWheels = vehicleWheels(visual);
     expect(motorcycleWheels).toHaveLength(2);
-    expect(motorcycleWheels.find((wheel) => wheel.userData.steerable)?.rotation.y).toBeCloseTo(0.18);
-    expect(motorcycleWheels.find((wheel) => !wheel.userData.steerable)?.rotation.y).toBe(0);
+    const motorcycleFrontAxle = new Vector3(0, 1, 0).applyQuaternion(
+      motorcycleWheels.find((wheel) => wheel.userData.steerable)?.quaternion
+        ?? new Object3D().quaternion,
+    );
+    const motorcycleRearAxle = new Vector3(0, 1, 0).applyQuaternion(
+      motorcycleWheels.find((wheel) => !wheel.userData.steerable)?.quaternion
+        ?? new Object3D().quaternion,
+    );
+    expect(motorcycleFrontAxle.y).toBeCloseTo(0, 6);
+    expect(motorcycleFrontAxle.z).not.toBeCloseTo(0, 6);
+    expect(motorcycleRearAxle.y).toBeCloseTo(0, 6);
+    expect(motorcycleRearAxle.z).toBeCloseTo(0, 6);
     visual.dispose();
   });
 

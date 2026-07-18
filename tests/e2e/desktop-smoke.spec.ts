@@ -101,9 +101,9 @@ test.describe('M0 desktop browser smoke', () => {
 
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-player-mode', 'vehicle');
-    // Entering the starter vehicle completes its short onboarding waypoint.
-    await expect(world).toHaveAttribute('data-route-status', 'arrived');
-    expect(Number(await world.getAttribute('data-route-segments'))).toBe(0);
+    // Entering the starter vehicle keeps the active Past Due route intact.
+    await expect(world).toHaveAttribute('data-route-status', 'active');
+    expect(Number(await world.getAttribute('data-route-segments'))).toBeGreaterThan(0);
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-player-mode', 'on-foot');
 

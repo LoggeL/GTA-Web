@@ -26,12 +26,14 @@ interface QaApi {
   pedestrians(): readonly { id: string; behavior: string; x: number; z: number }[];
   combatants(): readonly QaCombatant[];
   selectWeapon(weaponId: string): unknown;
+  damageCombatant(targetId: string, amount: number): boolean;
   setMoney(value: number): number;
   setWantedLevel(level: number): { level: number; phase: string };
   advanceWanted(seconds: number, isVisible?: boolean, insideSearchArea?: boolean): {
     level: number;
     phase: string;
   };
+  advanceWorld(seconds: number): { simulatedSeconds: number; wantedLevel: number };
   setPlayerCondition(health: number, armor: number): { health: number; armor: number };
   defeat(outcome: 'death' | 'arrest'): Promise<{ health: number; money: number; wantedLevel: number }>;
 }
@@ -152,23 +154,51 @@ test.describe('M4 combat, stealth, NPC, and wanted acceptance', () => {
         .some(({ state }) => !['patrol', 'incapacitated'].includes(state)) ?? false
     ))).toBe(true);
 
-    await page.evaluate(() => {
+    const witnessShotBefore = await page.evaluate(() => {
       const api = (window as QaWindow).__HEATLINE_QA__;
       if (!api) throw new Error('HEATLINE QA API is unavailable');
+      // The loud-combat contract above is already satisfied. Incapacitating
+      // the remaining hostiles isolates this witness-report fixture from
+      // unrelated combat damage while its fixed simulation clock advances.
+      for (const combatant of api.combatants()) {
+        if (combatant.state !== 'incapacitated') {
+          api.damageCombatant(combatant.id, 10_000);
+        }
+      }
       api.setWantedLevel(0);
       const witness = api.pedestrians().find(({ behavior }) => behavior === 'wander');
       if (!witness) throw new Error('Missing calm pedestrian witness');
-      api.teleport(witness.x, witness.z);
-      api.face(witness.x + 12, witness.z);
+      // A non-zero separation gives the direct-threat flee path a stable
+      // direction before its report, rather than relying on normalization of
+      // an exact player/witness overlap.
+      api.teleport(witness.x - 9, witness.z);
+      api.face(witness.x, witness.z);
       api.selectWeapon('pistol-tier-1');
+      return api.snapshot();
     });
     await page.mouse.move(canvasCenter.x, canvasCenter.y);
     await page.mouse.down({ button: 'left' });
     await page.waitForTimeout(80);
     await page.mouse.up({ button: 'left' });
-    await expect.poll(async () => Number(await world.getAttribute('data-wanted-level')), {
-      timeout: 8_000,
-    }).toBeGreaterThan(0);
+    const witnessShotAfter = await page.evaluate(() => (
+      (window as QaWindow).__HEATLINE_QA__?.snapshot()
+    ));
+    expect(witnessShotAfter?.weaponAmmo).toBeLessThan(
+      witnessShotBefore?.weaponAmmo ?? Number.POSITIVE_INFINITY,
+    );
+    expect(witnessShotAfter?.weaponDurability).toBeLessThan(
+      witnessShotBefore?.weaponDurability ?? Number.POSITIVE_INFINITY,
+    );
+    // Unsuppressed gunfire makes a nearby witness flee for four simulated
+    // seconds before the authored report delay (at most 1.1 s). Drive that
+    // existing state machine rather than making acceptance depend on RAF
+    // throughput under concurrent software-rendered projects.
+    const witnessResult = await page.evaluate(() => (
+      (window as QaWindow).__HEATLINE_QA__?.advanceWorld(5.2)
+    ));
+    expect(witnessResult?.simulatedSeconds).toBeCloseTo(5.2, 5);
+    expect(witnessResult?.wantedLevel).toBeGreaterThan(0);
+    await expect(world).toHaveAttribute('data-wanted-level', /[1-5]/);
 
     for (const level of [1, 2, 3, 4, 5]) {
       await page.evaluate((nextLevel) => (

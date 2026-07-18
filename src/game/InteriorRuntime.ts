@@ -61,6 +61,31 @@ export interface InteriorSceneRecipe {
   readonly visuals: readonly InteriorVisualRecipe[];
 }
 
+export interface InteriorExteriorBuildingDefinition {
+  readonly id: string;
+  readonly position: Vec3Data;
+  readonly width: number;
+  readonly depth: number;
+  readonly height: number;
+  readonly frontage: 'north' | 'east' | 'south' | 'west';
+  readonly color: number;
+  readonly accentColor: number;
+  readonly glassColor: number;
+  readonly facadeStyle: 'art-deco' | 'glass-grid' | 'stucco-arcade' | 'warehouse-bay';
+  readonly storefrontStyle: 'awning' | 'lobby' | 'arcade' | 'loading-bay';
+  readonly roofStyle: 'flat' | 'step' | 'spire';
+  readonly roofFeature: 'neon-crown' | 'antenna' | 'terrace' | 'water-tank' | 'gantry' | 'vents';
+  readonly landmark: boolean;
+}
+
+export interface InteriorPortalFacadeAttachment {
+  readonly hostBuildingId: string;
+  /** Exact world-space point on the authored host building's frontage. */
+  readonly position: Vec3Data;
+  /** Heading from the exterior approach through the facade into the building. */
+  readonly heading: number;
+}
+
 export interface InteriorPortalDefinition extends ChunkInteriorPortal {
   readonly interiorId: InteriorId;
   readonly label: string;
@@ -68,11 +93,13 @@ export interface InteriorPortalDefinition extends ChunkInteriorPortal {
   readonly district: DistrictId;
   readonly cellId: CellId;
   readonly interactionRadiusMeters: number;
+  readonly attachment: InteriorPortalFacadeAttachment;
   readonly safeExteriorTransform: InteriorTransform;
 }
 
 export interface InteriorDefinition {
   readonly id: InteriorId;
+  readonly exteriorBuilding: InteriorExteriorBuildingDefinition;
   readonly portal: InteriorPortalDefinition;
   readonly scene: InteriorSceneRecipe;
 }
@@ -441,9 +468,9 @@ interface PortalAuthoring {
   readonly label: string;
   readonly prompt: string;
   readonly district: DistrictId;
-  readonly position: Vec3Data;
-  readonly safePosition: Vec3Data;
-  readonly safeHeading: number;
+  readonly exteriorBuilding: InteriorExteriorBuildingDefinition;
+  readonly entranceOffsetMeters: number;
+  readonly interactionRadiusMeters?: number;
 }
 
 const PORTAL_AUTHORING: readonly PortalAuthoring[] = [
@@ -453,9 +480,24 @@ const PORTAL_AUTHORING: readonly PortalAuthoring[] = [
     label: 'Moreno Garage',
     prompt: 'Enter Moreno Garage',
     district: 'arroyo-heights',
-    position: { x: -243.7, y: 0, z: 244.7 },
-    safePosition: { x: -245.5, y: 0, z: 244.7 },
-    safeHeading: -Math.PI / 2,
+    entranceOffsetMeters: -10,
+    interactionRadiusMeters: 11.5,
+    exteriorBuilding: {
+      id: 'interior-host:moreno-garage',
+      position: { x: -198, y: 4.5, z: 219.5 },
+      width: 38,
+      depth: 24,
+      height: 9,
+      frontage: 'south',
+      color: 0xc87951,
+      accentColor: 0xef7048,
+      glassColor: 0x436f74,
+      facadeStyle: 'stucco-arcade',
+      storefrontStyle: 'arcade',
+      roofStyle: 'flat',
+      roofFeature: 'water-tank',
+      landmark: false,
+    },
   },
   {
     id: 'juno-grid-entry',
@@ -463,9 +505,23 @@ const PORTAL_AUTHORING: readonly PortalAuthoring[] = [
     label: "Juno's Grid",
     prompt: "Enter Juno's Grid",
     district: 'neon-strand',
-    position: { x: -350, y: 0, z: -350 },
-    safePosition: { x: -350, y: 0, z: -347.5 },
-    safeHeading: 0,
+    entranceOffsetMeters: 0,
+    exteriorBuilding: {
+      id: 'interior-host:juno-grid',
+      position: { x: -314, y: 8, z: -314 },
+      width: 24,
+      depth: 24,
+      height: 16,
+      frontage: 'west',
+      color: 0x4a8e91,
+      accentColor: 0xff4fa3,
+      glassColor: 0x244c67,
+      facadeStyle: 'art-deco',
+      storefrontStyle: 'awning',
+      roofStyle: 'spire',
+      roofFeature: 'neon-crown',
+      landmark: true,
+    },
   },
   {
     id: 'malik-office-entry',
@@ -473,9 +529,23 @@ const PORTAL_AUTHORING: readonly PortalAuthoring[] = [
     label: "Malik's Office",
     prompt: "Enter Malik's Office",
     district: 'alta-vista',
-    position: { x: 350, y: 0, z: -350 },
-    safePosition: { x: 347.5, y: 0, z: -350 },
-    safeHeading: -Math.PI / 2,
+    entranceOffsetMeters: 0,
+    exteriorBuilding: {
+      id: 'interior-host:malik-office',
+      position: { x: 385, y: 22, z: -314 },
+      width: 24,
+      depth: 24,
+      height: 44,
+      frontage: 'west',
+      color: 0x8198a3,
+      accentColor: 0xe5c27a,
+      glassColor: 0x244c67,
+      facadeStyle: 'glass-grid',
+      storefrontStyle: 'lobby',
+      roofStyle: 'step',
+      roofFeature: 'terrace',
+      landmark: false,
+    },
   },
   {
     id: 'priya-workshop-entry',
@@ -483,9 +553,23 @@ const PORTAL_AUTHORING: readonly PortalAuthoring[] = [
     label: "Priya's Workshop",
     prompt: "Enter Priya's Workshop",
     district: 'breakwater',
-    position: { x: 350, y: 0, z: 350 },
-    safePosition: { x: 350, y: 0, z: 347.5 },
-    safeHeading: 0,
+    entranceOffsetMeters: 0,
+    exteriorBuilding: {
+      id: 'interior-host:priya-workshop',
+      position: { x: 385, y: 7, z: 385 },
+      width: 24,
+      depth: 24,
+      height: 14,
+      frontage: 'west',
+      color: 0x63767a,
+      accentColor: 0x4ce0c1,
+      glassColor: 0x2e525c,
+      facadeStyle: 'warehouse-bay',
+      storefrontStyle: 'loading-bay',
+      roofStyle: 'flat',
+      roofFeature: 'gantry',
+      landmark: false,
+    },
   },
   {
     id: 'syndicate-command-tower-entry',
@@ -493,29 +577,133 @@ const PORTAL_AUTHORING: readonly PortalAuthoring[] = [
     label: 'Syndicate Command Tower',
     prompt: 'Enter the command tower',
     district: 'alta-vista',
-    position: { x: 284, y: 0, z: -126 },
-    safePosition: { x: 281.5, y: 0, z: -126 },
-    safeHeading: -Math.PI / 2,
+    entranceOffsetMeters: 0,
+    exteriorBuilding: {
+      id: 'interior-host:syndicate-tower',
+      position: { x: 286, y: 57, z: -116 },
+      width: 26,
+      depth: 28,
+      height: 114,
+      frontage: 'north',
+      color: 0x596a79,
+      accentColor: 0xff6d4f,
+      glassColor: 0x17384f,
+      facadeStyle: 'glass-grid',
+      storefrontStyle: 'lobby',
+      roofStyle: 'spire',
+      roofFeature: 'antenna',
+      landmark: true,
+    },
   },
 ] as const;
 
+const PORTAL_FACADE_OFFSET_METERS = 0.82;
+const PORTAL_SAFE_OFFSET_METERS = 2.55;
+
+function facadePlacement(
+  building: Readonly<InteriorExteriorBuildingDefinition>,
+  entranceOffsetMeters: number,
+): {
+  readonly position: Vec3Data;
+  readonly outwardX: number;
+  readonly outwardZ: number;
+  readonly heading: number;
+} {
+  const alongLimit = (
+    building.frontage === 'north' || building.frontage === 'south'
+      ? building.width
+      : building.depth
+  ) / 2 - 1.4;
+  if (
+    !Number.isFinite(entranceOffsetMeters)
+    || Math.abs(entranceOffsetMeters) > alongLimit
+  ) {
+    throw new RangeError(`Interior entrance does not fit ${building.id}'s frontage`);
+  }
+  switch (building.frontage) {
+    case 'north':
+      return {
+        position: {
+          x: building.position.x + entranceOffsetMeters,
+          y: 0,
+          z: building.position.z - building.depth / 2,
+        },
+        outwardX: 0,
+        outwardZ: -1,
+        heading: Math.PI,
+      };
+    case 'east':
+      return {
+        position: {
+          x: building.position.x + building.width / 2,
+          y: 0,
+          z: building.position.z + entranceOffsetMeters,
+        },
+        outwardX: 1,
+        outwardZ: 0,
+        heading: Math.PI / 2,
+      };
+    case 'south':
+      return {
+        position: {
+          x: building.position.x + entranceOffsetMeters,
+          y: 0,
+          z: building.position.z + building.depth / 2,
+        },
+        outwardX: 0,
+        outwardZ: 1,
+        heading: 0,
+      };
+    case 'west':
+      return {
+        position: {
+          x: building.position.x - building.width / 2,
+          y: 0,
+          z: building.position.z + entranceOffsetMeters,
+        },
+        outwardX: -1,
+        outwardZ: 0,
+        heading: -Math.PI / 2,
+      };
+  }
+}
+
 function buildDefinition(authoring: Readonly<PortalAuthoring>): InteriorDefinition {
+  const facade = facadePlacement(
+    authoring.exteriorBuilding,
+    authoring.entranceOffsetMeters,
+  );
+  const position = {
+    x: facade.position.x + facade.outwardX * PORTAL_FACADE_OFFSET_METERS,
+    y: 0,
+    z: facade.position.z + facade.outwardZ * PORTAL_FACADE_OFFSET_METERS,
+  };
   const portal: InteriorPortalDefinition = {
     id: authoring.id,
     interiorId: authoring.interiorId,
     label: authoring.label,
     prompt: authoring.prompt,
     district: authoring.district,
-    position: { ...authoring.position },
-    cellId: cellIdAt(authoring.position),
-    interactionRadiusMeters: 2.4,
+    position,
+    cellId: cellIdAt(position),
+    interactionRadiusMeters: authoring.interactionRadiusMeters ?? 2.8,
+    attachment: {
+      hostBuildingId: authoring.exteriorBuilding.id,
+      position: { ...facade.position },
+      heading: facade.heading,
+    },
     safeExteriorTransform: {
-      position: { ...authoring.safePosition },
-      heading: authoring.safeHeading,
+      position: {
+        x: facade.position.x + facade.outwardX * PORTAL_SAFE_OFFSET_METERS,
+        y: 0,
+        z: facade.position.z + facade.outwardZ * PORTAL_SAFE_OFFSET_METERS,
+      },
+      heading: facade.heading,
     },
   };
   return {
     id: authoring.interiorId,
+    exteriorBuilding: authoring.exteriorBuilding,
     portal,
     scene: SCENES[authoring.interiorId],
   };
@@ -698,6 +886,12 @@ export class InteriorRuntime {
       }
       if (definition.id !== definition.scene.id || definition.id !== definition.portal.interiorId) {
         throw new Error(`Interior definition identity mismatch: ${definition.id}`);
+      }
+      if (
+        definition.portal.attachment.hostBuildingId
+        !== definition.exteriorBuilding.id
+      ) {
+        throw new Error(`Interior facade attachment mismatch: ${definition.id}`);
       }
       this.#definitionsById.set(definition.id, definition);
       this.#definitionsByPortal.set(definition.portal.id, definition);

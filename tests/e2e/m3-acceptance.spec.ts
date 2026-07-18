@@ -1,5 +1,7 @@
 import type { Page } from '@playwright/test';
 
+import { PLAYER_SPAWN, VEHICLE_SPAWN } from '../../src/game/city';
+import { AUTHORED_INTERIORS } from '../../src/game/InteriorRuntime';
 import { startNewGame } from './helpers';
 import { expect, test } from './fixtures';
 
@@ -26,6 +28,14 @@ interface QaApi {
 
 type QaWindow = Window & { __HEATLINE_QA__?: QaApi };
 
+const GARAGE_PORTAL_POSITION = AUTHORED_INTERIORS.find(
+  ({ id }) => id === 'moreno-garage',
+)?.portal.position;
+
+if (!GARAGE_PORTAL_POSITION) {
+  throw new Error('Missing authored Moreno Garage portal');
+}
+
 async function qaTeleport(page: Page, x: number, z: number): Promise<void> {
   await page.evaluate(({ targetX, targetZ }) => {
     const api = (window as QaWindow).__HEATLINE_QA__;
@@ -41,7 +51,7 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
     await startNewGame(page, 1, 'Masculine Alex', '/?qa=1');
     const world = page.getByLabel('3D game world');
     await page.waitForFunction(() => Boolean((window as QaWindow).__HEATLINE_QA__));
-    await qaTeleport(page, -248, 243.5);
+    await qaTeleport(page, PLAYER_SPAWN.x, PLAYER_SPAWN.z);
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-player-mode', 'vehicle');
 
@@ -56,7 +66,7 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
       'motorcycle',
     ] as const;
     for (const classId of classIds) {
-      await qaTeleport(page, -248, 243.5);
+      await qaTeleport(page, VEHICLE_SPAWN.x, VEHICLE_SPAWN.z);
       const before = await page.evaluate((id) => {
         const api = (window as QaWindow).__HEATLINE_QA__;
         if (!api) throw new Error('HEATLINE QA API is unavailable');
@@ -126,10 +136,10 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
     const stolenInstanceId = await world.getAttribute('data-vehicle-instance-id');
     expect(stolenInstanceId).toMatch(/^stolen-traffic-/);
 
-    await qaTeleport(page, -248, 243.5);
+    await qaTeleport(page, VEHICLE_SPAWN.x, VEHICLE_SPAWN.z);
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-player-mode', 'on-foot');
-    await qaTeleport(page, -243.7, 244.7);
+    await qaTeleport(page, GARAGE_PORTAL_POSITION.x, GARAGE_PORTAL_POSITION.z);
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-interior-id', 'moreno-garage');
 
@@ -185,7 +195,7 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
     await expect(page.getByLabel('Game HUD')).toBeVisible({ timeout: 15_000 });
     await expect(world).toHaveAttribute('data-vehicle-instance-id', stolenInstanceId!);
     await expect(world).toHaveAttribute('data-vehicle-paint', 'sunset-orange');
-    await qaTeleport(page, -243.7, 244.7);
+    await qaTeleport(page, GARAGE_PORTAL_POSITION.x, GARAGE_PORTAL_POSITION.z);
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-interior-id', 'moreno-garage');
     await page.getByRole('navigation', { name: 'Game panels' })
@@ -212,7 +222,7 @@ test.describe('M3 vehicles, ownership, and garage acceptance', () => {
     await page.getByRole('navigation', { name: 'Main menu' }).getByRole('button', { name: 'Play' }).click();
     await page.getByRole('button', { name: 'Continue' }).click();
     await expect(page.getByLabel('Game HUD')).toBeVisible({ timeout: 15_000 });
-    await qaTeleport(page, -243.7, 244.7);
+    await qaTeleport(page, GARAGE_PORTAL_POSITION.x, GARAGE_PORTAL_POSITION.z);
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-interior-id', 'moreno-garage');
     await page.getByRole('navigation', { name: 'Game panels' })

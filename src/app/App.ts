@@ -50,6 +50,7 @@ import {
   CityStreamingController,
   baseResolutionScaleForRuntime,
 } from '../game/CityStreamingController';
+import { AUTHORED_INTERIORS } from '../game/InteriorRuntime';
 import {
   DomInputAdapter,
   InputController,
@@ -215,8 +216,22 @@ interface HeatlineQaApi {
     id: string;
     classId: string;
     behavior: string;
+    speed: number;
+    heading: number;
+    roadId: string;
     x: number;
     z: number;
+  }[];
+  trafficSignals(): readonly {
+    id: string;
+    x: number;
+    z: number;
+    phase: string;
+    horizontalAspect: string;
+    verticalAspect: string;
+    horizontalRoadIds: readonly string[];
+    verticalRoadIds: readonly string[];
+    secondsUntilChange: number;
   }[];
   pedestrians(): readonly {
     id: string;
@@ -252,6 +267,7 @@ interface HeatlineQaApi {
   damageCombatant(targetId: string, amount: number): boolean;
   setWantedLevel(level: number): SaveGameV1['wanted'];
   advanceWanted(seconds: number, isVisible?: boolean, insideSearchArea?: boolean): SaveGameV1['wanted'];
+  advanceWorld(seconds: number): { simulatedSeconds: number; wantedLevel: number };
   setPlayerCondition(health: number, armor: number): { health: number; armor: number };
   defeat(outcome: 'death' | 'arrest'): Promise<{ health: number; money: number; wantedLevel: number }>;
   campaignState(): CampaignQaSnapshot;
@@ -3593,23 +3609,35 @@ export class App {
   }
 
   #buildNavigationMarkers(): readonly MapMarker[] {
+    const entranceFor = (interiorId: string) => {
+      const definition = AUTHORED_INTERIORS.find(({ id }) => id === interiorId);
+      if (!definition) throw new Error(`Missing authored ${interiorId} entrance`);
+      return definition.portal;
+    };
+    const garage = entranceFor('moreno-garage');
+    const juno = entranceFor('juno-grid');
+    const malik = entranceFor('malik-office');
+    const priya = entranceFor('priya-workshop');
     const markers: MapMarker[] = [
       {
         id: 'moreno-garage', kind: 'safehouse', label: 'Moreno Garage',
-        position: { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z },
-        cellId: cellIdAt(PLAYER_SPAWN), reveal: 'always',
+        position: { x: garage.position.x, z: garage.position.z },
+        cellId: garage.cellId, reveal: 'always',
       },
       {
         id: 'juno-vale', kind: 'mission', label: 'Juno Vale',
-        position: { x: -350, z: -350 }, cellId: cellIdAt({ x: -350, z: -350 }), reveal: 'always',
+        position: { x: juno.position.x, z: juno.position.z },
+        cellId: juno.cellId, reveal: 'always',
       },
       {
         id: 'malik-rook', kind: 'mission', label: 'Malik Rook',
-        position: { x: 350, z: -350 }, cellId: cellIdAt({ x: 350, z: -350 }), reveal: 'always',
+        position: { x: malik.position.x, z: malik.position.z },
+        cellId: malik.cellId, reveal: 'always',
       },
       {
         id: 'priya-shah', kind: 'mission', label: 'Priya Shah',
-        position: { x: 350, z: 350 }, cellId: cellIdAt({ x: 350, z: 350 }), reveal: 'always',
+        position: { x: priya.position.x, z: priya.position.z },
+        cellId: priya.cellId, reveal: 'always',
       },
     ];
     const unlocked = new Set(
@@ -3733,8 +3761,22 @@ export class App {
         id: vehicle.id,
         classId: vehicle.classId,
         behavior: vehicle.behavior,
+        speed: vehicle.speed,
+        heading: vehicle.heading,
+        roadId: vehicle.roadId,
         x: vehicle.position.x,
         z: vehicle.position.z,
+      })),
+      trafficSignals: () => world.getTrafficSignalSnapshot().junctions.map((signal) => ({
+        id: signal.id,
+        x: signal.position.x,
+        z: signal.position.z,
+        phase: signal.phase,
+        horizontalAspect: signal.horizontalAspect,
+        verticalAspect: signal.verticalAspect,
+        horizontalRoadIds: signal.horizontalRoadIds,
+        verticalRoadIds: signal.verticalRoadIds,
+        secondsUntilChange: signal.secondsUntilChange,
       })),
       pedestrians: () => world.getCitySimulationSnapshot().pedestrians.map((pedestrian) => ({
         id: pedestrian.id,
@@ -3929,6 +3971,28 @@ export class App {
         this.#policeVisibleSeconds = isVisible ? 6.5 : 0;
         this.#applyWantedSnapshot(next, true);
         return { ...next.state };
+      },
+      advanceWorld: (seconds) => {
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 10) {
+          throw new RangeError('QA world advance must be between 0 and 10 seconds');
+        }
+        const save = this.#currentSave;
+        if (!save) throw new Error('QA world advance requires an active save');
+        // Release acceptance drives the same public WorldView update seam in
+        // fixed steps so simulation-time state machines do not depend on RAF
+        // throughput when multiple software-rendered browser workers contend.
+        const stepCount = Math.ceil(seconds / 0.1);
+        let simulatedSeconds = 0;
+        for (let index = 0; index < stepCount; index += 1) {
+          const stepSeconds = Math.min(0.1, seconds - simulatedSeconds);
+          if (stepSeconds <= Number.EPSILON) break;
+          world.update(stepSeconds);
+          simulatedSeconds += stepSeconds;
+        }
+        return {
+          simulatedSeconds,
+          wantedLevel: save.wanted.level,
+        };
       },
       setPlayerCondition: (health, armor) => {
         if (!Number.isFinite(health) || health < 0 || health > 150) {

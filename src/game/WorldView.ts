@@ -16,17 +16,20 @@ import {
 } from 'three';
 
 import { cellIdAt } from '../navigation/cells';
-import type { CellId } from '../navigation/types';
+import { buildRoadGraph } from '../navigation/road-graph';
+import type { CellId, RoadGraph } from '../navigation/types';
 import type { RoadClosureState } from '../navigation/types';
 import { CitySimulation } from '../simulation';
 import type {
   ActorPopulationLimits,
   CitySimulationSnapshot,
   CombatNpcSnapshot,
+  ExternalTrafficVehicleState,
   PlayerDamageEvent,
   SimulationObstacle,
   WeaponDefinition as SimulationWeaponDefinition,
 } from '../simulation';
+import type { TrafficSignalSystemSnapshot } from '../simulation/traffic-signals';
 import { directionFromHeading, headingFromDirection } from '../simulation/math';
 import { SimulationRandom } from '../simulation/random';
 import type { PoliceResponseSnapshot } from '../systems/policeResponse';
@@ -36,12 +39,18 @@ import {
   normalizeCameraShakeIntensity,
   oppositeShoulder,
 } from './camera';
-import { cameraSafeFraction } from './collision';
+import { cameraSafeFraction, supportHeightAt } from './collision';
 import {
   MINIMUM_ADAPTIVE_RESOLUTION_SCALE,
   type DrawDensityLimits,
 } from './CityStreamingController';
-import { PLAYER_SPAWN, VEHICLE_SPAWN, districtAt, generateCity } from './city';
+import {
+  PLAYER_SPAWN,
+  VEHICLE_SPAWN,
+  VEHICLE_SPAWN_HEADING,
+  districtAt,
+  generateCity,
+} from './city';
 import type { CityLayout, CollisionRect } from './city';
 import { DefaultWorldControls } from './controls';
 import {
@@ -64,6 +73,7 @@ import type { SoftCoverResult } from './combatDomain';
 import { PoliceResponseVisual } from './PoliceResponseVisual';
 import type { PoliceVisualLevel, PoliceVisualPhase } from './PoliceResponseVisual';
 import { RoadClosureVisual } from './RoadClosureVisual';
+import { TrafficSignalVisual } from './TrafficSignalVisual';
 import { WorldCombatRuntime } from './WorldCombatRuntime';
 import { createWorldInputState } from './types';
 import type {
@@ -76,12 +86,14 @@ import type {
   WorldProgressionModifiers,
 } from './types';
 import {
+  applyDynamicTrafficImpact,
   createVehicleState,
   findVehicleExitPoint,
   stepVehicle,
   vehicleCanExit,
 } from './vehicle';
 import type { VehicleSimulationState } from './vehicle';
+import { moveVehicleCollisionBox } from './vehicleDynamics';
 import { createUniqueStolenVehicleIdentity } from './vehicleIdentity';
 import { restoreVehicleIntegrityToPercent } from './vehicleIntegrity';
 import { requireVehicleDriveProfile } from './vehicleProfiles';
@@ -100,6 +112,11 @@ const DEFAULT_CAMERA_PITCH = 0.42;
 const CAMERA_TARGET_HEIGHT = 1.48;
 const TRAFFIC_INTERACTION_PREFIX = 'traffic:';
 const LOW_QUALITY_VISUAL_INTERVAL_SECONDS = 1 / 30;
+const TRAFFIC_SIGNAL_VISUAL_INTERVAL_SECONDS = 0.1;
+const TRAFFIC_SIGNAL_VISUAL_RANGE_METERS = Object.freeze({
+  low: 150,
+  high: 340,
+});
 const LOW_QUALITY_ROAD_DRY_COLOR = new Color(0x26313b);
 const LOW_QUALITY_ROAD_WET_COLOR = new Color(0x141c24);
 
@@ -217,6 +234,7 @@ export class WorldView {
   public readonly hemisphereLight: HemisphereLight;
   public readonly sunLight: DirectionalLight;
   public readonly layout: CityLayout;
+  private readonly policeNavigationGraph: RoadGraph;
 
   private readonly mount: HTMLElement;
   private readonly player: PlayerSimulationState;
@@ -231,7 +249,7 @@ export class WorldView {
   private vehicleCloseCamera = false;
   private lastSafeVehicleTransform: VehicleRecoveryTransform = {
     position: { ...VEHICLE_SPAWN },
-    heading: 0,
+    heading: VEHICLE_SPAWN_HEADING,
   };
   private tippedVehicleSeconds = 0;
   private readonly environment: EnvironmentState;
@@ -250,6 +268,7 @@ export class WorldView {
   private readonly interiorPortalVisual: InteriorPortalVisual;
   private readonly roadClosureVisual: RoadClosureVisual;
   private readonly policeResponseVisual: PoliceResponseVisual;
+  private readonly trafficSignalVisual: TrafficSignalVisual;
   private readonly avatarVisual: AvatarVisual;
   private readonly vehicleVisual: VehicleVisual;
   private readonly rainField: RainField;
@@ -286,9 +305,13 @@ export class WorldView {
   private exteriorCollisions: readonly CollisionRect[];
   private exteriorCollisionCache: readonly CollisionRect[];
   private exteriorObstructions: readonly SimulationObstacle[];
+  private readonly samplePoliceGroundHeight = (x: number, z: number): number =>
+    supportHeightAt(x, z, 0.32, this.exteriorCollisionCache);
   private policeCollisionSignature = '';
   private portalVisualElapsed = 0;
   private environmentVisualElapsed = 0;
+  private trafficSignalVisualElapsed = Number.POSITIVE_INFINITY;
+  private renderableTrafficSignalCellIds: ReadonlySet<CellId> | null = null;
   private policeResponseLevel: PoliceVisualLevel = 0;
   private policeResponsePhase: PoliceVisualPhase = 'clear';
   private policeResponsePlan: Readonly<PoliceResponseSnapshot> | null = null;
@@ -308,6 +331,7 @@ export class WorldView {
     this.onSnapshot = options.onSnapshot ?? null;
     this.onFrame = options.onFrame ?? null;
     this.layout = generateCity(options.seed ?? 'heatline-solara-world-v1', quality);
+    this.policeNavigationGraph = buildRoadGraph(this.layout);
     this.combatRuntime = new WorldCombatRuntime();
     this.combatRandom = new SimulationRandom(`${this.layout.seed}:player-combat`);
     this.aimAssistLevel = options.aimAssistLevel ?? 'medium';
@@ -329,6 +353,7 @@ export class WorldView {
       integrity: initialVehicle.integrity,
       upgrades: initialVehicle.upgrades,
     });
+    this.vehicle.heading = VEHICLE_SPAWN_HEADING;
     this.activeVehicleInstanceId = initialVehicle.instanceId;
     this.knownVehicleInstanceIds = new Set([
       ...(options.reservedVehicleInstanceIds ?? []),
@@ -405,6 +430,10 @@ export class WorldView {
     this.interiorPortalVisual = new InteriorPortalVisual(this.interiorRuntime.definitions);
     this.roadClosureVisual = new RoadClosureVisual();
     this.policeResponseVisual = new PoliceResponseVisual();
+    this.trafficSignalVisual = new TrafficSignalVisual(
+      Math.max(1, this.citySimulation.getTrafficSignalSnapshot().junctions.length),
+      quality,
+    );
     this.avatarVisual = new AvatarVisual();
     this.vehicleVisual = new VehicleVisual(initialVehicle.classId, {
       quality,
@@ -417,6 +446,7 @@ export class WorldView {
       this.interiorPortalVisual.root,
       this.roadClosureVisual.root,
       this.policeResponseVisual.root,
+      this.trafficSignalVisual.root,
       this.avatarVisual.root,
       this.vehicleVisual.root,
       this.rainField.points,
@@ -435,6 +465,7 @@ export class WorldView {
     this.resizeObserver?.observe(this.mount);
     this.resize();
     this.applyEnvironmentVisuals();
+    this.refreshTrafficSignalVisual(true);
     this.updateCamera(1);
     this.emitSnapshot(true);
   }
@@ -526,6 +557,7 @@ export class WorldView {
   ): CityVisualStreamingSnapshot {
     this.assertAlive();
     const active = new Set(renderableActiveCellIds);
+    this.renderableTrafficSignalCellIds = active;
     this.exteriorCollisions = this.layout.collisions.filter((collision) =>
       active.has(cellIdAt({
         x: (collision.minX + collision.maxX) / 2,
@@ -534,6 +566,8 @@ export class WorldView {
     );
     this.rebuildExteriorCollisionCache();
     this.interiorPortalVisual.setResidentCellIds(residentCellIds);
+    this.refreshTrafficSignalVisual(true);
+    this.updatePoliceResponseVisual();
     return this.cityVisuals.applyStreamingState(
       renderableActiveCellIds,
       residentCellIds,
@@ -551,6 +585,12 @@ export class WorldView {
   public getCitySimulationSnapshot(): CitySimulationSnapshot {
     this.assertAlive();
     return this.citySimulation.getSnapshot();
+  }
+
+  /** Exposes the deterministic city signal clock for QA and HUD diagnostics. */
+  public getTrafficSignalSnapshot(): TrafficSignalSystemSnapshot {
+    this.assertAlive();
+    return this.citySimulation.getTrafficSignalSnapshot();
   }
 
   public getCombatNpcSnapshot(): readonly CombatNpcSnapshot[] {
@@ -905,10 +945,7 @@ export class WorldView {
         : null;
     }
     const actor = this.interiorActorState();
-    const eligiblePortal = this.interiorRuntime.nearestEligiblePortal(
-      actor,
-      Math.max(0, maximumDistance),
-    );
+    const eligiblePortal = this.interiorRuntime.nearestEligiblePortal(actor);
     if (
       eligiblePortal?.eligible
       && eligiblePortal.portalId
@@ -983,6 +1020,7 @@ export class WorldView {
       this.interiorSceneVisual.load(definition);
       this.cityVisuals.root.visible = false;
       this.interiorPortalVisual.setVisible(false);
+      this.trafficSignalVisual.root.visible = false;
       this.vehicleVisual.root.visible = false;
       this.rainField.points.visible = false;
       this.citySimulation.setVisible(false);
@@ -1009,6 +1047,7 @@ export class WorldView {
     this.interiorSceneVisual.clear();
     this.cityVisuals.root.visible = true;
     this.interiorPortalVisual.setVisible(true);
+    this.refreshTrafficSignalVisual(true);
     this.vehicleVisual.root.visible = true;
     this.citySimulation.setVisible(true);
     this.interiorTransitionPending = false;
@@ -1049,12 +1088,16 @@ export class WorldView {
     }
 
     const collisions = this.activeCollisions();
+    let previousVehiclePosition = { ...this.vehicle.position };
     let playerThreatening = false;
     if (this.vehicle.occupied) {
       this.vehicleSirenActive = this.vehicle.vehicleClassId === 'police-cruiser'
         && input.vehiclePrimaryAction;
       if (input.vehicleReset) {
         this.recoverVehiclePose('unstuck');
+        // A recovery teleport starts a new sweep; it must not create a false
+        // contact along the discarded transform-to-transform path.
+        previousVehiclePosition = { ...this.vehicle.position };
       }
       stepVehicle(this.vehicle, input, collisions, dt, {
         rainIntensity: this.environment.rainIntensity,
@@ -1062,8 +1105,6 @@ export class WorldView {
         brakingMultiplier: this.progressionModifiers.vehicleBrakingMultiplier,
         durabilityMultiplier: this.progressionModifiers.vehicleDurabilityMultiplier,
       });
-      this.updateVehicleRecovery(dt, collisions);
-      this.vehicleVisual.sync(this.vehicle, dt);
       this.stepCombatRuntime(dt, input, false);
     } else {
       this.vehicleSirenActive = false;
@@ -1084,6 +1125,7 @@ export class WorldView {
         deltaSeconds: dt,
         playerPosition: { ...actor.position },
         playerHeading: actor.heading,
+        externalVehicle: this.getExternalTrafficVehicleState(),
         playerCrouching: !this.vehicle.occupied && this.player.crouching,
         playerLightLevel: dayPhaseAt(this.environment.timeOfDay) === 'night' ? 0.34 : 1,
         playerCoverExposure: this.vehicle.occupied ? 1 : this.softCover.exposure,
@@ -1102,6 +1144,15 @@ export class WorldView {
         input: simulationInput,
         obstructions: this.exteriorObstructions,
       });
+      if (this.vehicle.occupied) {
+        this.resolveTrafficVehicleCollision(previousVehiclePosition);
+      }
+      this.trafficSignalVisualElapsed += dt;
+      this.refreshTrafficSignalVisual(false);
+    }
+    if (this.vehicle.occupied) {
+      this.updateVehicleRecovery(dt, collisions);
+      this.vehicleVisual.sync(this.vehicle, dt);
     }
     this.updatePoliceResponseVisual();
 
@@ -1269,6 +1320,7 @@ export class WorldView {
     this.interiorPortalVisual.dispose();
     this.roadClosureVisual.dispose();
     this.policeResponseVisual.dispose();
+    this.trafficSignalVisual.dispose();
     this.avatarVisual.dispose();
     this.vehicleVisual.dispose();
     this.rainField.dispose();
@@ -1385,6 +1437,88 @@ export class WorldView {
     }
   }
 
+  private resolveTrafficVehicleCollision(
+    previousPosition: Readonly<{ x: number; y: number; z: number }>,
+  ): boolean {
+    const profile = requireVehicleDriveProfile(this.vehicle.vehicleClassId);
+    const result = this.citySimulation.resolveTrafficVehicleCollision({
+      position: { ...this.vehicle.position },
+      previousPosition,
+      heading: this.vehicle.heading,
+      speed: this.vehicle.speed,
+      lateralSpeed: this.vehicle.lateralSpeed ?? 0,
+      radius: profile.arcadeHandling.collisionRadiusMeters,
+    });
+    if (!result.collided) {
+      return false;
+    }
+
+    moveVehicleCollisionBox(
+      this.vehicle,
+      result.position.x - this.vehicle.position.x,
+      result.position.z - this.vehicle.position.z,
+      this.activeCollisions(),
+    );
+    this.vehicle.speed = result.speed;
+    this.vehicle.lateralSpeed = result.lateralSpeed;
+    if (
+      result.impactNormal
+      && result.primaryAmbientVehicleId
+      && result.impactSpeed > 0
+    ) {
+      applyDynamicTrafficImpact(this.vehicle, {
+        impactSpeed: result.impactSpeed,
+        impactNormal: result.impactNormal,
+        ambientVehicleId: result.primaryAmbientVehicleId,
+      }, {
+        durabilityMultiplier: this.progressionModifiers.vehicleDurabilityMultiplier,
+      });
+    }
+    return true;
+  }
+
+  private getExternalTrafficVehicleState(): ExternalTrafficVehicleState | null {
+    if (!this.vehicle.occupied) {
+      return null;
+    }
+    return {
+      position: { ...this.vehicle.position },
+      heading: this.vehicle.heading,
+      speed: this.vehicle.speed,
+      lateralSpeed: this.vehicle.lateralSpeed ?? 0,
+      radius: requireVehicleDriveProfile(this.vehicle.vehicleClassId)
+        .arcadeHandling.collisionRadiusMeters,
+    };
+  }
+
+  private refreshTrafficSignalVisual(force: boolean): void {
+    if (this.interiorRuntime.phase !== 'exterior') {
+      this.trafficSignalVisual.root.visible = false;
+      return;
+    }
+    if (!force && this.trafficSignalVisualElapsed < TRAFFIC_SIGNAL_VISUAL_INTERVAL_SECONDS) {
+      return;
+    }
+    const snapshot = this.citySimulation.getTrafficSignalSnapshot();
+    const focus = this.vehicle.occupied ? this.vehicle.position : this.player.position;
+    const range = TRAFFIC_SIGNAL_VISUAL_RANGE_METERS[this.layout.quality];
+    const rangeSquared = range * range;
+    const renderable = snapshot.junctions.filter((junction) => {
+      if (
+        this.renderableTrafficSignalCellIds !== null
+        && !this.renderableTrafficSignalCellIds.has(cellIdAt(junction.position))
+      ) {
+        return false;
+      }
+      const dx = junction.position.x - focus.x;
+      const dz = junction.position.z - focus.z;
+      return dx * dx + dz * dz <= rangeSquared;
+    });
+    this.trafficSignalVisual.update(renderable);
+    this.trafficSignalVisual.root.visible = renderable.length > 0;
+    this.trafficSignalVisualElapsed = 0;
+  }
+
   private updatePoliceResponseVisual(): void {
     if (this.policeResponseLevel === 0 && this.lastRenderedPoliceResponseLevel === 0) {
       return;
@@ -1397,6 +1531,9 @@ export class WorldView {
       elapsedSeconds: this.elapsedSeconds,
       reducedMotion: this.reducedMotion,
       responsePlan: this.policeResponsePlan,
+      navigationGraph: this.policeNavigationGraph,
+      renderableCellIds: this.renderableTrafficSignalCellIds,
+      groundHeightAt: this.samplePoliceGroundHeight,
     });
     this.lastRenderedPoliceResponseLevel = this.policeResponseLevel;
     this.refreshPoliceCollisionCache();

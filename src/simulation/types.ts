@@ -37,7 +37,14 @@ export interface SimulationObstacle {
   radius: number;
 }
 
-export type TrafficBehavior = 'cruise' | 'yield' | 'intersection-yield' | 'recover' | 'panic' | 'siren-yield';
+export type TrafficBehavior =
+  | 'cruise'
+  | 'yield'
+  | 'intersection-yield'
+  | 'signal-yield'
+  | 'recover'
+  | 'panic'
+  | 'siren-yield';
 
 export interface TrafficVehicleSnapshot {
   id: string;
@@ -48,6 +55,35 @@ export interface TrafficVehicleSnapshot {
   behavior: TrafficBehavior;
   roadId: string;
   panicRemaining: number;
+}
+
+/**
+ * A player-controlled or otherwise externally simulated vehicle submitted to
+ * the ambient traffic contact solver.
+ */
+export interface ExternalTrafficVehicleState {
+  readonly position: Readonly<SimulationVec3>;
+  /** Supplying the prior transform enables swept contact and prevents tunneling. */
+  readonly previousPosition?: Readonly<SimulationVec3>;
+  readonly heading: number;
+  readonly speed: number;
+  readonly lateralSpeed?: number;
+  /** Defaults to a conservative player-vehicle footprint. */
+  readonly radius?: number;
+}
+
+/** Corrected caller state plus bounded evidence about ambient contacts. */
+export interface ExternalTrafficCollisionResult {
+  readonly collided: boolean;
+  readonly position: SimulationVec3;
+  readonly speed: number;
+  readonly lateralSpeed: number;
+  readonly impactSpeed: number;
+  /** Unit normal pointing from the external vehicle toward the primary ambient contact. */
+  readonly impactNormal: { readonly x: number; readonly z: number } | null;
+  readonly primaryAmbientVehicleId: string | null;
+  readonly ambientVehicleIds: readonly string[];
+  readonly pairChecks: number;
 }
 
 export type PedestrianBehavior = 'wander' | 'flee' | 'witness-report';
@@ -163,6 +199,11 @@ export interface CitySimulationTick {
   deltaSeconds: number;
   playerPosition: SimulationVec3;
   playerHeading: number;
+  /**
+   * Player-controlled vehicle submitted to ambient traffic perception.
+   * Null or omission represents an on-foot player.
+   */
+  externalVehicle?: Readonly<ExternalTrafficVehicleState> | null;
   /** Perception inputs for the authored NPC AI. Omitted values use visible, standing defaults. */
   playerCrouching?: boolean;
   playerLightLevel?: number;
@@ -218,6 +259,9 @@ export interface CitySimulationApi {
   setQuality(quality: SimulationQuality): void;
   setActorLimits(limits: Readonly<ActorPopulationLimits>): ActorPopulationLimits;
   claimTrafficVehicle(id: string): TrafficVehicleSnapshot | null;
+  resolveTrafficVehicleCollision(
+    state: Readonly<ExternalTrafficVehicleState>,
+  ): ExternalTrafficCollisionResult;
   despawnEnemy(targetId: string): boolean;
   tick(context: CitySimulationTick): CitySimulationTickResult;
   advance(context: CitySimulationTick): WeaponFireResult | null;

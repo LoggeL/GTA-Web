@@ -5,6 +5,7 @@ import { buildRoadGraph } from '../../src/navigation/road-graph';
 import { distance2d } from '../../src/simulation/math';
 import { SimulationRandom } from '../../src/simulation/random';
 import { TrafficSystem } from '../../src/simulation/traffic';
+import { TRAFFIC_SIGNAL_TIMING } from '../../src/simulation/traffic-signals';
 import type {
   SimulationRoadRecipe,
   SimulationVec3,
@@ -67,6 +68,8 @@ describe('Solara lane-graph traffic route', () => {
     const previousById = new Map(initial.map((vehicle) => [vehicle.id, vehicle]));
     const stationarySeconds = new Map<string, number>();
     const maximumStationarySeconds = new Map<string, number>();
+    const signalStationarySeconds = new Map<string, number>();
+    const maximumSignalStationarySeconds = new Map<string, number>();
     const recoverySeconds = new Map<string, number>();
     const maximumRecoverySeconds = new Map<string, number>();
     const distanceTravelled = new Map<string, number>();
@@ -85,6 +88,7 @@ describe('Solara lane-graph traffic route', () => {
     let connectedTransitions = 0;
     let perpendicularTransitions = 0;
     let sawIntersectionYield = false;
+    let sawSignalYield = false;
     let globalStationarySeconds = 0;
     let maximumGlobalStationarySeconds = 0;
 
@@ -127,8 +131,26 @@ describe('Solara lane-graph traffic route', () => {
         allPositionsStayedInCity &&= Math.abs(vehicle.position.x) <= 601
           && Math.abs(vehicle.position.z) <= 601;
         sawIntersectionYield ||= vehicle.behavior === 'intersection-yield';
+        sawSignalYield ||= vehicle.behavior === 'signal-yield';
 
-        const stationary = Math.abs(vehicle.speed) < 0.1
+        const signalStationary = (
+          vehicle.behavior === 'signal-yield'
+          && Math.abs(vehicle.speed) < 0.1
+        )
+          ? (signalStationarySeconds.get(vehicle.id) ?? 0) + 0.1
+          : 0;
+        signalStationarySeconds.set(vehicle.id, signalStationary);
+        maximumSignalStationarySeconds.set(
+          vehicle.id,
+          Math.max(
+            maximumSignalStationarySeconds.get(vehicle.id) ?? 0,
+            signalStationary,
+          ),
+        );
+        const stationary = (
+          vehicle.behavior !== 'signal-yield'
+          && Math.abs(vehicle.speed) < 0.1
+        )
           ? (stationarySeconds.get(vehicle.id) ?? 0) + 0.1
           : 0;
         stationarySeconds.set(vehicle.id, stationary);
@@ -186,10 +208,13 @@ describe('Solara lane-graph traffic route', () => {
     expect(connectedTransitions).toBeGreaterThan(100);
     expect(perpendicularTransitions).toBeGreaterThan(20);
     expect(sawIntersectionYield).toBe(true);
+    expect(sawSignalYield).toBe(true);
     expect(allVisitedRoads.size).toBeGreaterThan(30);
     expect(Math.min(...[...roadsVisitedById.values()].map((roads) => roads.size))).toBeGreaterThan(1);
     expect(Math.min(...distanceTravelled.values())).toBeGreaterThan(500);
     expect(Math.max(...maximumStationarySeconds.values())).toBeLessThan(3);
+    expect(Math.max(...maximumSignalStationarySeconds.values()))
+      .toBeLessThan(TRAFFIC_SIGNAL_TIMING.cycleSeconds);
     expect(Math.max(...maximumRecoverySeconds.values())).toBeLessThanOrEqual(1);
     expect(maximumGlobalStationarySeconds).toBeLessThan(1);
   });

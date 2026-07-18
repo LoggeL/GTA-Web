@@ -1,21 +1,15 @@
 import {
-  AdditiveBlending,
   BoxGeometry,
   Color,
-  CylinderGeometry,
-  DoubleSide,
   DynamicDrawUsage,
   Float32BufferAttribute,
   Group,
   InstancedBufferAttribute,
   InstancedMesh,
   Matrix4,
-  MeshBasicMaterial,
   MeshDepthMaterial,
   MeshStandardMaterial,
   Object3D,
-  OctahedronGeometry,
-  RingGeometry,
 } from 'three';
 import type {
   BufferGeometry,
@@ -41,7 +35,6 @@ const PORTAL_ACCENTS = [
   0xffd15c,
 ] as const;
 
-const BEACON_BASE_HEIGHT = 3.36;
 const PORTAL_PART_FRAME = 0;
 const PORTAL_PART_DOOR = 1;
 const PORTAL_PART_ACCENT = 2;
@@ -51,12 +44,6 @@ interface PortalShaderUniforms {
   readonly reducedMotion: { value: number };
   readonly frameColor: { value: Color };
   readonly doorColor: { value: Color };
-}
-
-interface PortalPulseTarget {
-  readonly beacon: Object3D;
-  readonly halo: Object3D;
-  readonly phase: number;
 }
 
 function stableHash(value: string): number {
@@ -90,7 +77,6 @@ function portalPartGeometry(
   source: BufferGeometry,
   transform: Matrix4,
   part: number,
-  beacon = false,
 ): BufferGeometry {
   const geometry = source.index === null ? source.clone() : source.toNonIndexed();
   geometry.applyMatrix4(transform);
@@ -99,70 +85,46 @@ function portalPartGeometry(
     'portalPart',
     new Float32BufferAttribute(new Float32Array(vertexCount).fill(part), 1),
   );
-  geometry.setAttribute(
-    'portalBeacon',
-    new Float32BufferAttribute(new Float32Array(vertexCount).fill(beacon ? 1 : 0), 1),
-  );
   return geometry;
 }
 
 function createPortalCompositeGeometry(): BufferGeometry {
   const box = new BoxGeometry(1, 1, 1);
-  const stem = new CylinderGeometry(0.035, 0.055, 0.48, 6);
-  const beacon = new OctahedronGeometry(0.22, 0);
   const parts = [
     portalPartGeometry(
       box,
-      transformAt([0, 1.34, 0], [1.64, 2.5, 0.16]),
+      transformAt([0, 1.34, 0.12], [1.72, 2.5, 0.16]),
       PORTAL_PART_DOOR,
     ),
     portalPartGeometry(
       box,
-      transformAt([-0.98, 1.46, 0.02], [0.18, 2.92, 0.28]),
+      transformAt([-0.98, 1.46, 0.14], [0.18, 2.92, 0.28]),
       PORTAL_PART_FRAME,
     ),
     portalPartGeometry(
       box,
-      transformAt([0.98, 1.46, 0.02], [0.18, 2.92, 0.28]),
+      transformAt([0.98, 1.46, 0.14], [0.18, 2.92, 0.28]),
       PORTAL_PART_FRAME,
     ),
     portalPartGeometry(
       box,
-      transformAt([0, 2.84, 0.02], [2.14, 0.18, 0.28]),
+      transformAt([0, 2.84, 0.14], [2.14, 0.18, 0.28]),
       PORTAL_PART_FRAME,
     ),
     portalPartGeometry(
       box,
-      transformAt([0, 0.04, 0.14], [2.14, 0.08, 0.58]),
-      PORTAL_PART_FRAME,
-    ),
-    portalPartGeometry(
-      box,
-      transformAt([-0.81, 1.34, -0.1], [0.055, 2.42, 0.045]),
+      transformAt([0, 3.18, 0.12], [2.78, 0.58, 0.18]),
       PORTAL_PART_ACCENT,
     ),
     portalPartGeometry(
       box,
-      transformAt([0.81, 1.34, -0.1], [0.055, 2.42, 0.045]),
+      transformAt([0, 2.82, 0.42], [2.48, 0.14, 0.86]),
       PORTAL_PART_ACCENT,
-    ),
-    portalPartGeometry(
-      stem,
-      transformAt([0, 3.08, 0]),
-      PORTAL_PART_FRAME,
-    ),
-    portalPartGeometry(
-      beacon,
-      transformAt([0, BEACON_BASE_HEIGHT, 0]),
-      PORTAL_PART_ACCENT,
-      true,
     ),
   ];
   const geometry = mergeGeometries(parts, false);
   parts.forEach((part) => part.dispose());
   box.dispose();
-  stem.dispose();
-  beacon.dispose();
   if (!geometry) {
     throw new Error('Portal geometry batching failed');
   }
@@ -198,7 +160,6 @@ function bindPortalUniforms(
 
 const PORTAL_VERTEX_PARAMETERS = /* glsl */ `
 attribute float portalPart;
-attribute float portalBeacon;
 attribute vec3 instancePortalAccent;
 attribute float instancePortalPhase;
 uniform float portalElapsed;
@@ -208,41 +169,11 @@ varying vec3 vPortalAccent;
 varying float vPortalPhase;
 `;
 
-const PORTAL_BEACON_NORMAL = /* glsl */ `
-#include <beginnormal_vertex>
-if ( portalBeacon > 0.5 ) {
-  float portalNormalAngle = portalReducedMotion > 0.5
-    ? instancePortalPhase
-    : instancePortalPhase + portalElapsed * 0.72;
-  float portalNormalCos = cos( portalNormalAngle );
-  float portalNormalSin = sin( portalNormalAngle );
-  objectNormal.xz = mat2(
-    portalNormalCos, -portalNormalSin,
-    portalNormalSin, portalNormalCos
-  ) * objectNormal.xz;
-}
-`;
-
-const PORTAL_BEACON_POSITION = /* glsl */ `
+const PORTAL_INSTANCE_POSITION = /* glsl */ `
 #include <begin_vertex>
 vPortalPart = portalPart;
 vPortalAccent = instancePortalAccent;
 vPortalPhase = instancePortalPhase;
-if ( portalBeacon > 0.5 ) {
-  float portalBeaconAngle = portalReducedMotion > 0.5
-    ? instancePortalPhase
-    : instancePortalPhase + portalElapsed * 0.72;
-  float portalBeaconCos = cos( portalBeaconAngle );
-  float portalBeaconSin = sin( portalBeaconAngle );
-  vec2 portalBeaconOffset = transformed.xz;
-  transformed.xz = mat2(
-    portalBeaconCos, -portalBeaconSin,
-    portalBeaconSin, portalBeaconCos
-  ) * portalBeaconOffset;
-  if ( portalReducedMotion < 0.5 ) {
-    transformed.y += sin( portalElapsed * 1.7 + instancePortalPhase ) * 0.09;
-  }
-}
 `;
 
 function configurePortalSurfaceMaterial(
@@ -253,8 +184,7 @@ function configurePortalSurfaceMaterial(
     bindPortalUniforms(shader, uniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>${PORTAL_VERTEX_PARAMETERS}`)
-      .replace('#include <beginnormal_vertex>', PORTAL_BEACON_NORMAL)
-      .replace('#include <begin_vertex>', PORTAL_BEACON_POSITION);
+      .replace('#include <begin_vertex>', PORTAL_INSTANCE_POSITION);
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
@@ -303,72 +233,7 @@ if ( vPortalPart < 1.5 ) {
 #endif`,
       );
   };
-  material.customProgramCacheKey = () => 'interior-portal-surface-v1';
-  material.userData.portalUniforms = uniforms;
-}
-
-function configurePortalDepthMaterial(
-  material: MeshDepthMaterial,
-  uniforms: PortalShaderUniforms,
-): void {
-  material.onBeforeCompile = (shader) => {
-    bindPortalUniforms(shader, uniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>${PORTAL_VERTEX_PARAMETERS}`)
-      .replace('#include <begin_vertex>', PORTAL_BEACON_POSITION);
-  };
-  material.customProgramCacheKey = () => 'interior-portal-depth-v1';
-}
-
-function configurePortalHaloMaterial(
-  material: MeshBasicMaterial,
-  uniforms: PortalShaderUniforms,
-): void {
-  material.onBeforeCompile = (shader) => {
-    bindPortalUniforms(shader, uniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-attribute vec3 instancePortalAccent;
-attribute float instancePortalPhase;
-uniform float portalElapsed;
-uniform float portalReducedMotion;
-varying vec3 vPortalAccent;
-varying float vPortalPhase;`,
-      )
-      .replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-vPortalAccent = instancePortalAccent;
-vPortalPhase = instancePortalPhase;
-float portalHaloWave = portalReducedMotion > 0.5
-  ? 0.5
-  : ( sin( portalElapsed * 2.15 + instancePortalPhase ) + 1.0 ) * 0.5;
-float portalHaloScale = portalReducedMotion > 0.5
-  ? 1.04
-  : 0.94 + portalHaloWave * 0.16;
-transformed *= portalHaloScale;
-transformed += vec3( 0.0, 0.025, -0.14 );`,
-      );
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-uniform float portalElapsed;
-uniform float portalReducedMotion;
-varying vec3 vPortalAccent;
-varying float vPortalPhase;`,
-      )
-      .replace(
-        'vec4 diffuseColor = vec4( diffuse, opacity );',
-        `float portalHaloWave = portalReducedMotion > 0.5
-  ? 0.5
-  : ( sin( portalElapsed * 2.15 + vPortalPhase ) + 1.0 ) * 0.5;
-vec4 diffuseColor = vec4( vPortalAccent, 0.14 + portalHaloWave * 0.18 );`,
-      );
-  };
-  material.customProgramCacheKey = () => 'interior-portal-halo-v1';
+  material.customProgramCacheKey = () => 'interior-facade-entrance-surface-v1';
   material.userData.portalUniforms = uniforms;
 }
 
@@ -391,7 +256,7 @@ function addPortalInstanceAttributes(
 const HIDDEN_PORTAL_MATRIX = new Matrix4().makeScale(0, 0, 0);
 
 /**
- * Lightweight exterior cues for authored interiors. The component owns every
+ * Batched facade-mounted entrances for authored interiors. The module owns every
  * GPU resource it creates; attach `root` to the world scene and call `dispose`
  * when that scene is torn down.
  */
@@ -400,11 +265,9 @@ export class InteriorPortalVisual {
 
   readonly #geometries = new Set<BufferGeometry>();
   readonly #materials = new Set<Material>();
-  readonly #pulseTargets: PortalPulseTarget[] = [];
   readonly #portalCells = new Map<Group, { readonly cellId: CellId; readonly index: number }>();
   readonly #uniforms: PortalShaderUniforms;
   readonly #surfaceBatch: InstancedMesh<BufferGeometry, MeshStandardMaterial>;
-  readonly #haloBatch: InstancedMesh<RingGeometry, MeshBasicMaterial>;
   #disposed = false;
 
   public constructor(
@@ -413,13 +276,9 @@ export class InteriorPortalVisual {
     this.root.name = 'interior-portal-visuals';
 
     const compositeGeometry = createPortalCompositeGeometry();
-    const haloGeometry = new RingGeometry(0.56, 0.72, 20);
-    haloGeometry.rotateX(-Math.PI / 2);
     this.#geometries.add(compositeGeometry);
-    this.#geometries.add(haloGeometry);
 
     const surfaceAttributes = addPortalInstanceAttributes(compositeGeometry, definitions.length);
-    const haloAttributes = addPortalInstanceAttributes(haloGeometry, definitions.length);
     this.#uniforms = {
       elapsed: { value: 0 },
       reducedMotion: { value: 0 },
@@ -437,24 +296,8 @@ export class InteriorPortalVisual {
     configurePortalSurfaceMaterial(surfaceMaterial, this.#uniforms);
     const depthMaterial = new MeshDepthMaterial();
     depthMaterial.name = 'interior-portal:depth-batch';
-    configurePortalDepthMaterial(depthMaterial, this.#uniforms);
-    const haloMaterial = new MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
-      side: DoubleSide,
-      blending: AdditiveBlending,
-      toneMapped: false,
-    });
-    haloMaterial.name = 'interior-portal:halo-batch';
-    // The halo is a single planar additive ring, so the transparent DoubleSide
-    // fallback's separate back/front passes are visually redundant.
-    haloMaterial.forceSinglePass = true;
-    configurePortalHaloMaterial(haloMaterial, this.#uniforms);
     this.#materials.add(surfaceMaterial);
     this.#materials.add(depthMaterial);
-    this.#materials.add(haloMaterial);
 
     this.#surfaceBatch = new InstancedMesh(
       compositeGeometry,
@@ -472,36 +315,21 @@ export class InteriorPortalVisual {
       'frame-left',
       'frame-right',
       'frame-top',
-      'threshold',
-      'accent-left',
-      'accent-right',
-      'beacon-stem',
-      'beacon',
+      'sign',
+      'awning',
     ];
-    this.#haloBatch = new InstancedMesh(
-      haloGeometry,
-      haloMaterial,
-      definitions.length,
-    );
-    this.#haloBatch.name = 'interior-portal:halo-batch';
-    this.#haloBatch.frustumCulled = false;
-    this.#haloBatch.renderOrder = 1;
-    this.#haloBatch.instanceMatrix.setUsage(DynamicDrawUsage);
-    this.root.add(this.#surfaceBatch, this.#haloBatch);
+    this.root.add(this.#surfaceBatch);
 
     definitions.forEach((definition, index) => {
       const portalRoot = this.#createPortal(
         definition.portal,
         index,
         surfaceAttributes,
-        haloAttributes,
       );
       this.#portalCells.set(portalRoot, { cellId: definition.portal.cellId, index });
     });
     surfaceAttributes.accent.needsUpdate = true;
     surfaceAttributes.phase.needsUpdate = true;
-    haloAttributes.accent.needsUpdate = true;
-    haloAttributes.phase.needsUpdate = true;
     this.#syncBatches();
   }
 
@@ -526,7 +354,7 @@ export class InteriorPortalVisual {
     this.#syncBatches();
   }
 
-  /** Update pulse animation with elapsed time in seconds. */
+  /** Updates the subtle facade-sign emissive pulse without moving geometry. */
   public update(elapsedSeconds: number, reducedMotion = false): void {
     if (this.#disposed) {
       return;
@@ -537,21 +365,6 @@ export class InteriorPortalVisual {
 
     this.#uniforms.elapsed.value = elapsedSeconds;
     this.#uniforms.reducedMotion.value = reducedMotion ? 1 : 0;
-    for (const target of this.#pulseTargets) {
-      const wave = reducedMotion
-        ? 0.5
-        : (Math.sin(elapsedSeconds * 2.15 + target.phase) + 1) / 2;
-      target.beacon.userData.emissiveIntensity = 0.78 + wave * 1.18;
-      target.halo.userData.opacity = 0.14 + wave * 0.18;
-      const haloScale = reducedMotion ? 1.04 : 0.94 + wave * 0.16;
-      target.halo.scale.setScalar(haloScale);
-      target.beacon.position.y = reducedMotion
-        ? BEACON_BASE_HEIGHT
-        : BEACON_BASE_HEIGHT + Math.sin(elapsedSeconds * 1.7 + target.phase) * 0.09;
-      target.beacon.rotation.y = reducedMotion
-        ? target.phase
-        : target.phase + elapsedSeconds * 0.72;
-    }
   }
 
   public dispose(): void {
@@ -561,7 +374,6 @@ export class InteriorPortalVisual {
     this.#disposed = true;
     this.root.removeFromParent();
     this.#surfaceBatch.dispose();
-    this.#haloBatch.dispose();
     for (const geometry of this.#geometries) {
       geometry.dispose();
     }
@@ -570,7 +382,6 @@ export class InteriorPortalVisual {
     }
     this.#geometries.clear();
     this.#materials.clear();
-    this.#pulseTargets.length = 0;
     this.#portalCells.clear();
     this.root.clear();
     this.root.visible = false;
@@ -580,96 +391,61 @@ export class InteriorPortalVisual {
     portal: Readonly<InteriorPortalDefinition>,
     index: number,
     surfaceAttributes: PortalInstanceAttributes,
-    haloAttributes: PortalInstanceAttributes,
   ): Group {
     const portalRoot = new Group();
     portalRoot.name = `interior-portal:${portal.id}`;
     portalRoot.position.set(
-      portal.position.x,
-      portal.position.y + 0.015,
-      portal.position.z,
+      portal.attachment.position.x,
+      portal.attachment.position.y + 0.015,
+      portal.attachment.position.z,
     );
-    portalRoot.rotation.y = portal.safeExteriorTransform.heading;
+    portalRoot.rotation.y = portal.attachment.heading;
+    portalRoot.userData.hostBuildingId = portal.attachment.hostBuildingId;
 
     const accent = accentFor(portal.id);
     const phase = phaseFor(portal.id);
     const accentColor = new Color(accent);
     surfaceAttributes.accent.setXYZ(index, accentColor.r, accentColor.g, accentColor.b);
     surfaceAttributes.phase.setX(index, phase);
-    haloAttributes.accent.setXYZ(index, accentColor.r, accentColor.g, accentColor.b);
-    haloAttributes.phase.setX(index, phase);
 
     addAnchor(
       portalRoot,
       `interior-portal:${portal.id}:door`,
-      [0, 1.34, 0],
+      [0, 1.34, 0.12],
       [1.64, 2.5, 0.16],
     );
     addAnchor(
       portalRoot,
       `interior-portal:${portal.id}:frame-left`,
-      [-0.98, 1.46, 0.02],
+      [-0.98, 1.46, 0.14],
       [0.18, 2.92, 0.28],
     );
     addAnchor(
       portalRoot,
       `interior-portal:${portal.id}:frame-right`,
-      [0.98, 1.46, 0.02],
+      [0.98, 1.46, 0.14],
       [0.18, 2.92, 0.28],
     );
     addAnchor(
       portalRoot,
       `interior-portal:${portal.id}:frame-top`,
-      [0, 2.84, 0.02],
+      [0, 2.84, 0.14],
       [2.14, 0.18, 0.28],
     );
     addAnchor(
       portalRoot,
-      `interior-portal:${portal.id}:threshold`,
-      [0, 0.04, 0.14],
-      [2.14, 0.08, 0.58],
+      `interior-portal:${portal.id}:sign`,
+      [0, 3.18, 0.12],
+      [2.78, 0.58, 0.18],
     );
     addAnchor(
       portalRoot,
-      `interior-portal:${portal.id}:accent-left`,
-      [-0.81, 1.34, -0.1],
-      [0.055, 2.42, 0.045],
+      `interior-portal:${portal.id}:awning`,
+      [0, 2.82, 0.42],
+      [2.48, 0.14, 0.86],
     );
-    addAnchor(
-      portalRoot,
-      `interior-portal:${portal.id}:accent-right`,
-      [0.81, 1.34, -0.1],
-      [0.055, 2.42, 0.045],
-    );
-
-    addAnchor(
-      portalRoot,
-      `interior-portal:${portal.id}:beacon-stem`,
-      [0, 3.08, 0],
-    );
-    const beacon = addAnchor(
-      portalRoot,
-      `interior-portal:${portal.id}:beacon`,
-      [0, BEACON_BASE_HEIGHT, 0],
-    );
-    beacon.userData.emissiveIntensity = 1.2;
-
-    const halo = addAnchor(
-      portalRoot,
-      `interior-portal:${portal.id}:halo`,
-      [0, 0.025, -0.14],
-    );
-    halo.name = `interior-portal:${portal.id}:halo`;
-    halo.rotation.x = -Math.PI / 2;
-    halo.renderOrder = 1;
-    halo.userData.opacity = 0.22;
 
     this.root.add(portalRoot);
-    this.#pulseTargets.push({
-      beacon,
-      halo,
-      phase,
-    });
     return portalRoot;
   }
 
@@ -679,16 +455,12 @@ export class InteriorPortalVisual {
       if (portalRoot.visible) {
         portalRoot.updateMatrix();
         this.#surfaceBatch.setMatrixAt(index, portalRoot.matrix);
-        this.#haloBatch.setMatrixAt(index, portalRoot.matrix);
         anyVisible = true;
       } else {
         this.#surfaceBatch.setMatrixAt(index, HIDDEN_PORTAL_MATRIX);
-        this.#haloBatch.setMatrixAt(index, HIDDEN_PORTAL_MATRIX);
       }
     }
     this.#surfaceBatch.visible = anyVisible;
-    this.#haloBatch.visible = anyVisible;
     this.#surfaceBatch.instanceMatrix.needsUpdate = true;
-    this.#haloBatch.instanceMatrix.needsUpdate = true;
   }
 }

@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 
+import { AUTHORED_INTERIORS } from '../../src/game/InteriorRuntime';
 import { startNewGame } from './helpers';
 import { expect, test } from './fixtures';
 
@@ -8,6 +9,14 @@ interface QaApi {
 }
 
 type QaWindow = Window & { __HEATLINE_QA__?: QaApi };
+
+const MALIK_PORTAL_POSITION = AUTHORED_INTERIORS.find(
+  ({ id }) => id === 'malik-office',
+)?.portal.position;
+
+if (!MALIK_PORTAL_POSITION) {
+  throw new Error("Missing authored Malik's Office portal");
+}
 
 async function qaTeleport(page: Page, x: number, z: number): Promise<void> {
   await page.evaluate(({ targetX, targetZ }) => {
@@ -82,7 +91,7 @@ test.describe('M2 city streaming and navigation acceptance', () => {
     await expect(world).toHaveAttribute('data-route-status', 'active');
     expect(Number(await world.getAttribute('data-route-segments'))).toBeGreaterThan(0);
 
-    await qaTeleport(page, 350, -350);
+    await qaTeleport(page, MALIK_PORTAL_POSITION.x, MALIK_PORTAL_POSITION.z);
     await expect(world).toHaveAttribute('data-district', 'alta-vista');
     await expect(world).toHaveAttribute('data-route-status', 'arrived');
   });

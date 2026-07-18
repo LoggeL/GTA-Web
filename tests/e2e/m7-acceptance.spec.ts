@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 
+import { PLAYER_SPAWN } from '../../src/game/city';
 import { expectPlayableWorldShell, startNewGame } from './helpers';
 import { expect, test } from './fixtures';
 
@@ -100,6 +101,13 @@ test.describe('M7 audio, accessibility, and responsive acceptance', () => {
     });
     await expect(page.locator('[data-hud-radio]')).toContainText('Low Tide Radio · Concrete Sun');
 
+    // Move the occupied car to the authored on-foot spawn, which is deliberately
+    // outside Moreno Garage's portal radius, before exercising vehicle re-entry.
+    await page.evaluate(({ x, z }) => {
+      const api = (window as QaWindow).__HEATLINE_QA__;
+      if (!api) throw new Error('HEATLINE QA API is unavailable');
+      api.teleport(x, z);
+    }, { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z });
     await page.keyboard.press('e');
     await expect(world).toHaveAttribute('data-player-mode', 'on-foot');
     expect((await audioState(page)).station).toBe('low-tide-radio');

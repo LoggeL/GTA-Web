@@ -1,7 +1,8 @@
 import { InstancedMesh, Scene } from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CitySimulation } from '../../src/simulation/CitySimulation';
+import { SimulationVisualLayer } from '../../src/simulation/visuals';
 import type {
   CrimeEvent,
   EnemyDamageEvent,
@@ -165,6 +166,100 @@ describe('CitySimulation integration surface', () => {
     expect(advanceSimulation.getSnapshot()).toEqual(tickResult.snapshot);
     tickSimulation.dispose();
     advanceSimulation.dispose();
+  });
+
+  it('exposes independently clocked traffic signals outside the per-frame snapshot', () => {
+    const roads = [
+      {
+        id: 'test-horizontal',
+        position: { x: 0, y: 0, z: 0 },
+        width: 160,
+        depth: 20,
+        major: true,
+      },
+      {
+        id: 'test-vertical',
+        position: { x: 0, y: 0, z: 0 },
+        width: 20,
+        depth: 160,
+        major: true,
+      },
+    ] as const;
+    const simulation = new CitySimulation({
+      seed: 'signal-api',
+      quality: 'low',
+      roads,
+      seedCombatants: false,
+    });
+
+    const initial = simulation.getTrafficSignalSnapshot();
+    expect(initial.junctions).toHaveLength(1);
+    expect(initial.cycleClockSeconds).toBe(0);
+    expect('trafficSignals' in simulation.getSnapshot()).toBe(false);
+
+    simulation.advance({
+      deltaSeconds: 0.1,
+      playerPosition: { x: 500, y: 0, z: 500 },
+      playerHeading: 0,
+    });
+    const advanced = simulation.getTrafficSignalSnapshot();
+    expect(advanced.cycleClockSeconds).toBeCloseTo(0.1);
+    expect(advanced.junctions[0]?.cyclePositionSeconds).not.toBe(
+      initial.junctions[0]?.cyclePositionSeconds,
+    );
+    expect(() => JSON.parse(JSON.stringify(advanced)) as unknown).not.toThrow();
+    simulation.dispose();
+  });
+
+  it('routes external vehicle contacts through the bounded ambient traffic solver', () => {
+    const simulation = new CitySimulation({
+      seed: 'external-collision-api',
+      quality: 'low',
+      seedCombatants: false,
+    });
+    simulation.attach(new Scene());
+    const visualUpdate = vi.spyOn(SimulationVisualLayer.prototype, 'update');
+    const target = simulation.getSnapshot().traffic[0];
+    if (!target) throw new Error('Missing traffic collision target');
+
+    try {
+      const result = simulation.resolveTrafficVehicleCollision({
+        position: { ...target.position },
+        previousPosition: { ...target.position },
+        heading: target.heading + Math.PI,
+        speed: 18,
+        lateralSpeed: 0,
+        radius: 1.6,
+      });
+
+      expect(result.collided).toBe(true);
+      expect(result.ambientVehicleIds).toContain(target.id);
+      expect(result.primaryAmbientVehicleId).not.toBeNull();
+      expect(result.pairChecks).toBeGreaterThan(0);
+      expect(result.pairChecks).toBeLessThanOrEqual(36);
+      expect(Number.isFinite(result.position.x)).toBe(true);
+      expect(Number.isFinite(result.position.z)).toBe(true);
+      expect(simulation.getSnapshot().traffic).toHaveLength(18);
+
+      // Collision correction mutates domain state but presentation remains on
+      // the normal low-quality cadence instead of forcing a snapshot/update.
+      expect(visualUpdate).not.toHaveBeenCalled();
+      simulation.advance({
+        deltaSeconds: 0.01,
+        playerPosition: { x: 500, y: 0, z: 500 },
+        playerHeading: 0,
+      });
+      expect(visualUpdate).not.toHaveBeenCalled();
+      simulation.advance({
+        deltaSeconds: 0.03,
+        playerPosition: { x: 500, y: 0, z: 500 },
+        playerHeading: 0,
+      });
+      expect(visualUpdate).toHaveBeenCalledTimes(1);
+    } finally {
+      visualUpdate.mockRestore();
+      simulation.dispose();
+    }
   });
 
   it('resolves a crouch-context stealth takedown only within unaware range', () => {

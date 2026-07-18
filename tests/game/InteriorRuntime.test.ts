@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { districtAt } from '../../src/game/city';
+import { cellIdAt } from '../../src/navigation/cells';
+import {
+  PLAYER_SPAWN,
+  VEHICLE_SPAWN,
+  districtAt,
+} from '../../src/game/city';
 import {
   AUTHORED_INTERIORS,
   DEFAULT_INTERIOR_TRANSITION_MILLISECONDS,
@@ -101,6 +106,12 @@ describe('authored interior definitions', () => {
       )).toBe(definition.portal.district);
       expect(definition.scene.id).toBe(definition.id);
       expect(definition.portal.interiorId).toBe(definition.id);
+      expect(definition.portal.attachment.hostBuildingId).toBe(
+        definition.exteriorBuilding.id,
+      );
+      expect(definition.portal.attachment.heading).toBe(
+        definition.portal.safeExteriorTransform.heading,
+      );
       expect(definition.scene.collisions.length).toBeGreaterThanOrEqual(6);
       expect(definition.scene.visuals.length).toBeGreaterThanOrEqual(8);
       expect(new Set(definition.scene.visuals.map((entry) => entry.id)).size).toBe(
@@ -110,12 +121,50 @@ describe('authored interior definitions', () => {
       expect(definition.scene.exitPosition.z).toBeGreaterThan(
         definition.scene.entrySpawn.position.z,
       );
+      expect(Math.hypot(
+        definition.scene.exitPosition.x - definition.scene.entrySpawn.position.x,
+        definition.scene.exitPosition.z - definition.scene.entrySpawn.position.z,
+      )).toBeLessThan(definition.scene.exitInteractionRadiusMeters);
+
+      const building = definition.exteriorBuilding;
+      const facade = definition.portal.attachment.position;
+      const onFrontage = building.frontage === 'north'
+        ? facade.z === building.position.z - building.depth / 2
+        : building.frontage === 'south'
+          ? facade.z === building.position.z + building.depth / 2
+          : building.frontage === 'west'
+            ? facade.x === building.position.x - building.width / 2
+            : facade.x === building.position.x + building.width / 2;
+      expect(onFrontage, `${definition.id} facade attachment`).toBe(true);
+      expect(cellIdAt(facade)).toBe(definition.portal.cellId);
     }
     expect(new Set(AUTHORED_INTERIORS.map((entry) => entry.scene)).size).toBe(5);
   });
 });
 
 describe('InteriorRuntime interaction eligibility', () => {
+  it('keeps the garage approach reliable from either vehicle exit side on touch', () => {
+    const runtime = immediateRuntime();
+    expect(runtime.evaluatePortal(
+      'moreno-garage-entry',
+      actorAt(PLAYER_SPAWN),
+    ).reason).toBe('too-far');
+
+    for (const side of [-1, 1]) {
+      expect(runtime.evaluatePortal(
+        'moreno-garage-entry',
+        actorAt({
+          x: VEHICLE_SPAWN.x + side * 2.1,
+          y: 0,
+          z: VEHICLE_SPAWN.z,
+        }),
+      )).toMatchObject({
+        eligible: true,
+        reason: 'eligible',
+      });
+    }
+  });
+
   it('selects the nearest eligible exterior portal deterministically', () => {
     const runtime = immediateRuntime();
     const garage = AUTHORED_INTERIORS.find(

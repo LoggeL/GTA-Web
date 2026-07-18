@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { CollisionRect } from '../../src/game/city';
 import { createWorldInputState } from '../../src/game/types';
-import { createVehicleState, stepVehicle } from '../../src/game/vehicle';
+import {
+  applyDynamicTrafficImpact,
+  createVehicleState,
+  stepVehicle,
+} from '../../src/game/vehicle';
 import {
   createVehicleCollisionBox,
   sampleVehicleSuspension,
@@ -12,8 +16,42 @@ import {
   vehicleMassResponseFactor,
 } from '../../src/game/vehicleDynamics';
 import { requireVehicleDriveProfile } from '../../src/game/vehicleProfiles';
+import { InputController, toWorldInputState } from '../../src/input';
 
 describe('measured arcade vehicle dynamics', () => {
+  it('turns the player car toward the requested screen-space side', () => {
+    const driveFromKey = (code: 'KeyA' | 'KeyD', speed = 12) => {
+      const controller = new InputController({ mode: 'vehicle' });
+      controller.keyDown(code);
+      const input = toWorldInputState(controller.consumeFrame());
+      const vehicle = createVehicleState({ x: 0, y: 0.48, z: 100 }, 'sports');
+      vehicle.speed = speed;
+      for (let frame = 0; frame < 15; frame += 1) {
+        stepVehicle(vehicle, input, [], 1 / 60);
+      }
+      return vehicle;
+    };
+
+    const right = driveFromKey('KeyD');
+    const left = driveFromKey('KeyA');
+
+    expect(right.steering).toBeGreaterThan(0);
+    expect(right.heading).toBeLessThan(0);
+    expect(right.position.x).toBeGreaterThan(0);
+    expect(left.steering).toBeLessThan(0);
+    expect(left.heading).toBeGreaterThan(0);
+    expect(left.position.x).toBeLessThan(0);
+
+    const reversingRight = driveFromKey('KeyD', -12);
+    const reversingLeft = driveFromKey('KeyA', -12);
+    expect(reversingRight.steering).toBeGreaterThan(0);
+    expect(reversingRight.heading).toBeGreaterThan(0);
+    expect(reversingRight.position.x).toBeGreaterThan(0);
+    expect(reversingLeft.steering).toBeLessThan(0);
+    expect(reversingLeft.heading).toBeLessThan(0);
+    expect(reversingLeft.position.x).toBeLessThan(0);
+  });
+
   it('uses mass and turn response to separate nimble and heavy classes', () => {
     const motorcycleProfile = requireVehicleDriveProfile('motorcycle');
     const vanProfile = requireVehicleDriveProfile('van');
@@ -183,5 +221,104 @@ describe('measured arcade vehicle dynamics', () => {
     expect(vehicle.lastImpact?.tireDamage[3]).toBeGreaterThan(0);
     expect(vehicle.integrity.bodyHealth).toBeLessThan(100);
     expect(vehicle.lateralSpeed).toBeLessThan(0);
+  });
+
+  it('turns an external-to-ambient traffic normal into front impact damage evidence', () => {
+    const vehicle = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'compact');
+    const impact = applyDynamicTrafficImpact(vehicle, {
+      ambientVehicleId: 'ambient-07',
+      impactSpeed: 14,
+      // At heading zero the vehicle faces -Z, so the ambient car is in front.
+      impactNormal: { x: 0, z: -1 },
+    });
+
+    expect(impact).toMatchObject({
+      side: 'front',
+      normalSpeedMetersPerSecond: 14,
+      blockedX: false,
+      blockedZ: false,
+      collisionId: 'traffic:ambient-07',
+    });
+    expect(impact?.bodyDamage).toBeGreaterThan(0);
+    expect(impact?.engineDamage).toBeGreaterThan(0);
+    expect(vehicle.lastImpact).toEqual(impact);
+    expect(vehicle.health).toBe(vehicle.integrity.engineHealth);
+  });
+
+  it('classifies a right-side traffic strike using the reversed solver normal', () => {
+    const vehicle = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'sedan');
+    const impact = applyDynamicTrafficImpact(vehicle, {
+      ambientVehicleId: 'right-lane-car',
+      impactSpeed: 12,
+      // The traffic solver points from the player toward the car on the right.
+      impactNormal: { x: 1, z: 0 },
+    });
+
+    expect(impact?.side).toBe('right');
+    expect(impact?.tireDamage[0]).toBe(0);
+    expect(impact?.tireDamage[1]).toBeGreaterThan(0);
+    expect(impact?.tireDamage[2]).toBe(0);
+    expect(impact?.tireDamage[3]).toBeGreaterThan(0);
+  });
+
+  it('uses vehicle mass, armor, and surface durability in dynamic impact scaling', () => {
+    const base = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'van');
+    const protectedVehicle = createVehicleState(
+      { x: 0, y: 0.48, z: 0 },
+      'van',
+      { upgrades: { engine: 0, brakes: 0, grip: 0, armor: 3 } },
+    );
+    const evidence = {
+      ambientVehicleId: 'cross-traffic',
+      impactSpeed: 18,
+      impactNormal: { x: 0, z: -1 },
+    } as const;
+
+    const baseImpact = applyDynamicTrafficImpact(base, evidence);
+    const protectedImpact = applyDynamicTrafficImpact(
+      protectedVehicle,
+      evidence,
+      { durabilityMultiplier: 1.5 },
+    );
+    const profile = requireVehicleDriveProfile('van');
+
+    expect(baseImpact?.equivalentImpactSpeedMetersPerSecond).toBeCloseTo(
+      evidence.impactSpeed * Math.sqrt(profile.massKg / 1_500),
+      8,
+    );
+    expect(protectedImpact?.equivalentImpactSpeedMetersPerSecond).toBeCloseTo(
+      (evidence.impactSpeed * Math.sqrt(profile.massKg / 1_500) * 0.76) / 1.5,
+      8,
+    );
+    expect(protectedImpact?.bodyDamage).toBeLessThan(baseImpact?.bodyDamage ?? 0);
+    expect(protectedImpact?.engineDamage).toBeLessThan(baseImpact?.engineDamage ?? 0);
+  });
+
+  it('ignores negligible contacts and bounds deterministic extreme collision damage', () => {
+    const first = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'compact');
+    const second = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'compact');
+    const negligible = applyDynamicTrafficImpact(first, {
+      ambientVehicleId: 'rolling-contact',
+      impactSpeed: 2.5,
+      impactNormal: { x: 0, z: -1 },
+    });
+
+    expect(negligible).toBeNull();
+    expect(first.lastImpact).toBeNull();
+    expect(first.integrity.bodyHealth).toBe(100);
+
+    const severeEvidence = {
+      ambientVehicleId: 'runaway-truck',
+      impactSpeed: 1_000,
+      impactNormal: { x: 0, z: -1 },
+    } as const;
+    const firstImpact = applyDynamicTrafficImpact(first, severeEvidence);
+    const secondImpact = applyDynamicTrafficImpact(second, severeEvidence);
+
+    expect(firstImpact).toEqual(secondImpact);
+    expect(firstImpact?.bodyDamage).toBeLessThanOrEqual(100);
+    expect(firstImpact?.engineDamage).toBeLessThanOrEqual(100);
+    expect(first.integrity.bodyHealth).toBeGreaterThanOrEqual(0);
+    expect(first.integrity.engineHealth).toBeGreaterThanOrEqual(0);
   });
 });

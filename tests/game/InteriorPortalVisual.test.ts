@@ -25,12 +25,12 @@ function opaqueBatchFor(
 }
 
 describe('InteriorPortalVisual', () => {
-  it('creates one deterministic low-poly cue at every authored exterior portal', () => {
+  it('mounts one deterministic batched entrance on every authored building facade', () => {
     const first = new InteriorPortalVisual();
     const reordered = new InteriorPortalVisual([...AUTHORED_INTERIORS].reverse());
 
     expect(first.root.name).toBe('interior-portal-visuals');
-    expect(first.root.children).toHaveLength(AUTHORED_INTERIORS.length + 2);
+    expect(first.root.children).toHaveLength(AUTHORED_INTERIORS.length + 1);
     const firstBatch = opaqueBatchFor(first);
     const reorderedBatch = opaqueBatchFor(reordered);
     const firstAccents = firstBatch.geometry.getAttribute('instancePortalAccent');
@@ -42,14 +42,20 @@ describe('InteriorPortalVisual', () => {
       const portal = first.root.getObjectByName(portalName);
       expect(portal).toBeInstanceOf(Group);
       expect(portal?.position.toArray()).toEqual([
-        definition.portal.position.x,
-        definition.portal.position.y + 0.015,
-        definition.portal.position.z,
+        definition.portal.attachment.position.x,
+        definition.portal.attachment.position.y + 0.015,
+        definition.portal.attachment.position.z,
       ]);
-      expect(portal?.rotation.y).toBe(definition.portal.safeExteriorTransform.heading);
-      expect(first.root.getObjectByName(`${portalName}:door`)).toBeInstanceOf(Object3D);
-      expect(first.root.getObjectByName(`${portalName}:beacon`)).toBeInstanceOf(Object3D);
-      expect(first.root.getObjectByName(`${portalName}:halo`)).toBeInstanceOf(Object3D);
+      expect(portal?.rotation.y).toBe(definition.portal.attachment.heading);
+      expect(portal?.userData.hostBuildingId).toBe(definition.exteriorBuilding.id);
+      const door = first.root.getObjectByName(`${portalName}:door`);
+      expect(door).toBeInstanceOf(Object3D);
+      expect(door?.position.z).toBeGreaterThan(0);
+      expect(first.root.getObjectByName(`${portalName}:sign`)).toBeInstanceOf(Object3D);
+      expect(first.root.getObjectByName(`${portalName}:awning`)).toBeInstanceOf(Object3D);
+      expect(first.root.getObjectByName(`${portalName}:beacon`)).toBeUndefined();
+      expect(first.root.getObjectByName(`${portalName}:halo`)).toBeUndefined();
+      expect(first.root.getObjectByName(`${portalName}:threshold`)).toBeUndefined();
 
       const renderables: Mesh[] = [];
       portal?.traverse((object) => {
@@ -79,65 +85,55 @@ describe('InteriorPortalVisual', () => {
       if (object instanceof Mesh) globalRenderables.push(object);
     });
     expect(globalRenderables.map(({ name }) => name).sort()).toEqual([
-      'interior-portal:halo-batch',
       'interior-portal:opaque-batch',
     ]);
     const partValues = new Set<number>();
     const portalPart = firstBatch.geometry.getAttribute('portalPart');
-    const portalBeacon = firstBatch.geometry.getAttribute('portalBeacon');
-    let beaconVertices = 0;
     for (let index = 0; index < portalPart.count; index += 1) {
       partValues.add(portalPart.getX(index));
-      beaconVertices += portalBeacon.getX(index);
     }
     expect([...partValues].sort()).toEqual([0, 1, 2]);
-    expect(beaconVertices).toBeGreaterThan(0);
-    expect(beaconVertices).toBeLessThan(portalPart.count);
+    expect(firstBatch.geometry.getAttribute('portalBeacon')).toBeUndefined();
+    expect(firstBatch.userData.componentNames).toEqual([
+      'door',
+      'frame-left',
+      'frame-right',
+      'frame-top',
+      'sign',
+      'awning',
+    ]);
 
     first.dispose();
     reordered.dispose();
   });
 
-  it('pulses emissive cues while reduced motion settles to a time-independent pose', () => {
+  it('pulses only the facade sign shader while all entrance geometry stays fixed', () => {
     const visual = new InteriorPortalVisual();
     const portalId = AUTHORED_INTERIORS[0]?.portal.id;
     expect(portalId).toBeDefined();
-    const beaconName = `interior-portal:${portalId}:beacon`;
-    const haloName = `interior-portal:${portalId}:halo`;
-    const beacon = visual.root.getObjectByName(beaconName) as Object3D;
-    const halo = visual.root.getObjectByName(haloName) as Object3D;
+    const portal = visual.root.getObjectByName(`interior-portal:${portalId}`) as Group;
+    const batch = opaqueBatchFor(visual);
+    const uniforms = batch.material.userData.portalUniforms as {
+      readonly elapsed: { value: number };
+      readonly reducedMotion: { value: number };
+    };
+    const initialMatrix = portal.matrix.clone();
 
     visual.update(0, false);
-    const animatedStart = {
-      intensity: beacon.userData.emissiveIntensity,
-      opacity: halo.userData.opacity,
-      y: beacon.position.y,
-      rotationY: beacon.rotation.y,
-    };
+    expect(uniforms).toMatchObject({
+      elapsed: { value: 0 },
+      reducedMotion: { value: 0 },
+    });
     visual.update(1, false);
-    expect({
-      intensity: beacon.userData.emissiveIntensity,
-      opacity: halo.userData.opacity,
-      y: beacon.position.y,
-      rotationY: beacon.rotation.y,
-    }).not.toEqual(animatedStart);
+    expect(uniforms.elapsed.value).toBe(1);
+    expect(portal.matrix).toEqual(initialMatrix);
 
-    visual.update(0, true);
-    const reducedStart = {
-      intensity: beacon.userData.emissiveIntensity,
-      opacity: halo.userData.opacity,
-      y: beacon.position.y,
-      rotationY: beacon.rotation.y,
-      haloScale: halo.scale.x,
-    };
     visual.update(500, true);
-    expect({
-      intensity: beacon.userData.emissiveIntensity,
-      opacity: halo.userData.opacity,
-      y: beacon.position.y,
-      rotationY: beacon.rotation.y,
-      haloScale: halo.scale.x,
-    }).toEqual(reducedStart);
+    expect(uniforms).toMatchObject({
+      elapsed: { value: 500 },
+      reducedMotion: { value: 1 },
+    });
+    expect(portal.matrix).toEqual(initialMatrix);
     expect(() => visual.update(Number.NaN)).toThrow(/time must be finite/i);
 
     visual.dispose();
@@ -160,7 +156,7 @@ describe('InteriorPortalVisual', () => {
     visual.root.traverse((object) => {
       if (object instanceof Mesh) visibleMeshes.push(object);
     });
-    expect(visibleMeshes).toHaveLength(2);
+    expect(visibleMeshes).toHaveLength(1);
     expect(visibleMeshes.every(({ visible }) => visible)).toBe(true);
     visual.setResidentCellIds([]);
     expect(visibleMeshes.every(({ visible }) => !visible)).toBe(true);
