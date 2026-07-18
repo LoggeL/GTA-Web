@@ -236,8 +236,12 @@ interface HeatlineQaApi {
   pedestrians(): readonly {
     id: string;
     behavior: string;
+    heading: number;
+    speed: number;
     x: number;
+    y: number;
     z: number;
+    motion: string;
   }[];
   setMoney(value: number): number;
   grantXp(amount: number): { level: number; xp: number; attributePoints: number; skillPoints: number };
@@ -998,7 +1002,12 @@ export class App {
     if (event.kind === 'weapon-fire') this.#audio.playSfx('weapon');
     else if (event.kind === 'assault' || event.kind === 'hit-and-run') this.#audio.playSfx('impact');
     else this.#audio.playUi('warning');
-    this.#ui.toast('Crime noticed · witnesses may report Alex', 'warning');
+    this.#ui.toast(
+      event.kind === 'hit-and-run'
+        ? 'BONK! · witnesses definitely noticed'
+        : 'Crime noticed · witnesses may report Alex',
+      'warning',
+    );
   }
 
   #onWitnessReport(event: WitnessReportEvent): void {
@@ -3781,8 +3790,12 @@ export class App {
       pedestrians: () => world.getCitySimulationSnapshot().pedestrians.map((pedestrian) => ({
         id: pedestrian.id,
         behavior: pedestrian.behavior,
+        heading: pedestrian.heading,
+        speed: pedestrian.speed,
         x: pedestrian.position.x,
+        y: pedestrian.position.y,
         z: pedestrian.position.z,
+        motion: pedestrian.motion.kind,
       })),
       setMoney: (value) => {
         if (!Number.isSafeInteger(value) || value < 0) {

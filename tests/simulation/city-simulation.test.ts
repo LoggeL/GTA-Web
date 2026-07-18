@@ -304,7 +304,13 @@ describe('CitySimulation integration surface', () => {
       sourceId: 'player',
     });
     expect(simulation.getSnapshot().pedestrians).toHaveLength(1);
-    expect(simulation.getSnapshot().pedestrians[0]?.behavior).toBe('flee');
+    expect(simulation.getSnapshot().pedestrians[0]).toMatchObject({
+      behavior: 'flee',
+      motion: {
+        kind: 'comedic-tumble',
+        impactSpeed: first.newImpactSpeed,
+      },
+    });
 
     const sustainedTarget = simulation.getSnapshot().pedestrians[0];
     if (!sustainedTarget) throw new Error('Missing sustained pedestrian target');
@@ -315,7 +321,7 @@ describe('CitySimulation integration surface', () => {
       velocity: { x: 18, z: 0 },
       radius: 1.3,
     });
-    expect(sustained.collided).toBe(true);
+    expect(sustained.collided).toBe(false);
     expect(sustained.newPedestrianIds).toEqual([]);
     expect(crimes).toHaveLength(1);
     simulation.dispose();
@@ -340,6 +346,7 @@ describe('CitySimulation integration surface', () => {
     });
     expect(result.collided).toBe(true);
     expect(result.newImpactSpeed).toBeLessThan(4);
+    expect(simulation.getSnapshot().pedestrians[0]?.motion).toEqual({ kind: 'grounded' });
     expect(crimes).toEqual([]);
     simulation.dispose();
   });

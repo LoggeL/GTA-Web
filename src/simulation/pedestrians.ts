@@ -62,6 +62,20 @@ export const PEDESTRIAN_COLLISION_RADIUS = 0.34;
 const EXTERNAL_COLLISION_PASSES = 2;
 const EXTERNAL_CONTACT_EPSILON = 0.01;
 
+export const PEDESTRIAN_COMEDIC_TUMBLE = Object.freeze({
+  minimumImpactSpeed: 5.5,
+  gravity: 14,
+  minimumHorizontalSpeed: 4.2,
+  maximumHorizontalSpeed: 11.5,
+  minimumVerticalSpeed: 5,
+  maximumVerticalSpeed: 8.5,
+  maximumDurationSeconds: 2.4,
+  planarDragPerSecond: 0.7,
+  bounceRestitution: 0.28,
+  maximumBounces: 1,
+  relaunchCooldownSeconds: 0.85,
+});
+
 /** One external actor is checked against the fixed pool for at most two passes. */
 export const PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK = (
   PEDESTRIAN_CAPACITY.high * EXTERNAL_COLLISION_PASSES
@@ -92,6 +106,7 @@ export type PedestrianNpcState =
   | 'startle'
   | 'freeze'
   | 'flee'
+  | 'tumble'
   | 'witness-report'
   | 'recover';
 
@@ -134,12 +149,28 @@ interface PedestrianAgent {
   pendingCrime: CrimeEvent | null;
   lastWitnessedCrimeId: string | null;
   lastNoiseId: string | null;
+  tumble: PedestrianTumbleState | null;
+  vehicleImpactCooldown: number;
 }
 
 interface SweptCircleContact {
   readonly time: number;
   readonly normalX: number;
   readonly normalZ: number;
+}
+
+interface PedestrianTumbleState {
+  velocityX: number;
+  velocityY: number;
+  velocityZ: number;
+  pitchRadians: number;
+  rollRadians: number;
+  pitchVelocity: number;
+  rollVelocity: number;
+  flailPhaseRadians: number;
+  elapsedSeconds: number;
+  bouncesRemaining: number;
+  readonly impactSpeed: number;
 }
 
 const FALLBACK_ROAD: SimulationRoadRecipe = {
@@ -224,7 +255,7 @@ function sweptCircleContact(
 }
 
 function legacyBehavior(state: PedestrianNpcState): PedestrianBehavior {
-  if (state === 'flee') return 'flee';
+  if (state === 'flee' || state === 'tumble') return 'flee';
   if (state === 'witness-report' || state === 'startle' || state === 'freeze') {
     return 'witness-report';
   }
@@ -320,7 +351,12 @@ export class PedestrianSystem {
     obstacles: readonly SimulationObstacle[] = [],
   ): void {
     for (const agent of this.agents) {
-      if (!agent.active || agent.lastWitnessedCrimeId === crime.id || agent.pendingCrime !== null) {
+      if (
+        !agent.active
+        || agent.state === 'tumble'
+        || agent.lastWitnessedCrimeId === crime.id
+        || agent.pendingCrime !== null
+      ) {
         continue;
       }
       const distance = distance2d(agent.position, crime.position);
@@ -345,6 +381,7 @@ export class PedestrianSystem {
     for (const agent of this.agents) {
       if (
         !agent.active
+        || agent.state === 'tumble'
         || agent.lastNoiseId === event.id
         || distance2d(agent.position, event.position) > radius
       ) {
@@ -364,7 +401,11 @@ export class PedestrianSystem {
 
   public triggerPanic(position: Readonly<SimulationVec3>, radius: number, duration: number): void {
     for (const agent of this.agents) {
-      if (!agent.active || distance2d(agent.position, position) > radius) continue;
+      if (
+        !agent.active
+        || agent.state === 'tumble'
+        || distance2d(agent.position, position) > radius
+      ) continue;
       agent.fleeFrom = { ...position };
       agent.reaction = 'flee';
       this.beginFlee(agent, position, Math.max(agent.stateRemaining, duration));
@@ -387,6 +428,7 @@ export class PedestrianSystem {
     this.capturePreviousPositions();
     for (const agent of this.agents) {
       if (!agent.active && agent.state === 'wander') continue;
+      agent.vehicleImpactCooldown = Math.max(0, agent.vehicleImpactCooldown - dt);
       switch (agent.state) {
         case 'wander':
           this.tickWander(agent, dt, obstacles);
@@ -400,6 +442,9 @@ export class PedestrianSystem {
           break;
         case 'flee':
           this.tickFlee(agent, dt, obstacles);
+          break;
+        case 'tumble':
+          this.tickTumble(agent, dt, obstacles);
           break;
         case 'witness-report':
           this.tickWitness(agent, dt, simulationTime);
@@ -434,6 +479,7 @@ export class PedestrianSystem {
     const velocity = { x: state.velocity.x, z: state.velocity.z };
     const pedestrianIds = new Set<string>();
     const impactSpeedById = new Map<string, number>();
+    const impactNormalById = new Map<string, { readonly x: number; readonly z: number }>();
     let impactSpeed = 0;
     let impactNormal: { readonly x: number; readonly z: number } | null = null;
     let primaryPedestrianId: string | null = null;
@@ -442,7 +488,11 @@ export class PedestrianSystem {
     for (let pass = 0; pass < EXTERNAL_COLLISION_PASSES; pass += 1) {
       let contactsThisPass = 0;
       for (const [agentIndex, agent] of this.agents.entries()) {
-        if (!agent.active) continue;
+        if (
+          !agent.active
+          || agent.state === 'tumble'
+          || (state.kind === 'vehicle' && agent.vehicleImpactCooldown > 0)
+        ) continue;
         pairChecks += 1;
         const minimumDistance = state.radius + PEDESTRIAN_COLLISION_RADIUS;
         const canSweep = pass === 0 && this.previousPositionsValid;
@@ -518,10 +568,14 @@ export class PedestrianSystem {
           velocity.x -= contact.normalX * closingSpeed * responseShare;
           velocity.z -= contact.normalZ * closingSpeed * responseShare;
         }
-        impactSpeedById.set(
-          agent.id,
-          Math.max(impactSpeedById.get(agent.id) ?? 0, closingSpeed),
-        );
+        const priorImpactSpeed = impactSpeedById.get(agent.id) ?? 0;
+        if (closingSpeed >= priorImpactSpeed) {
+          impactSpeedById.set(agent.id, closingSpeed);
+          impactNormalById.set(agent.id, {
+            x: contact.normalX,
+            z: contact.normalZ,
+          });
+        }
         if (
           closingSpeed > impactSpeed + 0.000001
           || (
@@ -545,7 +599,14 @@ export class PedestrianSystem {
       const agent = this.agents.find((candidate) => candidate.id === id);
       if (!agent) continue;
       const contactImpact = impactSpeedById.get(id) ?? 0;
-      if (state.kind === 'vehicle' || contactImpact >= 3.2) {
+      const contactNormal = impactNormalById.get(id);
+      if (
+        state.kind === 'vehicle'
+        && contactNormal
+        && contactImpact >= PEDESTRIAN_COMEDIC_TUMBLE.minimumImpactSpeed
+      ) {
+        this.beginComedicTumble(agent, contactNormal, contactImpact);
+      } else if (state.kind === 'vehicle' || contactImpact >= 3.2) {
         agent.fleeFrom = { ...state.position };
         agent.reaction = 'flee';
         this.beginFlee(
@@ -589,6 +650,7 @@ export class PedestrianSystem {
         speed: agent.speed,
         behavior: legacyBehavior(agent.state),
         pendingCrimeId: agent.pendingCrime?.id ?? null,
+        motion: this.motionSnapshot(agent),
       }));
   }
 
@@ -602,6 +664,7 @@ export class PedestrianSystem {
         speed: agent.speed,
         behavior: legacyBehavior(agent.state),
         pendingCrimeId: agent.pendingCrime?.id ?? null,
+        motion: this.motionSnapshot(agent),
         state: agent.state,
         temperament: agent.temperament,
         reaction: agent.reaction,
@@ -645,6 +708,8 @@ export class PedestrianSystem {
       pendingCrime: null,
       lastWitnessedCrimeId: null,
       lastNoiseId: null,
+      tumble: null,
+      vehicleImpactCooldown: 0,
     };
     this.chooseWanderTarget(agent);
     return agent;
@@ -669,6 +734,8 @@ export class PedestrianSystem {
   }
 
   private chooseWanderTarget(agent: PedestrianAgent): void {
+    agent.position.y = 0;
+    agent.tumble = null;
     const candidates = this.navigationGraph.nodes.filter((node) => {
       const distance = distance2d(agent.position, node.position);
       return distance >= 7 && distance <= 46;
@@ -691,6 +758,19 @@ export class PedestrianSystem {
     agent.state = 'wander';
     agent.reaction = 'ignore';
     agent.navigator.setDestination(agent.position, agent.target);
+  }
+
+  private motionSnapshot(agent: Readonly<PedestrianAgent>): PedestrianSnapshot['motion'] {
+    const tumble = agent.tumble;
+    return tumble
+      ? {
+          kind: 'comedic-tumble',
+          pitchRadians: tumble.pitchRadians,
+          rollRadians: tumble.rollRadians,
+          flailPhaseRadians: tumble.flailPhaseRadians,
+          impactSpeed: tumble.impactSpeed,
+        }
+      : { kind: 'grounded' };
   }
 
   private applyReaction(
@@ -735,6 +815,59 @@ export class PedestrianSystem {
       z: agent.position.z + away.z * 24,
     };
     agent.navigator.setDestination(agent.position, agent.target);
+  }
+
+  private beginComedicTumble(
+    agent: PedestrianAgent,
+    contactNormal: Readonly<{ x: number; z: number }>,
+    impactSpeed: number,
+  ): void {
+    const slot = Number.parseInt(agent.id.slice(-2), 10) || 0;
+    const spinSign = (slot & 1) === 0 ? 1 : -1;
+    const horizontalSpeed = Math.min(
+      PEDESTRIAN_COMEDIC_TUMBLE.maximumHorizontalSpeed,
+      Math.max(
+        PEDESTRIAN_COMEDIC_TUMBLE.minimumHorizontalSpeed,
+        impactSpeed * 0.72,
+      ),
+    );
+    const verticalSpeed = Math.min(
+      PEDESTRIAN_COMEDIC_TUMBLE.maximumVerticalSpeed,
+      Math.max(
+        PEDESTRIAN_COMEDIC_TUMBLE.minimumVerticalSpeed,
+        3.6 + impactSpeed * 0.25,
+      ),
+    );
+    const sidewaysSpeed = Math.min(1.6, 0.35 + impactSpeed * 0.055) * spinSign;
+    const velocityX = contactNormal.x * horizontalSpeed
+      - contactNormal.z * sidewaysSpeed;
+    const velocityZ = contactNormal.z * horizontalSpeed
+      + contactNormal.x * sidewaysSpeed;
+    agent.navigator.clear();
+    agent.position.y = Math.max(0, agent.position.y);
+    agent.heading = Math.atan2(-velocityX, -velocityZ);
+    agent.speed = 0;
+    agent.state = 'tumble';
+    agent.reaction = 'flee';
+    agent.stateRemaining = PEDESTRIAN_COMEDIC_TUMBLE.maximumDurationSeconds;
+    agent.fleeFrom = {
+      x: agent.position.x - contactNormal.x * 3,
+      y: 0,
+      z: agent.position.z - contactNormal.z * 3,
+    };
+    agent.tumble = {
+      velocityX,
+      velocityY: verticalSpeed,
+      velocityZ,
+      pitchRadians: spinSign * 0.12,
+      rollRadians: -spinSign * 0.08,
+      pitchVelocity: spinSign * Math.min(15, 8 + impactSpeed * 0.28),
+      rollVelocity: -spinSign * Math.min(8, 4 + impactSpeed * 0.14),
+      flailPhaseRadians: (slot % 7) * 0.83,
+      elapsedSeconds: 0,
+      bouncesRemaining: PEDESTRIAN_COMEDIC_TUMBLE.maximumBounces,
+      impactSpeed,
+    };
   }
 
   private tickWander(
@@ -792,6 +925,80 @@ export class PedestrianSystem {
     } else {
       this.chooseWanderTarget(agent);
     }
+  }
+
+  private tickTumble(
+    agent: PedestrianAgent,
+    dt: number,
+    obstacles: readonly SimulationObstacle[],
+  ): void {
+    const tumble = agent.tumble;
+    if (!tumble) {
+      agent.state = 'recover';
+      this.chooseWanderTarget(agent);
+      return;
+    }
+
+    tumble.elapsedSeconds += dt;
+    agent.stateRemaining = Math.max(
+      0,
+      PEDESTRIAN_COMEDIC_TUMBLE.maximumDurationSeconds - tumble.elapsedSeconds,
+    );
+    const deltaX = tumble.velocityX * dt;
+    const deltaZ = tumble.velocityZ * dt;
+    const startX = agent.position.x;
+    const startZ = agent.position.z;
+    this.moveIfClear(agent, deltaX, deltaZ, obstacles);
+    const movedX = agent.position.x - startX;
+    const movedZ = agent.position.z - startZ;
+    if (Math.abs(movedX - deltaX) > 0.0001) {
+      tumble.velocityX *= -0.28;
+    }
+    if (Math.abs(movedZ - deltaZ) > 0.0001) {
+      tumble.velocityZ *= -0.28;
+    }
+    const planarDrag = Math.exp(-PEDESTRIAN_COMEDIC_TUMBLE.planarDragPerSecond * dt);
+    tumble.velocityX *= planarDrag;
+    tumble.velocityZ *= planarDrag;
+
+    agent.position.y = Math.max(0, agent.position.y + tumble.velocityY * dt);
+    tumble.velocityY -= PEDESTRIAN_COMEDIC_TUMBLE.gravity * dt;
+    tumble.pitchRadians += tumble.pitchVelocity * dt;
+    tumble.rollRadians += tumble.rollVelocity * dt;
+    tumble.flailPhaseRadians += dt * (12 + Math.min(8, tumble.impactSpeed * 0.3));
+
+    const timedOut = tumble.elapsedSeconds >= PEDESTRIAN_COMEDIC_TUMBLE.maximumDurationSeconds;
+    const touchingGround = agent.position.y <= 0 && tumble.velocityY < 0;
+    if (!touchingGround && !timedOut) return;
+
+    if (
+      !timedOut
+      && tumble.bouncesRemaining > 0
+      && Math.abs(tumble.velocityY) > 2.5
+    ) {
+      agent.position.y = 0;
+      tumble.velocityY = Math.min(
+        2.4,
+        Math.abs(tumble.velocityY) * PEDESTRIAN_COMEDIC_TUMBLE.bounceRestitution,
+      );
+      tumble.velocityX *= 0.68;
+      tumble.velocityZ *= 0.68;
+      tumble.pitchVelocity *= 0.62;
+      tumble.rollVelocity *= 0.62;
+      tumble.bouncesRemaining -= 1;
+      return;
+    }
+
+    agent.position.y = 0;
+    agent.tumble = null;
+    agent.vehicleImpactCooldown = PEDESTRIAN_COMEDIC_TUMBLE.relaunchCooldownSeconds;
+    agent.state = 'recover';
+    agent.stateRemaining = 0;
+    this.beginFlee(
+      agent,
+      agent.fleeFrom,
+      Math.max(1.8, Math.min(3.8, 1.4 + tumble.impactSpeed * 0.12)),
+    );
   }
 
   private tickWitness(agent: PedestrianAgent, dt: number, simulationTime: number): void {

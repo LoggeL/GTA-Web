@@ -125,6 +125,19 @@ export interface ExternalPedestrianCollisionResult {
 
 export type PedestrianBehavior = 'wander' | 'flee' | 'witness-report';
 
+export type PedestrianMotionSnapshot =
+  | {
+      readonly kind: 'grounded';
+    }
+  | {
+      /** A deliberately exaggerated, non-graphic vehicle-impact animation. */
+      readonly kind: 'comedic-tumble';
+      readonly pitchRadians: number;
+      readonly rollRadians: number;
+      readonly flailPhaseRadians: number;
+      readonly impactSpeed: number;
+    };
+
 export interface PedestrianSnapshot {
   id: string;
   position: SimulationVec3;
@@ -132,6 +145,7 @@ export interface PedestrianSnapshot {
   speed: number;
   behavior: PedestrianBehavior;
   pendingCrimeId: string | null;
+  motion: PedestrianMotionSnapshot;
 }
 
 export type CombatRole = 'brawler' | 'gunner' | 'flanker' | 'heavy' | 'marksman';

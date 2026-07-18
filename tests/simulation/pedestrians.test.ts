@@ -5,6 +5,7 @@ import { distance2d, pointBlocked } from '../../src/simulation/math';
 import {
   PEDESTRIAN_CAPACITY,
   PEDESTRIAN_COLLISION_RADIUS,
+  PEDESTRIAN_COMEDIC_TUMBLE,
   PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK,
   PEDESTRIAN_RELOCATION_BUDGET_PER_TICK,
   PEDESTRIAN_RELEVANCE_RADII,
@@ -68,7 +69,7 @@ describe('pedestrian life and witnesses', () => {
     expect(system.getSnapshot()).toHaveLength(1);
   });
 
-  it('sweeps fast vehicle contact, slows it, and debounces sustained overlap', () => {
+  it('sweeps a fast vehicle contact into one bounded comedic tumble and recovery', () => {
     const system = new PedestrianSystem(
       new SimulationRandom('vehicle-pedestrian-sweep'),
       'low',
@@ -101,7 +102,14 @@ describe('pedestrian life and witnesses', () => {
     expect(swept.impactSpeed).toBeGreaterThan(20);
     expect(swept.velocity.x).toBeLessThan(12);
     expect(swept.newPedestrianIds).toEqual([target.id]);
-    expect(system.getNpcSnapshot()[0]?.state).toBe('flee');
+    expect(system.getNpcSnapshot()[0]).toMatchObject({
+      state: 'tumble',
+      behavior: 'flee',
+      motion: {
+        kind: 'comedic-tumble',
+        impactSpeed: swept.impactSpeed,
+      },
+    });
 
     const currentTarget = system.getNpcSnapshot()[0];
     if (!currentTarget) throw new Error('Missing sustained contact target');
@@ -112,8 +120,83 @@ describe('pedestrian life and witnesses', () => {
       velocity: { x: 8, z: 0 },
       radius: 1.25,
     });
-    expect(sustained.collided).toBe(true);
+    expect(sustained.collided).toBe(false);
     expect(sustained.newPedestrianIds).toEqual([]);
+
+    let maximumHeight = 0;
+    let groundTouches = 0;
+    let wasAirborne = false;
+    for (let frame = 0; frame < 70; frame += 1) {
+      system.tick(0.05, 0.15 + frame * 0.05);
+      const pedestrian = system.getNpcSnapshot()[0];
+      if (!pedestrian) throw new Error('Missing tumbling pedestrian');
+      maximumHeight = Math.max(maximumHeight, pedestrian.position.y);
+      if (pedestrian.position.y > 0.001) {
+        wasAirborne = true;
+      } else if (wasAirborne) {
+        groundTouches += 1;
+        wasAirborne = false;
+      }
+      expect(pedestrian.position.y).toBeGreaterThanOrEqual(0);
+      if (pedestrian.state !== 'tumble') break;
+    }
+    const recovered = system.getNpcSnapshot()[0];
+    if (!recovered) throw new Error('Missing recovered pedestrian');
+    expect(maximumHeight).toBeGreaterThan(1);
+    expect(maximumHeight).toBeLessThan(3.5);
+    expect(groundTouches).toBeLessThanOrEqual(
+      PEDESTRIAN_COMEDIC_TUMBLE.maximumBounces + 1,
+    );
+    expect(recovered.state).toBe('flee');
+    expect(recovered.position.y).toBe(0);
+    expect(recovered.motion).toEqual({ kind: 'grounded' });
+    expect(distance2d(recovered.position, target.position)).toBeGreaterThan(4);
+    expect(distance2d(recovered.position, target.position)).toBeLessThan(20);
+    const landingOverlap = system.resolveExternalCollision({
+      kind: 'vehicle',
+      position: { ...recovered.position },
+      previousPosition: { ...recovered.position },
+      velocity: { x: 20, z: 0 },
+      radius: 1.25,
+    });
+    expect(landingOverlap.collided).toBe(false);
+    expect(landingOverlap.newPedestrianIds).toEqual([]);
+  });
+
+  it('keeps a launched pedestrian outside walls without growing the pool', () => {
+    const system = new PedestrianSystem(
+      new SimulationRandom('pedestrian-tumble-wall-safety'),
+      'low',
+      [road],
+      () => undefined,
+    );
+    system.setActorLimit(1);
+    system.tick(0.1, 0.1);
+    const target = system.getNpcSnapshot()[0];
+    if (!target) throw new Error('Missing tumble wall target');
+    const obstacle = {
+      x: target.position.x + 3,
+      z: target.position.z,
+      radius: 1.25,
+    };
+    const result = system.resolveExternalCollision({
+      kind: 'vehicle',
+      previousPosition: { x: target.position.x - 7, y: 0, z: target.position.z },
+      position: { x: target.position.x + 7, y: 0, z: target.position.z },
+      velocity: { x: 20, z: 0 },
+      radius: 1.25,
+    }, [obstacle]);
+    expect(result.newImpactSpeed).toBeGreaterThan(
+      PEDESTRIAN_COMEDIC_TUMBLE.minimumImpactSpeed,
+    );
+
+    for (let frame = 0; frame < 55; frame += 1) {
+      system.tick(0.05, 0.15 + frame * 0.05, { obstacles: [obstacle] });
+      const pedestrian = system.getNpcSnapshot()[0];
+      if (!pedestrian) throw new Error('Missing wall-safe tumble');
+      expect(pointBlocked(pedestrian.position, 0.32, [obstacle])).toBe(false);
+    }
+    expect(system.getSnapshot()).toHaveLength(1);
   });
 
   it('keeps pedestrian displacement outside static obstacles', () => {

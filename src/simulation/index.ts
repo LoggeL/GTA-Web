@@ -22,6 +22,7 @@ export {
 export {
   PEDESTRIAN_CAPACITY,
   PEDESTRIAN_COLLISION_RADIUS,
+  PEDESTRIAN_COMEDIC_TUMBLE,
   PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK,
   PedestrianSystem,
 } from './pedestrians';
@@ -91,6 +92,7 @@ export type {
   ExternalTrafficCollisionResult,
   ExternalTrafficVehicleState,
   PedestrianBehavior,
+  PedestrianMotionSnapshot,
   PedestrianSnapshot,
   PlayerDamageEvent,
   SimulationObstacle,

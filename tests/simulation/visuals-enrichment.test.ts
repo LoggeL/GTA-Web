@@ -43,6 +43,7 @@ const PEDESTRIAN: PedestrianSnapshot = {
   speed: 1.4,
   behavior: 'wander',
   pendingCrimeId: null,
+  motion: { kind: 'grounded' },
 };
 
 const COMBATANT: CombatantSnapshot = {
@@ -355,6 +356,20 @@ describe('enriched pooled simulation visuals', () => {
         speed: 0,
         pendingCrimeId: 'crime-parity',
         position: { x: 3, y: 0, z: 10 },
+      },
+      {
+        ...PEDESTRIAN,
+        id: 'comedic-tumble-parity',
+        behavior: 'flee',
+        speed: 0,
+        position: { x: 8, y: 2.1, z: 9 },
+        motion: {
+          kind: 'comedic-tumble',
+          pitchRadians: 1.35,
+          rollRadians: -0.72,
+          flailPhaseRadians: 2.4,
+          impactSpeed: 16,
+        },
       },
     ];
     const combatants: CombatantSnapshot[] = [
@@ -715,6 +730,44 @@ describe('enriched pooled simulation visuals', () => {
     expect(defeatedTorsoScale.x).toBeCloseTo(standingTorsoScale.x);
     expect(defeatedTorsoScale.y).toBeCloseTo(standingTorsoScale.y);
     expect(defeatedTorsoScale.z).toBeCloseTo(standingTorsoScale.z);
+    layer.dispose();
+  });
+
+  it('poses the complete pedestrian as one coherent Low/High comedic tumble', () => {
+    const scene = new Scene();
+    const layer = new SimulationVisualLayer(scene);
+    const torsos = namedMesh(layer, 'pedestrian-torsos');
+    const heads = namedMesh(layer, 'pedestrian-heads');
+    const arms = namedMesh(layer, 'pedestrian-arms');
+
+    layer.update(snapshot(0.2, [], [PEDESTRIAN], [], 'high'));
+    const standingTorsoMatrix = matrixElements(torsos);
+    const standingHeadDistance = instancePosition(heads).distanceTo(instancePosition(torsos));
+    const tumble: PedestrianSnapshot = {
+      ...PEDESTRIAN,
+      behavior: 'flee',
+      speed: 0,
+      position: { x: 4, y: 2.2, z: -7 },
+      motion: {
+        kind: 'comedic-tumble',
+        pitchRadians: 1.4,
+        rollRadians: -0.78,
+        flailPhaseRadians: 2.6,
+        impactSpeed: 18,
+      },
+    };
+    const tumbleSnapshot = snapshot(0.2, [], [tumble], [], 'high');
+    layer.update(tumbleSnapshot);
+
+    expect(matrixElements(torsos)).not.toEqual(standingTorsoMatrix);
+    expect(instancePosition(torsos).y).toBeGreaterThan(2);
+    expect(instancePosition(heads).distanceTo(instancePosition(torsos)))
+      .toBeCloseTo(standingHeadDistance, 6);
+    expect(matrixElements(arms, 0)).not.toEqual(matrixElements(arms, 1));
+    const highSignatures = renderedVertexSignatures(highActorMeshes(layer));
+
+    layer.update({ ...tumbleSnapshot, quality: 'low' });
+    expect(renderedVertexSignatures(lowActorMeshes(layer))).toEqual(highSignatures);
     layer.dispose();
   });
 

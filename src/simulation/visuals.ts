@@ -25,6 +25,7 @@ import { TRAFFIC_CAPACITY } from './traffic';
 import type {
   CitySimulationSnapshot,
   CombatRole,
+  PedestrianSnapshot,
   SimulationVisualCapabilities,
 } from './types';
 
@@ -631,6 +632,8 @@ export class SimulationVisualLayer {
   private readonly geometries: readonly BufferGeometry[];
   private readonly materials: readonly Material[];
   private readonly dummy = new Object3D();
+  private readonly actorPivot = new Object3D();
+  private readonly composedActorMatrix = new Matrix4();
   private disposed = false;
 
   public constructor(
@@ -1193,12 +1196,16 @@ export class SimulationVisualLayer {
     rotationX = 0,
     rotationZ = 0,
   ): void {
-    const instanceId = part.offset + index;
     this.dummy.position.set(x, y, z);
     this.dummy.rotation.set(rotationX, heading, rotationZ);
     this.dummy.scale.set(scaleX, scaleY, scaleZ);
     this.dummy.updateMatrix();
-    part.carrier.setMatrixAt(instanceId, this.dummy.matrix);
+    this.setPartMatrix(part, index, this.dummy.matrix);
+  }
+
+  private setPartMatrix(part: VisualPart, index: number, matrix: Readonly<Matrix4>): void {
+    const instanceId = part.offset + index;
+    part.carrier.setMatrixAt(instanceId, matrix);
     if (part.carrier instanceof DynamicMergedActorMesh) {
       part.carrier.setVisibleAt(instanceId, true);
     }
@@ -1237,6 +1244,60 @@ export class SimulationVisualLayer {
       rotationX,
       rotationZ,
     );
+  }
+
+  private setPedestrianPart(
+    part: VisualPart,
+    index: number,
+    pedestrian: Readonly<PedestrianSnapshot>,
+    pivotHeight: number,
+    localX: number,
+    localY: number,
+    localZ: number,
+    scaleX: number,
+    scaleY: number,
+    scaleZ: number,
+    rotationX = 0,
+    rotationZ = 0,
+  ): void {
+    if (pedestrian.motion.kind === 'grounded') {
+      this.setActorPart(
+        part,
+        index,
+        pedestrian.position.x,
+        pedestrian.position.z,
+        pedestrian.heading,
+        localX,
+        pedestrian.position.y + localY,
+        localZ,
+        scaleX,
+        scaleY,
+        scaleZ,
+        rotationX,
+        rotationZ,
+      );
+      return;
+    }
+
+    this.actorPivot.position.set(
+      pedestrian.position.x,
+      pedestrian.position.y + pivotHeight,
+      pedestrian.position.z,
+    );
+    this.actorPivot.rotation.set(
+      pedestrian.motion.pitchRadians,
+      pedestrian.heading,
+      pedestrian.motion.rollRadians,
+    );
+    this.actorPivot.scale.set(1, 1, 1);
+    this.actorPivot.updateMatrix();
+
+    this.dummy.position.set(localX, localY - pivotHeight, localZ);
+    this.dummy.rotation.set(rotationX, 0, rotationZ);
+    this.dummy.scale.set(scaleX, scaleY, scaleZ);
+    this.dummy.updateMatrix();
+    this.composedActorMatrix.multiplyMatrices(this.actorPivot.matrix, this.dummy.matrix);
+    this.setPartMatrix(part, index, this.composedActorMatrix);
   }
 
   private setPartColor(part: VisualPart, index: number, color: Readonly<Color>): void {
@@ -1499,6 +1560,11 @@ export class SimulationVisualLayer {
       const bottomColor = PEDESTRIAN_BOTTOM_COLORS[(style >>> 14) % PEDESTRIAN_BOTTOM_COLORS.length]
         ?? DEFAULT_BOTTOM_COLOR;
       const hairColor = HAIR_COLORS[(style >>> 18) % HAIR_COLORS.length] ?? DEFAULT_HAIR_COLOR;
+      const tumbling = pedestrian.motion.kind === 'comedic-tumble';
+      const flailPhase = pedestrian.motion.kind === 'comedic-tumble'
+        ? pedestrian.motion.flailPhaseRadians
+        : 0;
+      const pivotHeight = 0.95 * height;
       const activity = Math.min(1, Math.max(0, pedestrian.speed / 3.6));
       const cadence = pedestrian.behavior === 'flee' ? 9 : pedestrian.behavior === 'witness-report' ? 2.2 : 5.2;
       const phase = snapshot.simulationTime * cadence + (style % 17) * 0.63;
@@ -1507,18 +1573,19 @@ export class SimulationVisualLayer {
         : pedestrian.behavior === 'witness-report'
           ? 0.04
           : 0.43 * activity;
-      const legSwing = Math.sin(phase) * stride;
-      const bob = Math.abs(Math.sin(phase * 2))
+      const legSwing = tumbling ? Math.sin(flailPhase) * 0.48 : Math.sin(phase) * stride;
+      const bob = (tumbling ? 0 : Math.abs(Math.sin(phase * 2)))
         * (pedestrian.behavior === 'flee' ? 0.055 : 0.024)
         * Math.max(0.2, activity);
-      const torsoLean = pedestrian.behavior === 'flee' ? 0.17 : 0.025 * activity;
+      const torsoLean = tumbling
+        ? 0
+        : pedestrian.behavior === 'flee' ? 0.17 : 0.025 * activity;
 
-      this.setActorPart(
+      this.setPedestrianPart(
         parts.torsos,
         index,
-        pedestrian.position.x,
-        pedestrian.position.z,
-        pedestrian.heading,
+        pedestrian,
+        pivotHeight,
         0,
         1.08 * height + bob,
         0,
@@ -1528,12 +1595,11 @@ export class SimulationVisualLayer {
         -torsoLean,
       );
       this.setPartColor(parts.torsos, index, topColor);
-      this.setActorPart(
+      this.setPedestrianPart(
         parts.heads,
         index,
-        pedestrian.position.x,
-        pedestrian.position.z,
-        pedestrian.heading,
+        pedestrian,
+        pivotHeight,
         0,
         1.61 * height + bob,
         -0.015,
@@ -1548,12 +1614,11 @@ export class SimulationVisualLayer {
       const hasHat = style % 7 === 0;
       const hasHair = !hasHat && style % 6 !== 0;
       if (hasHair) {
-        this.setActorPart(
+        this.setPedestrianPart(
           parts.hair,
           index,
-          pedestrian.position.x,
-          pedestrian.position.z,
-          pedestrian.heading,
+          pedestrian,
+          pivotHeight,
           0,
           1.73 * height + bob,
           0,
@@ -1567,12 +1632,11 @@ export class SimulationVisualLayer {
         this.setHidden(parts.hair, index);
       }
       if (hasHat) {
-        this.setActorPart(
+        this.setPedestrianPart(
           parts.hats,
           index,
-          pedestrian.position.x,
-          pedestrian.position.z,
-          pedestrian.heading,
+          pedestrian,
+          pivotHeight,
           0,
           1.83 * height + bob,
           0,
@@ -1586,12 +1650,11 @@ export class SimulationVisualLayer {
       }
 
       if (style % 5 === 0) {
-        this.setActorPart(
+        this.setPedestrianPart(
           parts.backpacks,
           index,
-          pedestrian.position.x,
-          pedestrian.position.z,
-          pedestrian.heading,
+          pedestrian,
+          pivotHeight,
           0,
           1.1 * height + bob,
           0.25 * build,
@@ -1608,20 +1671,21 @@ export class SimulationVisualLayer {
         const side = sideIndex === 0 ? -1 : 1;
         const pairIndex = index * 2 + sideIndex;
         const sideSwing = side * legSwing;
-        this.setActorPart(
+        this.setPedestrianPart(
           parts.legs,
           pairIndex,
-          pedestrian.position.x,
-          pedestrian.position.z,
-          pedestrian.heading,
+          pedestrian,
+          pivotHeight,
           side * 0.14 * build,
           0.76 * height + bob,
           0,
           build,
           height,
           build,
-          sideSwing,
-          pedestrian.behavior === 'witness-report' ? side * 0.08 : 0,
+          tumbling ? side * 0.92 + sideSwing : sideSwing,
+          tumbling
+            ? side * 0.36
+            : pedestrian.behavior === 'witness-report' ? side * 0.08 : 0,
         );
         this.setPartColor(parts.legs, pairIndex, bottomColor);
 
@@ -1636,12 +1700,15 @@ export class SimulationVisualLayer {
             armRotationZ = -2.42;
           }
         }
-        this.setActorPart(
+        if (tumbling) {
+          armRotationX = -side * 0.86 + Math.cos(flailPhase + sideIndex * 1.7) * 0.42;
+          armRotationZ = side * -1.18;
+        }
+        this.setPedestrianPart(
           parts.arms,
           pairIndex,
-          pedestrian.position.x,
-          pedestrian.position.z,
-          pedestrian.heading,
+          pedestrian,
+          pivotHeight,
           side * 0.34 * build,
           1.34 * height + bob,
           0,
