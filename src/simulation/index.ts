@@ -19,7 +19,12 @@ export {
   chooseCombatNpcTactic,
   COMBAT_ROLE_AI_PROFILES,
 } from './npcReactions';
-export { PEDESTRIAN_CAPACITY, PedestrianSystem } from './pedestrians';
+export {
+  PEDESTRIAN_CAPACITY,
+  PEDESTRIAN_COLLISION_RADIUS,
+  PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK,
+  PedestrianSystem,
+} from './pedestrians';
 export { TRAFFIC_CAPACITY } from './traffic';
 export {
   TRAFFIC_SIGNAL_STOP_LINE_DISTANCE,
@@ -80,6 +85,9 @@ export type {
   CrimeKind,
   CrimeReportInput,
   EnemyDamageEvent,
+  ExternalPedestrianColliderKind,
+  ExternalPedestrianColliderState,
+  ExternalPedestrianCollisionResult,
   ExternalTrafficCollisionResult,
   ExternalTrafficVehicleState,
   PedestrianBehavior,

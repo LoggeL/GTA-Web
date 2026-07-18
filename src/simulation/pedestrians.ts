@@ -1,4 +1,9 @@
-import { distance2d, normalize2d, pointBlocked } from './math';
+import {
+  directionFromHeading,
+  distance2d,
+  normalize2d,
+  pointBlocked,
+} from './math';
 import {
   buildNpcNavigationGraph,
   NpcNavigator,
@@ -19,6 +24,8 @@ import type {
 import type { SimulationRandom } from './random';
 import type {
   CrimeEvent,
+  ExternalPedestrianColliderState,
+  ExternalPedestrianCollisionResult,
   PedestrianBehavior,
   PedestrianSnapshot,
   SimulationObstacle,
@@ -50,6 +57,15 @@ export const PEDESTRIAN_LOCAL_SEPARATION = Object.freeze({
   minimumDistance: 0.68,
   solverPasses: 4,
 });
+
+export const PEDESTRIAN_COLLISION_RADIUS = 0.34;
+const EXTERNAL_COLLISION_PASSES = 2;
+const EXTERNAL_CONTACT_EPSILON = 0.01;
+
+/** One external actor is checked against the fixed pool for at most two passes. */
+export const PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK = (
+  PEDESTRIAN_CAPACITY.high * EXTERNAL_COLLISION_PASSES
+);
 
 /**
  * Separation always scans the fixed actor pool. This makes the worst-case
@@ -120,6 +136,12 @@ interface PedestrianAgent {
   lastNoiseId: string | null;
 }
 
+interface SweptCircleContact {
+  readonly time: number;
+  readonly normalX: number;
+  readonly normalZ: number;
+}
+
 const FALLBACK_ROAD: SimulationRoadRecipe = {
   id: 'pedestrian-fallback-road',
   position: { x: 0, y: 0, z: 0 },
@@ -128,6 +150,78 @@ const FALLBACK_ROAD: SimulationRoadRecipe = {
 };
 const RELEVANCE_REFRESH_SECONDS = 0.5;
 const RELEVANCE_REBASE_DISTANCE = 32;
+
+function normalizedContactNormal(
+  deltaX: number,
+  deltaZ: number,
+  fallbackVelocity: Readonly<{ x: number; z: number }>,
+  deterministicAxis: number,
+): { readonly x: number; readonly z: number } {
+  const length = Math.hypot(deltaX, deltaZ);
+  if (length > 0.000001) {
+    return { x: deltaX / length, z: deltaZ / length };
+  }
+  const velocityLength = Math.hypot(fallbackVelocity.x, fallbackVelocity.z);
+  if (velocityLength > 0.000001) {
+    return {
+      x: fallbackVelocity.x / velocityLength,
+      z: fallbackVelocity.z / velocityLength,
+    };
+  }
+  switch (deterministicAxis & 3) {
+    case 0: return { x: 1, z: 0 };
+    case 1: return { x: 0, z: 1 };
+    case 2: return { x: -1, z: 0 };
+    default: return { x: 0, z: -1 };
+  }
+}
+
+function sweptCircleContact(
+  startDeltaX: number,
+  startDeltaZ: number,
+  endDeltaX: number,
+  endDeltaZ: number,
+  minimumDistance: number,
+  fallbackVelocity: Readonly<{ x: number; z: number }>,
+  deterministicAxis: number,
+): SweptCircleContact | null {
+  const minimumDistanceSquared = minimumDistance * minimumDistance;
+  const startDistanceSquared = startDeltaX * startDeltaX + startDeltaZ * startDeltaZ;
+  const endDistanceSquared = endDeltaX * endDeltaX + endDeltaZ * endDeltaZ;
+  const relativeDeltaX = endDeltaX - startDeltaX;
+  const relativeDeltaZ = endDeltaZ - startDeltaZ;
+  const quadraticA = relativeDeltaX * relativeDeltaX + relativeDeltaZ * relativeDeltaZ;
+  if (startDistanceSquared >= minimumDistanceSquared && quadraticA > 0.0000001) {
+    const quadraticB = 2 * (
+      startDeltaX * relativeDeltaX
+      + startDeltaZ * relativeDeltaZ
+    );
+    const quadraticC = startDistanceSquared - minimumDistanceSquared;
+    const discriminant = quadraticB * quadraticB - 4 * quadraticA * quadraticC;
+    if (discriminant >= 0) {
+      const entryTime = (-quadraticB - Math.sqrt(discriminant)) / (2 * quadraticA);
+      if (entryTime >= 0 && entryTime <= 1) {
+        const normal = normalizedContactNormal(
+          startDeltaX + relativeDeltaX * entryTime,
+          startDeltaZ + relativeDeltaZ * entryTime,
+          fallbackVelocity,
+          deterministicAxis,
+        );
+        return { time: entryTime, normalX: normal.x, normalZ: normal.z };
+      }
+    }
+  }
+  if (endDistanceSquared < minimumDistanceSquared) {
+    const normal = normalizedContactNormal(
+      endDeltaX,
+      endDeltaZ,
+      fallbackVelocity,
+      deterministicAxis,
+    );
+    return { time: 1, normalX: normal.x, normalZ: normal.z };
+  }
+  return null;
+}
 
 function legacyBehavior(state: PedestrianNpcState): PedestrianBehavior {
   if (state === 'flee') return 'flee';
@@ -160,6 +254,10 @@ export class PedestrianSystem {
   private lastTickRelocationAttempts = 0;
   private lastTickRelocations = 0;
   private lastTickSeparationPairChecks = 0;
+  private readonly previousPositionX = new Float64Array(PEDESTRIAN_CAPACITY.high);
+  private readonly previousPositionZ = new Float64Array(PEDESTRIAN_CAPACITY.high);
+  private previousPositionsValid = false;
+  private readonly previousExternalContactIds = new Set<string>();
 
   public constructor(
     random: SimulationRandom,
@@ -286,6 +384,7 @@ export class PedestrianSystem {
     if (context.playerPosition && this.isFinitePosition(context.playerPosition)) {
       this.maintainPlayerRelevance(context.playerPosition, dt, obstacles);
     }
+    this.capturePreviousPositions();
     for (const agent of this.agents) {
       if (!agent.active && agent.state === 'wander') continue;
       switch (agent.state) {
@@ -308,6 +407,176 @@ export class PedestrianSystem {
       }
     }
     this.resolveLocalSeparation(obstacles);
+  }
+
+  /**
+   * Resolves one player-controlled collider against the fixed pedestrian pool.
+   * Sweep tests, reactions, and contact debouncing remain private to this module.
+   */
+  public resolveExternalCollision(
+    state: Readonly<ExternalPedestrianColliderState>,
+    obstacles: readonly SimulationObstacle[] = [],
+  ): ExternalPedestrianCollisionResult {
+    if (
+      !this.isFinitePosition(state.position)
+      || (state.previousPosition && !this.isFinitePosition(state.previousPosition))
+      || !Number.isFinite(state.velocity.x)
+      || !Number.isFinite(state.velocity.z)
+    ) {
+      throw new RangeError('external pedestrian collider state must be finite');
+    }
+    if (!Number.isFinite(state.radius) || state.radius <= 0) {
+      throw new RangeError('external pedestrian collider radius must be finite and positive');
+    }
+
+    const previous = state.previousPosition ?? state.position;
+    const position: SimulationVec3 = { ...state.position };
+    const velocity = { x: state.velocity.x, z: state.velocity.z };
+    const pedestrianIds = new Set<string>();
+    const impactSpeedById = new Map<string, number>();
+    let impactSpeed = 0;
+    let impactNormal: { readonly x: number; readonly z: number } | null = null;
+    let primaryPedestrianId: string | null = null;
+    let pairChecks = 0;
+
+    for (let pass = 0; pass < EXTERNAL_COLLISION_PASSES; pass += 1) {
+      let contactsThisPass = 0;
+      for (const [agentIndex, agent] of this.agents.entries()) {
+        if (!agent.active) continue;
+        pairChecks += 1;
+        const minimumDistance = state.radius + PEDESTRIAN_COLLISION_RADIUS;
+        const canSweep = pass === 0 && this.previousPositionsValid;
+        const priorAgentX = canSweep
+          ? (this.previousPositionX[agentIndex] ?? agent.position.x)
+          : agent.position.x;
+        const priorAgentZ = canSweep
+          ? (this.previousPositionZ[agentIndex] ?? agent.position.z)
+          : agent.position.z;
+        const contact = sweptCircleContact(
+          priorAgentX - (canSweep ? previous.x : position.x),
+          priorAgentZ - (canSweep ? previous.z : position.z),
+          agent.position.x - position.x,
+          agent.position.z - position.z,
+          minimumDistance,
+          velocity,
+          agentIndex,
+        );
+        if (!contact) continue;
+        contactsThisPass += 1;
+        pedestrianIds.add(agent.id);
+        if (primaryPedestrianId === null) {
+          primaryPedestrianId = agent.id;
+          impactNormal = { x: contact.normalX, z: contact.normalZ };
+        }
+
+        if (canSweep && contact.time < 1) {
+          position.x = previous.x + (position.x - previous.x) * contact.time;
+          position.z = previous.z + (position.z - previous.z) * contact.time;
+          agent.position.x = priorAgentX
+            + (agent.position.x - priorAgentX) * contact.time;
+          agent.position.z = priorAgentZ
+            + (agent.position.z - priorAgentZ) * contact.time;
+        }
+
+        const currentDeltaX = agent.position.x - position.x;
+        const currentDeltaZ = agent.position.z - position.z;
+        const currentDistance = Math.hypot(currentDeltaX, currentDeltaZ);
+        const correction = Math.max(
+          EXTERNAL_CONTACT_EPSILON,
+          minimumDistance + EXTERNAL_CONTACT_EPSILON - currentDistance,
+        );
+        const pedestrianShare = this.agentCanSidestep(agent)
+          ? state.kind === 'vehicle' ? 0.72 : 0.42
+          : 0;
+        const pedestrianStartX = agent.position.x;
+        const pedestrianStartZ = agent.position.z;
+        this.moveIfClear(
+          agent,
+          contact.normalX * correction * pedestrianShare,
+          contact.normalZ * correction * pedestrianShare,
+          obstacles,
+        );
+        const pedestrianCorrection = Math.max(0, (
+          (agent.position.x - pedestrianStartX) * contact.normalX
+          + (agent.position.z - pedestrianStartZ) * contact.normalZ
+        ));
+        const externalCorrection = Math.max(0, correction - pedestrianCorrection);
+        position.x -= contact.normalX * externalCorrection;
+        position.z -= contact.normalZ * externalCorrection;
+
+        const pedestrianDirection = directionFromHeading(agent.heading);
+        const pedestrianVelocityX = pedestrianDirection.x * agent.speed;
+        const pedestrianVelocityZ = pedestrianDirection.z * agent.speed;
+        const relativeNormalVelocity = (
+          pedestrianVelocityX - velocity.x
+        ) * contact.normalX + (
+          pedestrianVelocityZ - velocity.z
+        ) * contact.normalZ;
+        const closingSpeed = Math.max(0, -relativeNormalVelocity);
+        if (closingSpeed > 0.000001) {
+          const responseShare = state.kind === 'vehicle' ? 0.58 : 1;
+          velocity.x -= contact.normalX * closingSpeed * responseShare;
+          velocity.z -= contact.normalZ * closingSpeed * responseShare;
+        }
+        impactSpeedById.set(
+          agent.id,
+          Math.max(impactSpeedById.get(agent.id) ?? 0, closingSpeed),
+        );
+        if (
+          closingSpeed > impactSpeed + 0.000001
+          || (
+            Math.abs(closingSpeed - impactSpeed) <= 0.000001
+            && agent.id < (primaryPedestrianId ?? agent.id)
+          )
+        ) {
+          impactSpeed = closingSpeed;
+          impactNormal = { x: contact.normalX, z: contact.normalZ };
+          primaryPedestrianId = agent.id;
+        }
+      }
+      if (contactsThisPass === 0) break;
+    }
+
+    const newPedestrianIds = [...pedestrianIds]
+      .filter((id) => !this.previousExternalContactIds.has(id));
+    let newImpactSpeed = 0;
+    for (const id of newPedestrianIds) {
+      newImpactSpeed = Math.max(newImpactSpeed, impactSpeedById.get(id) ?? 0);
+      const agent = this.agents.find((candidate) => candidate.id === id);
+      if (!agent) continue;
+      const contactImpact = impactSpeedById.get(id) ?? 0;
+      if (state.kind === 'vehicle' || contactImpact >= 3.2) {
+        agent.fleeFrom = { ...state.position };
+        agent.reaction = 'flee';
+        this.beginFlee(
+          agent,
+          state.position,
+          Math.max(1.2, Math.min(4, 1.1 + contactImpact * 0.18)),
+        );
+      } else if (agent.state === 'wander' || agent.state === 'recover') {
+        this.applyReaction(agent, 'startle', state.position);
+      }
+    }
+    this.previousExternalContactIds.clear();
+    for (const id of pedestrianIds) this.previousExternalContactIds.add(id);
+    for (const [agentIndex, agent] of this.agents.entries()) {
+      if (!pedestrianIds.has(agent.id)) continue;
+      this.previousPositionX[agentIndex] = agent.position.x;
+      this.previousPositionZ[agentIndex] = agent.position.z;
+    }
+
+    return {
+      collided: pedestrianIds.size > 0,
+      position,
+      velocity,
+      impactSpeed,
+      newImpactSpeed,
+      impactNormal,
+      primaryPedestrianId,
+      pedestrianIds: [...pedestrianIds],
+      newPedestrianIds,
+      pairChecks,
+    };
   }
 
   public getSnapshot(): readonly PedestrianSnapshot[] {
@@ -603,6 +872,14 @@ export class PedestrianSystem {
         }
       }
     }
+  }
+
+  private capturePreviousPositions(): void {
+    for (const [index, agent] of this.agents.entries()) {
+      this.previousPositionX[index] = agent.position.x;
+      this.previousPositionZ[index] = agent.position.z;
+    }
+    this.previousPositionsValid = true;
   }
 
   private agentCanSidestep(agent: Readonly<PedestrianAgent>): boolean {

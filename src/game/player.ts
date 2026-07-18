@@ -183,6 +183,24 @@ export function stepPlayer(
   }
 }
 
+/** Applies a dynamic correction without bypassing authored static blockers. */
+export function movePlayerCollisionCircle(
+  state: PlayerSimulationState,
+  deltaX: number,
+  deltaZ: number,
+  collisions: readonly CollisionRect[],
+): void {
+  const result = moveCircleWithCollisions(
+    state.position,
+    deltaX,
+    deltaZ,
+    PLAYER_RADIUS,
+    movementBlockersAtHeight(collisions, state.position.y),
+  );
+  if (result.blockedX) state.velocity.x = 0;
+  if (result.blockedZ) state.velocity.z = 0;
+}
+
 function startVault(
   state: PlayerSimulationState,
   obstacle: Readonly<CollisionRect>,

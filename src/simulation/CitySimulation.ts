@@ -17,10 +17,13 @@ import type {
   CrimeEvent,
   CrimeReportInput,
   EnemyDamageEvent,
+  ExternalPedestrianColliderState,
+  ExternalPedestrianCollisionResult,
   ExternalTrafficCollisionResult,
   ExternalTrafficVehicleState,
   PlayerDamageEvent,
   SimulationQuality,
+  SimulationObstacle,
   SimulationVisualCapabilities,
   SimulationVec3,
   TrafficVehicleSnapshot,
@@ -36,6 +39,8 @@ import {
   tryFireWeapon,
 } from './weapons';
 import type { WeaponRuntime } from './weapons';
+
+const HIT_AND_RUN_MINIMUM_IMPACT_SPEED = 4;
 
 function normalizedActorLimit(value: number, label: string, capacity: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -360,6 +365,32 @@ export class CitySimulation {
   ): ExternalTrafficCollisionResult {
     this.assertAlive();
     return this.traffic.resolveExternalVehicleCollision(state);
+  }
+
+  /**
+   * Resolves Alex against the fixed pedestrian pool and translates a new,
+   * material vehicle impact into one stylized hit-and-run crime episode.
+   */
+  public resolvePedestrianCollision(
+    state: Readonly<ExternalPedestrianColliderState>,
+    obstacles: readonly SimulationObstacle[] = [],
+  ): ExternalPedestrianCollisionResult {
+    this.assertAlive();
+    const result = this.pedestrians.resolveExternalCollision(state, obstacles);
+    if (
+      state.kind === 'vehicle'
+      && result.newPedestrianIds.length > 0
+      && result.newImpactSpeed >= HIT_AND_RUN_MINIMUM_IMPACT_SPEED
+    ) {
+      this.reportCrime({
+        kind: 'hit-and-run',
+        sourceId: 'player',
+        position: result.position,
+        severity: result.newImpactSpeed >= 12 ? 3 : 2,
+      });
+      this.triggerPanic(result.position, 20, 3.5);
+    }
+    return result;
   }
 
   public spawnEnemy(role: CombatRole, position: Readonly<SimulationVec3>): string | null {

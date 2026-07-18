@@ -86,6 +86,43 @@ export interface ExternalTrafficCollisionResult {
   readonly pairChecks: number;
 }
 
+export type ExternalPedestrianColliderKind = 'on-foot' | 'vehicle';
+
+/**
+ * Alex's current and prior transform submitted to the fixed pedestrian pool.
+ * A planar velocity keeps the interface equally useful on foot and in a car.
+ */
+export interface ExternalPedestrianColliderState {
+  readonly kind: ExternalPedestrianColliderKind;
+  readonly position: Readonly<SimulationVec3>;
+  /** Supplying the prior transform enables swept contact and prevents tunneling. */
+  readonly previousPosition?: Readonly<SimulationVec3>;
+  readonly velocity: {
+    readonly x: number;
+    readonly z: number;
+  };
+  readonly radius: number;
+}
+
+/** Corrected caller state plus bounded, debounced pedestrian-contact evidence. */
+export interface ExternalPedestrianCollisionResult {
+  readonly collided: boolean;
+  readonly position: SimulationVec3;
+  readonly velocity: {
+    readonly x: number;
+    readonly z: number;
+  };
+  readonly impactSpeed: number;
+  readonly newImpactSpeed: number;
+  /** Unit normal pointing from the external actor toward the primary pedestrian. */
+  readonly impactNormal: { readonly x: number; readonly z: number } | null;
+  readonly primaryPedestrianId: string | null;
+  readonly pedestrianIds: readonly string[];
+  /** Contacts that were absent from the immediately preceding collision episode. */
+  readonly newPedestrianIds: readonly string[];
+  readonly pairChecks: number;
+}
+
 export type PedestrianBehavior = 'wander' | 'flee' | 'witness-report';
 
 export interface PedestrianSnapshot {
@@ -262,6 +299,10 @@ export interface CitySimulationApi {
   resolveTrafficVehicleCollision(
     state: Readonly<ExternalTrafficVehicleState>,
   ): ExternalTrafficCollisionResult;
+  resolvePedestrianCollision(
+    state: Readonly<ExternalPedestrianColliderState>,
+    obstacles?: readonly SimulationObstacle[],
+  ): ExternalPedestrianCollisionResult;
   despawnEnemy(targetId: string): boolean;
   tick(context: CitySimulationTick): CitySimulationTickResult;
   advance(context: CitySimulationTick): WeaponFireResult | null;

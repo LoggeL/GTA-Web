@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { PLAYER_SPAWN, generateCity } from '../../src/game/city';
-import { distance2d } from '../../src/simulation/math';
+import { distance2d, pointBlocked } from '../../src/simulation/math';
 import {
   PEDESTRIAN_CAPACITY,
+  PEDESTRIAN_COLLISION_RADIUS,
+  PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK,
   PEDESTRIAN_RELOCATION_BUDGET_PER_TICK,
   PEDESTRIAN_RELEVANCE_RADII,
   PEDESTRIAN_SEPARATION_PAIR_BUDGET_PER_TICK,
@@ -31,6 +33,118 @@ describe('pedestrian life and witnesses', () => {
     expect(first.getSnapshot()).toHaveLength(30);
     first.setQuality('high');
     expect(first.getSnapshot()).toHaveLength(72);
+  });
+
+  it('separates an on-foot player from exact pedestrian overlap within the fixed budget', () => {
+    const system = new PedestrianSystem(
+      new SimulationRandom('on-foot-pedestrian-collision'),
+      'low',
+      [road],
+      () => undefined,
+    );
+    system.setActorLimit(1);
+    const target = system.getNpcSnapshot()[0];
+    if (!target) throw new Error('Missing on-foot collision target');
+
+    const result = system.resolveExternalCollision({
+      kind: 'on-foot',
+      position: { ...target.position },
+      previousPosition: { ...target.position },
+      velocity: { x: 0, z: 0 },
+      radius: 0.58,
+    });
+    const correctedTarget = system.getNpcSnapshot()[0];
+    if (!correctedTarget) throw new Error('Missing corrected pedestrian');
+
+    expect(result.collided).toBe(true);
+    expect(result.newPedestrianIds).toEqual([target.id]);
+    expect(result.pairChecks).toBeLessThanOrEqual(
+      PEDESTRIAN_EXTERNAL_COLLISION_PAIR_BUDGET_PER_TICK,
+    );
+    expect(distance2d(result.position, correctedTarget.position)).toBeGreaterThanOrEqual(
+      0.58 + PEDESTRIAN_COLLISION_RADIUS,
+    );
+    expect(correctedTarget.state).toBe('startle');
+    expect(system.getSnapshot()).toHaveLength(1);
+  });
+
+  it('sweeps fast vehicle contact, slows it, and debounces sustained overlap', () => {
+    const system = new PedestrianSystem(
+      new SimulationRandom('vehicle-pedestrian-sweep'),
+      'low',
+      [road],
+      () => undefined,
+    );
+    system.setActorLimit(1);
+    system.tick(0.1, 0.1);
+    const target = system.getNpcSnapshot()[0];
+    if (!target) throw new Error('Missing swept collision target');
+
+    const swept = system.resolveExternalCollision({
+      kind: 'vehicle',
+      previousPosition: {
+        x: target.position.x - 9,
+        y: 0,
+        z: target.position.z,
+      },
+      position: {
+        x: target.position.x + 9,
+        y: 0,
+        z: target.position.z,
+      },
+      velocity: { x: 24, z: 0 },
+      radius: 1.25,
+    });
+    expect(swept.collided).toBe(true);
+    expect(swept.primaryPedestrianId).toBe(target.id);
+    expect(swept.position.x).toBeLessThan(target.position.x);
+    expect(swept.impactSpeed).toBeGreaterThan(20);
+    expect(swept.velocity.x).toBeLessThan(12);
+    expect(swept.newPedestrianIds).toEqual([target.id]);
+    expect(system.getNpcSnapshot()[0]?.state).toBe('flee');
+
+    const currentTarget = system.getNpcSnapshot()[0];
+    if (!currentTarget) throw new Error('Missing sustained contact target');
+    const sustained = system.resolveExternalCollision({
+      kind: 'vehicle',
+      position: { ...currentTarget.position },
+      previousPosition: { ...currentTarget.position },
+      velocity: { x: 8, z: 0 },
+      radius: 1.25,
+    });
+    expect(sustained.collided).toBe(true);
+    expect(sustained.newPedestrianIds).toEqual([]);
+  });
+
+  it('keeps pedestrian displacement outside static obstacles', () => {
+    const system = new PedestrianSystem(
+      new SimulationRandom('pedestrian-wall-safety'),
+      'low',
+      [road],
+      () => undefined,
+    );
+    system.setActorLimit(1);
+    const target = system.getNpcSnapshot()[0];
+    if (!target) throw new Error('Missing wall-safety target');
+    const obstacle = {
+      x: target.position.x + 0.85,
+      z: target.position.z,
+      radius: 0.3,
+    };
+    const result = system.resolveExternalCollision({
+      kind: 'on-foot',
+      position: { ...target.position },
+      velocity: { x: 0, z: 0 },
+      radius: 0.58,
+    }, [obstacle]);
+    const correctedTarget = system.getNpcSnapshot()[0];
+    if (!correctedTarget) throw new Error('Missing wall-safe pedestrian');
+
+    expect(result.collided).toBe(true);
+    expect(pointBlocked(correctedTarget.position, 0.32, [obstacle])).toBe(false);
+    expect(distance2d(result.position, correctedTarget.position)).toBeGreaterThanOrEqual(
+      0.58 + PEDESTRIAN_COLLISION_RADIUS,
+    );
   });
 
   it('flees nearby serious crime, then submits one witness report', () => {

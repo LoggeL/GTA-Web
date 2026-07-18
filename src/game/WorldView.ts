@@ -61,7 +61,12 @@ import {
   updateEnvironment,
 } from './environment';
 import type { EnvironmentState } from './environment';
-import { createPlayerState, stepPlayer } from './player';
+import {
+  PLAYER_RADIUS,
+  createPlayerState,
+  movePlayerCollisionCircle,
+  stepPlayer,
+} from './player';
 import type { PlayerSimulationState } from './player';
 import { findNearestInteractionTarget } from './interaction';
 import { InteriorPortalVisual } from './InteriorPortalVisual';
@@ -1089,6 +1094,7 @@ export class WorldView {
 
     const collisions = this.activeCollisions();
     let previousVehiclePosition = { ...this.vehicle.position };
+    const previousPlayerPosition = { ...this.player.position };
     let playerThreatening = false;
     if (this.vehicle.occupied) {
       this.vehicleSirenActive = this.vehicle.vehicleClassId === 'police-cruiser'
@@ -1147,6 +1153,9 @@ export class WorldView {
       if (this.vehicle.occupied) {
         this.resolveTrafficVehicleCollision(previousVehiclePosition);
       }
+      this.resolvePedestrianCollision(
+        this.vehicle.occupied ? previousVehiclePosition : previousPlayerPosition,
+      );
       this.trafficSignalVisualElapsed += dt;
       this.refreshTrafficSignalVisual(false);
     }
@@ -1473,6 +1482,68 @@ export class WorldView {
       }, {
         durabilityMultiplier: this.progressionModifiers.vehicleDurabilityMultiplier,
       });
+    }
+    return true;
+  }
+
+  private resolvePedestrianCollision(
+    previousPosition: Readonly<{ x: number; y: number; z: number }>,
+  ): boolean {
+    if (!this.vehicle.occupied && this.player.position.y > 1.35) {
+      return false;
+    }
+    const forward = this.vehicle.occupied
+      ? directionFromHeading(this.vehicle.heading)
+      : null;
+    const rightX = forward ? -forward.z : 0;
+    const rightZ = forward ? forward.x : 0;
+    const velocity = this.vehicle.occupied && forward
+      ? {
+          x: forward.x * this.vehicle.speed
+            + rightX * (this.vehicle.lateralSpeed ?? 0),
+          z: forward.z * this.vehicle.speed
+            + rightZ * (this.vehicle.lateralSpeed ?? 0),
+        }
+      : {
+          x: this.player.velocity.x,
+          z: this.player.velocity.z,
+        };
+    const actor = this.vehicle.occupied ? this.vehicle : this.player;
+    const result = this.citySimulation.resolvePedestrianCollision({
+      kind: this.vehicle.occupied ? 'vehicle' : 'on-foot',
+      position: { ...actor.position },
+      previousPosition,
+      velocity,
+      radius: this.vehicle.occupied
+        ? requireVehicleDriveProfile(this.vehicle.vehicleClassId)
+            .arcadeHandling.collisionRadiusMeters
+        : PLAYER_RADIUS,
+    }, this.exteriorObstructions);
+    if (!result.collided) {
+      return false;
+    }
+
+    if (this.vehicle.occupied && forward) {
+      moveVehicleCollisionBox(
+        this.vehicle,
+        result.position.x - this.vehicle.position.x,
+        result.position.z - this.vehicle.position.z,
+        this.activeCollisions(),
+      );
+      this.vehicle.speed = result.velocity.x * forward.x
+        + result.velocity.z * forward.z;
+      this.vehicle.lateralSpeed = result.velocity.x * rightX
+        + result.velocity.z * rightZ;
+    } else {
+      this.player.velocity.x = result.velocity.x;
+      this.player.velocity.z = result.velocity.z;
+      movePlayerCollisionCircle(
+        this.player,
+        result.position.x - this.player.position.x,
+        result.position.z - this.player.position.z,
+        this.activeCollisions(),
+      );
+      this.avatarVisual.sync(this.player);
     }
     return true;
   }

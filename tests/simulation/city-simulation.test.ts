@@ -262,6 +262,88 @@ describe('CitySimulation integration surface', () => {
     }
   });
 
+  it('reports one material vehicle-pedestrian contact episode without pool growth', () => {
+    const crimes: CrimeEvent[] = [];
+    const simulation = new CitySimulation({
+      seed: 'external-pedestrian-collision-api',
+      quality: 'low',
+      seedCombatants: false,
+      onCrime: (event) => crimes.push(event),
+    });
+    simulation.setActorLimits({ traffic: 0, pedestrians: 1, combat: 0 });
+    const initialTarget = simulation.getSnapshot().pedestrians[0];
+    if (!initialTarget) throw new Error('Missing pedestrian collision target');
+    simulation.advance({
+      deltaSeconds: 0.1,
+      playerPosition: { ...initialTarget.position },
+      playerHeading: 0,
+    });
+    const target = simulation.getSnapshot().pedestrians[0];
+    if (!target) throw new Error('Missing advanced pedestrian collision target');
+
+    const first = simulation.resolvePedestrianCollision({
+      kind: 'vehicle',
+      previousPosition: {
+        x: target.position.x - 8,
+        y: 0,
+        z: target.position.z,
+      },
+      position: {
+        x: target.position.x + 8,
+        y: 0,
+        z: target.position.z,
+      },
+      velocity: { x: 18, z: 0 },
+      radius: 1.3,
+    });
+    expect(first.collided).toBe(true);
+    expect(first.newPedestrianIds).toEqual([target.id]);
+    expect(crimes).toHaveLength(1);
+    expect(crimes[0]).toMatchObject({
+      kind: 'hit-and-run',
+      sourceId: 'player',
+    });
+    expect(simulation.getSnapshot().pedestrians).toHaveLength(1);
+    expect(simulation.getSnapshot().pedestrians[0]?.behavior).toBe('flee');
+
+    const sustainedTarget = simulation.getSnapshot().pedestrians[0];
+    if (!sustainedTarget) throw new Error('Missing sustained pedestrian target');
+    const sustained = simulation.resolvePedestrianCollision({
+      kind: 'vehicle',
+      position: { ...sustainedTarget.position },
+      previousPosition: { ...sustainedTarget.position },
+      velocity: { x: 18, z: 0 },
+      radius: 1.3,
+    });
+    expect(sustained.collided).toBe(true);
+    expect(sustained.newPedestrianIds).toEqual([]);
+    expect(crimes).toHaveLength(1);
+    simulation.dispose();
+  });
+
+  it('does not fabricate hit-and-run crime for a slow pedestrian nudge', () => {
+    const crimes: CrimeEvent[] = [];
+    const simulation = new CitySimulation({
+      seed: 'slow-pedestrian-nudge',
+      quality: 'low',
+      seedCombatants: false,
+      onCrime: (event) => crimes.push(event),
+    });
+    simulation.setActorLimits({ traffic: 0, pedestrians: 1, combat: 0 });
+    const target = simulation.getSnapshot().pedestrians[0];
+    if (!target) throw new Error('Missing slow pedestrian target');
+    const result = simulation.resolvePedestrianCollision({
+      kind: 'vehicle',
+      position: { ...target.position },
+      velocity: { x: 0.75, z: 0 },
+      radius: 1.3,
+    });
+    expect(result.collided).toBe(true);
+    expect(result.newImpactSpeed).toBeLessThan(4);
+    expect(crimes).toEqual([]);
+    simulation.dispose();
+  });
+
   it('resolves a crouch-context stealth takedown only within unaware range', () => {
     const crimes: CrimeEvent[] = [];
     const simulation = new CitySimulation({

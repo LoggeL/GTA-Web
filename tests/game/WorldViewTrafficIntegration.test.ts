@@ -1,8 +1,12 @@
 import { InstancedMesh } from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { TrafficSignalVisual } from '../../src/game/TrafficSignalVisual';
 import type { CollisionRect } from '../../src/game/city';
+import {
+  PLAYER_RADIUS,
+  createPlayerState,
+} from '../../src/game/player';
 import { createVehicleState } from '../../src/game/vehicle';
 import type { VehicleSimulationState } from '../../src/game/vehicle';
 import {
@@ -13,8 +17,11 @@ import { requireVehicleDriveProfile } from '../../src/game/vehicleProfiles';
 import { WorldView } from '../../src/game/WorldView';
 import type { CellId } from '../../src/navigation/types';
 import type {
+  ExternalPedestrianColliderState,
+  ExternalPedestrianCollisionResult,
   ExternalTrafficCollisionResult,
   ExternalTrafficVehicleState,
+  SimulationObstacle,
 } from '../../src/simulation';
 import type {
   TrafficSignalJunctionSnapshot,
@@ -81,6 +88,25 @@ interface CollisionHarness {
   activeCollisions(): readonly CollisionRect[];
   getExternalTrafficVehicleState(): ExternalTrafficVehicleState | null;
   resolveTrafficVehicleCollision(
+    previousPosition: Readonly<{ x: number; y: number; z: number }>,
+  ): boolean;
+}
+
+interface PedestrianCollisionHarness {
+  readonly player: ReturnType<typeof createPlayerState>;
+  readonly vehicle: VehicleSimulationState;
+  readonly exteriorObstructions: readonly SimulationObstacle[];
+  readonly avatarVisual: {
+    sync(player: ReturnType<typeof createPlayerState>): void;
+  };
+  readonly citySimulation: {
+    resolvePedestrianCollision(
+      state: Readonly<ExternalPedestrianColliderState>,
+      obstacles?: readonly SimulationObstacle[],
+    ): ExternalPedestrianCollisionResult;
+  };
+  activeCollisions(): readonly CollisionRect[];
+  resolvePedestrianCollision(
     previousPosition: Readonly<{ x: number; y: number; z: number }>,
   ): boolean;
 }
@@ -255,5 +281,113 @@ describe('WorldView traffic integration', () => {
       normalSpeedMetersPerSecond: 9.5,
     });
     expect(vehicle.integrity.bodyHealth).toBeLessThan(bodyHealthBefore);
+  });
+
+  it('adapts on-foot pedestrian correction through authored wall collisions', () => {
+    const player = createPlayerState({ x: 0, y: 0, z: 0 });
+    player.velocity.x = 6;
+    const vehicle = createVehicleState({ x: 8, y: 0.48, z: 8 }, 'compact');
+    const wall: CollisionRect = {
+      id: 'player-pedestrian-wall',
+      minX: 0.7,
+      maxX: 2,
+      minZ: -2,
+      maxZ: 2,
+      height: 4,
+      kind: 'solid',
+    };
+    const obstacles: readonly SimulationObstacle[] = [{ x: 1.35, z: 0, radius: 0.65 }];
+    let supplied: Readonly<ExternalPedestrianColliderState> | null = null;
+    let suppliedObstacles: readonly SimulationObstacle[] | undefined;
+    const avatarSync = vi.fn();
+    const collision: ExternalPedestrianCollisionResult = {
+      collided: true,
+      position: { x: 1, y: 0, z: 0 },
+      velocity: { x: 2.5, z: 0.75 },
+      impactSpeed: 3.5,
+      newImpactSpeed: 3.5,
+      impactNormal: { x: 1, z: 0 },
+      primaryPedestrianId: 'pedestrian-00',
+      pedestrianIds: ['pedestrian-00'],
+      newPedestrianIds: ['pedestrian-00'],
+      pairChecks: 30,
+    };
+    const harness = Object.create(WorldView.prototype) as unknown as PedestrianCollisionHarness;
+    Object.assign(harness, {
+      player,
+      vehicle,
+      exteriorObstructions: obstacles,
+      avatarVisual: { sync: avatarSync },
+      citySimulation: {
+        resolvePedestrianCollision: (
+          state: Readonly<ExternalPedestrianColliderState>,
+          receivedObstacles?: readonly SimulationObstacle[],
+        ) => {
+          supplied = state;
+          suppliedObstacles = receivedObstacles;
+          return collision;
+        },
+      },
+      activeCollisions: () => [wall],
+    });
+
+    expect(harness.resolvePedestrianCollision({ x: -1, y: 0, z: 0 })).toBe(true);
+    expect(supplied).toMatchObject({
+      kind: 'on-foot',
+      position: { x: 0, y: 0, z: 0 },
+      previousPosition: { x: -1, y: 0, z: 0 },
+      velocity: { x: 6, z: 0 },
+      radius: PLAYER_RADIUS,
+    });
+    expect(suppliedObstacles).toBe(obstacles);
+    expect(player.position).toEqual({ x: 0, y: 0, z: 0 });
+    expect(player.velocity).toMatchObject({ x: 0, z: 0.75 });
+    expect(avatarSync).toHaveBeenCalledWith(player);
+  });
+
+  it('adapts pedestrian impact velocity back into vehicle forward and lateral motion', () => {
+    const player = createPlayerState({ x: 20, y: 0, z: 20 });
+    const vehicle = createVehicleState({ x: 0, y: 0.48, z: 0 }, 'compact');
+    vehicle.occupied = true;
+    vehicle.heading = 0;
+    vehicle.speed = 10;
+    vehicle.lateralSpeed = 2;
+    let supplied: Readonly<ExternalPedestrianColliderState> | null = null;
+    const collision: ExternalPedestrianCollisionResult = {
+      collided: true,
+      position: { x: 0.2, y: 0.48, z: -0.6 },
+      velocity: { x: 1, z: -4 },
+      impactSpeed: 8,
+      newImpactSpeed: 8,
+      impactNormal: { x: 0, z: -1 },
+      primaryPedestrianId: 'pedestrian-05',
+      pedestrianIds: ['pedestrian-05'],
+      newPedestrianIds: ['pedestrian-05'],
+      pairChecks: 42,
+    };
+    const harness = Object.create(WorldView.prototype) as unknown as PedestrianCollisionHarness;
+    Object.assign(harness, {
+      player,
+      vehicle,
+      exteriorObstructions: [],
+      avatarVisual: { sync: () => undefined },
+      citySimulation: {
+        resolvePedestrianCollision: (state: Readonly<ExternalPedestrianColliderState>) => {
+          supplied = state;
+          return collision;
+        },
+      },
+      activeCollisions: () => [],
+    });
+
+    expect(harness.resolvePedestrianCollision({ x: 0, y: 0.48, z: 1 })).toBe(true);
+    expect(supplied).toMatchObject({
+      kind: 'vehicle',
+      velocity: { x: 2, z: -10 },
+      radius: requireVehicleDriveProfile('compact').arcadeHandling.collisionRadiusMeters,
+    });
+    expect(vehicle.position).toEqual(collision.position);
+    expect(vehicle.speed).toBeCloseTo(4);
+    expect(vehicle.lateralSpeed).toBeCloseTo(1);
   });
 });
