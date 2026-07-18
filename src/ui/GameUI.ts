@@ -650,15 +650,15 @@ export class GameUI {
     }).join('');
     const wanted = this.#query<HTMLElement>('.wanted');
     const searchRadius = Math.max(0, Math.round(snapshot.wantedSearchRadius ?? 0));
-    const wantedMode = snapshot.wantedSearching ? 'SEARCH' : 'PURSUIT';
+    const wantedMode = snapshot.wantedSearching ? 'COOLING' : 'EXPOSED';
     this.#query<HTMLElement>('[data-hud-wanted-label]').textContent = snapshot.wantedLevel === 0
       ? ''
       : `${wantedMode}${searchRadius > 0 ? ` · ${searchRadius}M` : ''}`;
     wanted.setAttribute(
       'aria-label',
       snapshot.wantedLevel === 0
-        ? 'Wanted level 0, clear'
-        : `Wanted level ${snapshot.wantedLevel}, ${wantedMode.toLowerCase()}, search radius ${searchRadius} meters`,
+        ? 'Heat level 0, clear'
+        : `Heat level ${snapshot.wantedLevel}, ${wantedMode.toLowerCase()}, search radius ${searchRadius} meters`,
     );
 
     const vehicle = this.#query<HTMLElement>('[data-hud-vehicle]');
@@ -905,7 +905,7 @@ export class GameUI {
             <p class="eyebrow">Solara municipal grid</p>
             <h2 data-loading-label>Building Arroyo Heights…</h2>
             <div class="loading-bar" data-loading-bar role="progressbar" aria-label="Loading Solara" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
-            <p>Tip: lose police sight, then leave the search radius without being spotted.</p>
+            <p>Tip: keep moving, leave the search radius, and let the city heat cool.</p>
           </div>
         </section>
 
@@ -926,7 +926,7 @@ export class GameUI {
               <div class="meter meter--armor" data-meter="armor" role="progressbar" aria-label="armor: 0 of 100" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span><b>ARMOR</b></div>
               <div class="meter meter--stamina" data-meter="stamina" role="progressbar" aria-label="stamina: 100 of 100" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><span></span><b>STAMINA</b></div>
             </div>
-            <div class="wanted" aria-label="Wanted level"><div data-hud-stars></div><small data-hud-wanted-label></small></div>
+            <div class="wanted" aria-label="Heat level"><div data-hud-stars></div><small data-hud-wanted-label></small></div>
           </div>
 
           <div class="hud-top-center objective-card" role="status" aria-live="polite" aria-atomic="true">

@@ -66,7 +66,7 @@ async function placeBehindCombatant(page: Page, targetId: string): Promise<QaCom
 }
 
 test.describe('M4 combat, stealth, NPC, and wanted acceptance', () => {
-  test('resolves stealth and loud encounters, all weapons, all roles, the wanted ladder, and arrest', async ({ page, isMobile }) => {
+  test('resolves stealth and loud encounters, all weapons, all roles, the heat ladder, and clinic recovery', async ({ page, isMobile }) => {
     test.skip(Boolean(isMobile), 'Desktop covers the full M4 state matrix; mobile has a focused combat course');
     test.setTimeout(60_000);
     await startNewGame(page, 1, 'Masculine Alex', '/?qa=1');
@@ -205,36 +205,32 @@ test.describe('M4 combat, stealth, NPC, and wanted acceptance', () => {
         (window as QaWindow).__HEATLINE_QA__?.setWantedLevel(nextLevel)
       ), level);
       await expect(world).toHaveAttribute('data-wanted-level', String(level));
-      await expect(world).toHaveAttribute('data-police-roadblock', String(level >= 3));
-      await expect(world).toHaveAttribute('data-police-helicopter', String(level >= 5));
-      if (level >= 3) {
-        await expect.poll(async () => Number(
-          await world.getAttribute('data-police-roadblock-count'),
-        )).toBeGreaterThan(0);
-      }
+      await expect(world).toHaveAttribute('data-police-roadblock', 'false');
+      await expect(world).toHaveAttribute('data-police-helicopter', 'false');
+      await expect(world).toHaveAttribute('data-police-roadblock-count', '0');
+      await expect(world).toHaveAttribute('data-police-helicopter-mode', 'inactive');
     }
-    await expect(world).toHaveAttribute('data-police-helicopter-mode', /track|approach/);
     const cleared = await page.evaluate(() => (
       (window as QaWindow).__HEATLINE_QA__?.advanceWanted(600, false, false)
     ));
     expect(cleared).toMatchObject({ level: 0, phase: 'clear' });
     await expect(world).toHaveAttribute('data-wanted-level', '0');
 
-    const arrest = await page.evaluate(async () => {
+    const defeat = await page.evaluate(async () => {
       const api = (window as QaWindow).__HEATLINE_QA__;
       if (!api) throw new Error('HEATLINE QA API is unavailable');
       api.setMoney(1_000);
       api.setWantedLevel(2);
       api.setPlayerCondition(1, 0);
-      return api.defeat('arrest');
+      return api.defeat('death');
     });
-    expect(arrest).toEqual({ health: 100, money: 900, wantedLevel: 0 });
+    expect(defeat).toEqual({ health: 100, money: 900, wantedLevel: 0 });
     const respawn = await page.evaluate(() => (window as QaWindow).__HEATLINE_QA__?.snapshot()?.position);
-    expect(respawn?.x).toBeCloseTo(96, 1);
-    expect(respawn?.z).toBeCloseTo(-24, 1);
+    expect(respawn?.x).toBeCloseTo(-84, 1);
+    expect(respawn?.z).toBeCloseTo(102, 1);
   });
 
-  test('mobile touch resolves a crouched takedown and exposes the full response', async ({ page, isMobile }) => {
+  test('mobile touch resolves a crouched takedown without spawning police response actors', async ({ page, isMobile }) => {
     test.skip(!isMobile, 'Mobile-only M4 course');
     test.setTimeout(45_000);
     await startNewGame(page, 1, 'Feminine Alex', '/?qa=1');
@@ -266,7 +262,9 @@ test.describe('M4 combat, stealth, NPC, and wanted acceptance', () => {
 
     await page.evaluate(() => (window as QaWindow).__HEATLINE_QA__?.setWantedLevel(5));
     await expect(world).toHaveAttribute('data-wanted-level', '5');
-    await expect(world).toHaveAttribute('data-police-roadblock', 'true');
-    await expect(world).toHaveAttribute('data-police-helicopter', 'true');
+    await expect(world).toHaveAttribute('data-police-roadblock', 'false');
+    await expect(world).toHaveAttribute('data-police-helicopter', 'false');
+    await expect(world).toHaveAttribute('data-police-roadblock-count', '0');
+    await expect(world).toHaveAttribute('data-police-helicopter-mode', 'inactive');
   });
 });

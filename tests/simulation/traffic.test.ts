@@ -225,12 +225,16 @@ describe('adaptive traffic pool', () => {
     };
     const neon = sample('neon-strand');
     const alta = sample('alta-vista');
+    const arroyo = sample('arroyo-heights');
     const breakwater = sample('breakwater');
     expect(neon.get('compact') ?? 0).toBeGreaterThan(neon.get('van') ?? 0);
     expect(alta.get('sedan') ?? 0).toBeGreaterThan(alta.get('pickup') ?? 0);
     expect((breakwater.get('van') ?? 0) + (breakwater.get('pickup') ?? 0)).toBeGreaterThan(
       (breakwater.get('sports') ?? 0) + (breakwater.get('compact') ?? 0),
     );
+    for (const district of [neon, alta, arroyo, breakwater]) {
+      expect(district.get('police-cruiser') ?? 0).toBe(0);
+    }
   });
 
   it('claims and recycles a pooled vehicle without shrinking the traffic budget', () => {

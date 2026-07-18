@@ -195,7 +195,14 @@ describe('progression, vehicle, and inventory content', () => {
       'motorcycle',
     ]);
     expect(new Set(VEHICLES.map((vehicle) => vehicle.topSpeedKph)).size).toBe(8);
-    expect(VEHICLES.find((vehicle) => vehicle.id === 'police-cruiser')?.registerable).toBe(false);
+    const policeCruiser = VEHICLES.find((vehicle) => vehicle.id === 'police-cruiser');
+    expect(policeCruiser?.registerable).toBe(false);
+    expect(policeCruiser?.trafficWeightByDistrict).toEqual({
+      'neon-strand': 0,
+      'alta-vista': 0,
+      'arroyo-heights': 0,
+      breakwater: 0,
+    });
   });
 
   it('defines three tiers for each of the five weapon classes', () => {

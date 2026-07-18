@@ -223,7 +223,9 @@ export const VEHICLES: readonly VehicleDefinition[] = [
     seats: 4,
     registerable: false,
     baseValue: 0,
-    trafficWeightByDistrict: { 'neon-strand': 2, 'alta-vista': 3, 'arroyo-heights': 2, breakwater: 2 },
+    // Retained for save/schema and authored-content compatibility, but removed
+    // from ambient selection together with all live police deployments.
+    trafficWeightByDistrict: { 'neon-strand': 0, 'alta-vista': 0, 'arroyo-heights': 0, breakwater: 0 },
   },
   {
     id: 'motorcycle',

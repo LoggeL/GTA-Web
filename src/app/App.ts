@@ -843,11 +843,8 @@ export class App {
       worldMount.dataset.wantedPhase = this.#currentSave?.wanted.phase ?? 'clear';
       worldMount.dataset.policeRoadblock = String(snapshot.policeResponse.roadblock);
       worldMount.dataset.policeHelicopter = String(snapshot.policeResponse.helicopter);
-      worldMount.dataset.policeRoadblockCount = String(
-        this.#wantedSnapshot?.police.roadblocks.length ?? 0,
-      );
-      worldMount.dataset.policeHelicopterMode =
-        this.#wantedSnapshot?.police.helicopter.mode ?? 'inactive';
+      worldMount.dataset.policeRoadblockCount = '0';
+      worldMount.dataset.policeHelicopterMode = 'inactive';
       worldMount.dataset.wantedSearchRadius = String(this.#wantedSnapshot?.searchRadius ?? 0);
       worldMount.dataset.activeWeaponId = snapshot.activeWeaponId;
       worldMount.dataset.activeWeaponClass = snapshot.activeWeaponClassId;
@@ -1034,13 +1031,12 @@ export class App {
     });
     this.#applyWantedSnapshot(snapshot);
     if (result.state.level === 0) {
-      this.#ui.toast('Witness report logged · no active police response', 'info');
+      this.#ui.toast('Witness report logged · heat stayed low', 'info');
     } else {
-      this.#audio.playSfx('siren');
       this.#ui.toast(
         result.state.phase === 'pursuit'
-          ? `Witness identified Alex · wanted level ${result.state.level}`
-          : `Police investigating · wanted level ${result.state.level}`,
+          ? `Witness identified Alex · heat level ${result.state.level}`
+          : `City alert · heat level ${result.state.level}`,
         'warning',
       );
     }
@@ -1074,7 +1070,7 @@ export class App {
     save.player.health = damage.state.health;
     save.player.armor = damage.state.armor?.points ?? 0;
     if (damage.defeated) {
-      void this.#resolvePlayerDefeat(save.wanted.level > 0 ? 'arrest' : 'death');
+      void this.#resolvePlayerDefeat('death');
       return;
     }
     if (event.amount >= 12) {
@@ -1097,9 +1093,9 @@ export class App {
     this.#applyWantedSnapshot(next);
     if (previous.state.level !== next.state.level || previous.state.phase !== next.state.phase) {
       if (next.state.level === 0) {
-        this.#ui.toast('Wanted level cleared', 'success');
+        this.#ui.toast('Heat cleared', 'success');
       } else if (next.state.phase === 'search') {
-        this.#ui.toast('Line of sight broken · leave the search area', 'info');
+        this.#ui.toast('Heat is cooling · leave the search area', 'info');
       }
     }
   }
@@ -1410,7 +1406,7 @@ export class App {
     );
     this.#policeVisibleSeconds = 6.5;
     this.#applyWantedSnapshot(wanted, true);
-    this.#ui.toast(`Authored pursuit active · wanted level ${level}`, 'warning');
+    this.#ui.toast(`Story heat active · heat level ${level}`, 'warning');
   }
 
   #showCurrentDialogue(): void {
