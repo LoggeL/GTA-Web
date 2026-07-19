@@ -38,6 +38,7 @@ import {
   computeCameraShakeOffset,
   normalizeCameraShakeIntensity,
   oppositeShoulder,
+  smoothFollowYaw,
 } from './camera';
 import { cameraSafeFraction, supportHeightAt } from './collision';
 import {
@@ -115,6 +116,9 @@ import type { CityVisualStreamingSnapshot } from './visuals';
 const DEFAULT_CAMERA_YAW = Math.PI * 0.14;
 const DEFAULT_CAMERA_PITCH = 0.42;
 const CAMERA_TARGET_HEIGHT = 1.48;
+const MOTORCYCLE_CAMERA_PITCH = 0.34;
+const MOTORCYCLE_CAMERA_DISTANCE = 6.6;
+const MOTORCYCLE_CAMERA_TARGET_HEIGHT = 1.58;
 const TRAFFIC_INTERACTION_PREFIX = 'traffic:';
 const LOW_QUALITY_VISUAL_INTERVAL_SECONDS = 1 / 30;
 const TRAFFIC_SIGNAL_VISUAL_INTERVAL_SECONDS = 0.1;
@@ -694,7 +698,21 @@ export class WorldView {
       : requireVehicleDriveProfile(record.classId).name;
     this.vehicleVisual.sync(this.vehicle, 0);
     this.activeVehiclePaint = this.vehicleVisual.setPaint(record.paint ?? this.activeVehiclePaint);
+    this.syncVehicleOccupantVisual();
     this.emitSnapshot(true);
+  }
+
+  /**
+   * Keeps the single player avatar attached to an occupied motorcycle while
+   * preserving the hidden-cabin presentation used by every other vehicle.
+   */
+  private syncVehicleOccupantVisual(): void {
+    if (!this.vehicle.occupied) return;
+    const showMotorcycleRider = this.vehicle.vehicleClassId === 'motorcycle';
+    this.avatarVisual.root.visible = showMotorcycleRider;
+    if (showMotorcycleRider) {
+      this.avatarVisual.syncMotorcycleRider(this.vehicle);
+    }
   }
 
   public get activeCollisionCount(): number {
@@ -744,6 +762,7 @@ export class WorldView {
         heading: this.vehicle.heading,
       };
       this.vehicleVisual.sync(this.vehicle, 0);
+      this.syncVehicleOccupantVisual();
     } else {
       this.applyPlayerTransform({
         position: { x: position.x, y: 0, z: position.z },
@@ -763,6 +782,7 @@ export class WorldView {
     this.vehicle.steering = 0;
     this.vehicle.lastImpact = null;
     this.vehicleVisual.sync(this.vehicle, 0);
+    this.syncVehicleOccupantVisual();
     this.emitSnapshot(true);
     return this.getSnapshot();
   }
@@ -779,6 +799,10 @@ export class WorldView {
     );
     actor.heading = heading;
     this.cameraYaw = heading;
+    if (this.vehicle.occupied) {
+      this.vehicleVisual.sync(this.vehicle, 0);
+      this.syncVehicleOccupantVisual();
+    }
     this.updateCamera(1);
     this.emitSnapshot(true);
     return this.getSnapshot();
@@ -864,7 +888,7 @@ export class WorldView {
 
     this.vehicle.occupied = true;
     this.vehicle.speed = 0;
-    this.avatarVisual.root.visible = false;
+    this.syncVehicleOccupantVisual();
     this.cameraYaw = this.vehicle.heading;
     this.emitSnapshot(true);
     return true;
@@ -1082,11 +1106,19 @@ export class WorldView {
     if (input.shoulderSwap) {
       this.shoulderSide = oppositeShoulder(this.shoulderSide);
     }
-    if (input.vehicleCameraToggle && this.vehicle.occupied) {
+    const fixedMotorcycleCamera = this.vehicle.occupied
+      && this.vehicle.vehicleClassId === 'motorcycle';
+    if (input.vehicleCameraToggle && this.vehicle.occupied && !fixedMotorcycleCamera) {
       this.vehicleCloseCamera = !this.vehicleCloseCamera;
     }
-    this.cameraYaw += input.cameraYawDelta;
-    this.cameraPitch = MathUtils.clamp(this.cameraPitch + input.cameraPitchDelta, 0.12, 1.05);
+    if (!fixedMotorcycleCamera) {
+      this.cameraYaw += input.cameraYawDelta;
+      this.cameraPitch = MathUtils.clamp(
+        this.cameraPitch + input.cameraPitchDelta,
+        0.12,
+        1.05,
+      );
+    }
 
     if (input.interact) {
       this.toggleVehicle();
@@ -1162,6 +1194,20 @@ export class WorldView {
     if (this.vehicle.occupied) {
       this.updateVehicleRecovery(dt, collisions);
       this.vehicleVisual.sync(this.vehicle, dt);
+      if (this.vehicle.vehicleClassId === 'motorcycle') {
+        this.cameraYaw = smoothFollowYaw(
+          this.cameraYaw,
+          this.vehicle.heading,
+          dt,
+        );
+        this.cameraPitch = MathUtils.damp(
+          this.cameraPitch,
+          MOTORCYCLE_CAMERA_PITCH,
+          8.5,
+          dt,
+        );
+      }
+      this.syncVehicleOccupantVisual();
     }
     this.updatePoliceResponseVisual();
 
@@ -1411,6 +1457,7 @@ export class WorldView {
       heading: result.transform.heading,
     };
     this.vehicleVisual.sync(this.vehicle, 0);
+    this.syncVehicleOccupantVisual();
     return true;
   }
 
@@ -1777,14 +1824,21 @@ export class WorldView {
 
   private updateCamera(deltaSeconds: number): void {
     const inVehicle = this.vehicle.occupied;
+    const onMotorcycle = inVehicle && this.vehicle.vehicleClassId === 'motorcycle';
     const source = inVehicle ? this.vehicle.position : this.player.position;
     const aim = !inVehicle && this.currentAim;
-    const targetHeight = inVehicle ? 1.25 : CAMERA_TARGET_HEIGHT * (this.player.crouching ? 0.72 : 1);
+    const targetHeight = onMotorcycle
+      ? MOTORCYCLE_CAMERA_TARGET_HEIGHT
+      : inVehicle
+        ? 1.25
+        : CAMERA_TARGET_HEIGHT * (this.player.crouching ? 0.72 : 1);
     this.cameraTarget.set(source.x, source.y + targetHeight, source.z);
 
     const speedDistance = this.reducedMotion ? 0 : Math.min(2.4, Math.abs(this.vehicle.speed) * 0.075);
-    const distance = inVehicle
-      ? (this.vehicleCloseCamera ? 5.25 : 8.4) + speedDistance
+    const distance = onMotorcycle
+      ? MOTORCYCLE_CAMERA_DISTANCE + speedDistance * 0.55
+      : inVehicle
+        ? (this.vehicleCloseCamera ? 5.25 : 8.4) + speedDistance
       : aim ? 4.15 : 6.75;
     const placement = computeCameraPlacement({
       target: this.cameraTarget,

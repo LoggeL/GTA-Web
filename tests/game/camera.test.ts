@@ -5,6 +5,7 @@ import {
   computeCameraShakeOffset,
   normalizeCameraShakeIntensity,
   oppositeShoulder,
+  smoothFollowYaw,
 } from '../../src/game/camera';
 import type { CollisionRect } from '../../src/game/city';
 
@@ -108,5 +109,33 @@ describe('camera shake presentation', () => {
       speedMetersPerSecond: 0,
       impactStrength: 0,
     })).toEqual({ x: 0, y: 0, z: 0 });
+  });
+});
+
+describe('fixed follow-camera yaw', () => {
+  it('converges smoothly without overshooting the target heading', () => {
+    const first = smoothFollowYaw(0, 1, 0.1);
+    const second = smoothFollowYaw(first, 1, 0.1);
+
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThan(1);
+    expect(second).toBeGreaterThan(first);
+    expect(second).toBeLessThan(1);
+  });
+
+  it('takes the short arc when the heading crosses the ±pi wrap point', () => {
+    const current = Math.PI - 0.05;
+    const target = -Math.PI + 0.05;
+    const next = smoothFollowYaw(current, target, 0.1);
+
+    expect(next).toBeGreaterThan(current);
+    expect(next - current).toBeLessThan(0.1);
+  });
+
+  it('holds at zero elapsed time and validates its tuning inputs', () => {
+    expect(smoothFollowYaw(0.8, -1.4, 0)).toBe(0.8);
+    expect(smoothFollowYaw(0.8, -1.4, -1)).toBe(0.8);
+    expect(() => smoothFollowYaw(Number.NaN, 0, 0.1)).toThrow(TypeError);
+    expect(() => smoothFollowYaw(0, 0, 0.1, 0)).toThrow(RangeError);
   });
 });

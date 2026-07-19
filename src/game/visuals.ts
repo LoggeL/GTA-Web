@@ -2496,6 +2496,10 @@ export function createCityVisuals(
   };
 }
 
+const MOTORCYCLE_RIDER_SCALE = 0.9;
+const MOTORCYCLE_RIDER_ROOT_Y = -0.08;
+const MOTORCYCLE_RIDER_ROOT_Z = 0.25;
+
 export class AvatarVisual {
   public readonly root = new Group();
 
@@ -2503,6 +2507,7 @@ export class AvatarVisual {
   private readonly rightArm: Mesh;
   private readonly leftLeg: Mesh;
   private readonly rightLeg: Mesh;
+  private readonly riderAnchor = new Object3D();
   private readonly geometries: BufferGeometry[] = [];
   private readonly materials: MeshStandardMaterial[] = [];
 
@@ -2632,15 +2637,51 @@ export class AvatarVisual {
 
   public sync(state: Readonly<PlayerSimulationState>): void {
     this.root.position.set(state.position.x, state.position.y, state.position.z);
-    this.root.rotation.y = state.heading;
-    this.root.scale.y = state.crouching ? 0.72 : 1;
+    this.root.rotation.set(0, state.heading, 0);
+    this.root.scale.set(1, state.crouching ? 0.72 : 1, 1);
+    this.root.userData.pose = 'on-foot';
     const horizontalSpeed = Math.hypot(state.velocity.x, state.velocity.z);
     const walkAmount = Math.min(1, horizontalSpeed / 4.8);
     const swing = Math.sin(state.stride * 2.25) * 0.72 * walkAmount;
-    this.leftArm.rotation.x = swing;
-    this.rightArm.rotation.x = -swing;
-    this.leftLeg.rotation.x = -swing;
-    this.rightLeg.rotation.x = swing;
+    this.leftArm.position.set(-0.53, 1.4, 0);
+    this.rightArm.position.set(0.53, 1.4, 0);
+    this.leftLeg.position.set(-0.23, 0.52, 0);
+    this.rightLeg.position.set(0.23, 0.52, 0);
+    this.leftArm.rotation.set(swing, 0, 0);
+    this.rightArm.rotation.set(-swing, 0, 0);
+    this.leftLeg.rotation.set(-swing, 0, 0);
+    this.rightLeg.rotation.set(swing, 0, 0);
+  }
+
+  /**
+   * Reuses the complete Alex visual as a motorcycle rider. The anchor follows
+   * the vehicle's authored transform while the local pose reaches toward the
+   * handlebar and foot pegs.
+   */
+  public syncMotorcycleRider(state: Readonly<VehicleSimulationState>): void {
+    this.riderAnchor.position.set(state.position.x, state.position.y, state.position.z);
+    this.riderAnchor.rotation.set(state.pitch ?? 0, state.heading, state.roll ?? 0);
+    this.riderAnchor.updateMatrixWorld(true);
+    this.root.position
+      .set(0, MOTORCYCLE_RIDER_ROOT_Y, MOTORCYCLE_RIDER_ROOT_Z)
+      .applyMatrix4(this.riderAnchor.matrixWorld);
+    const speedLean = Math.min(0.12, Math.abs(state.speed) * 0.006);
+    this.root.rotation.set(
+      (state.pitch ?? 0) - 0.18 - speedLean,
+      state.heading,
+      state.roll ?? 0,
+    );
+    this.root.scale.setScalar(MOTORCYCLE_RIDER_SCALE);
+    this.root.userData.pose = 'motorcycle-rider';
+
+    this.leftArm.position.set(-0.45, 1.4, -0.18);
+    this.rightArm.position.set(0.45, 1.4, -0.18);
+    this.leftLeg.position.set(-0.25, 0.52, 0.1);
+    this.rightLeg.position.set(0.25, 0.52, 0.1);
+    this.leftArm.rotation.set(1.18, 0, 0.18);
+    this.rightArm.rotation.set(1.18, 0, -0.18);
+    this.leftLeg.rotation.set(-0.94, 0, -0.08);
+    this.rightLeg.rotation.set(-0.94, 0, 0.08);
   }
 
   public dispose(): void {

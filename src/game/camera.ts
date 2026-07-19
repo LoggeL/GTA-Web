@@ -75,6 +75,36 @@ export function oppositeShoulder(side: ShoulderSide): ShoulderSide {
   return side === 'right' ? 'left' : 'right';
 }
 
+/**
+ * Follows a heading by the shortest angular arc without snapping at ±π.
+ * This keeps fixed chase cameras stable while their vehicle turns through the
+ * wrap point.
+ */
+export function smoothFollowYaw(
+  currentYaw: number,
+  targetYaw: number,
+  deltaSeconds: number,
+  responsePerSecond = 8.5,
+): number {
+  if (
+    !Number.isFinite(currentYaw)
+    || !Number.isFinite(targetYaw)
+    || !Number.isFinite(deltaSeconds)
+    || !Number.isFinite(responsePerSecond)
+  ) {
+    throw new TypeError('follow-yaw inputs must be finite');
+  }
+  if (responsePerSecond <= 0) {
+    throw new RangeError('follow-yaw response must be positive');
+  }
+  const dt = Math.max(0, deltaSeconds);
+  const shortestDelta = Math.atan2(
+    Math.sin(targetYaw - currentYaw),
+    Math.cos(targetYaw - currentYaw),
+  );
+  return currentYaw + shortestDelta * (1 - Math.exp(-responsePerSecond * dt));
+}
+
 export function computeCameraPlacement(options: Readonly<CameraPlacementOptions>): CameraPlacement {
   const horizontalDistance = Math.cos(options.pitch) * options.distance;
   const rightX = Math.cos(options.yaw);

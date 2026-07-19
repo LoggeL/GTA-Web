@@ -13,7 +13,8 @@ import type {
 } from '../../src/game/city';
 import { circleIntersectsBuildings } from '../../src/game/collision';
 import { AUTHORED_INTERIORS } from '../../src/game/InteriorRuntime';
-import { PLAYER_RADIUS } from '../../src/game/player';
+import { PLAYER_RADIUS, createPlayerState } from '../../src/game/player';
+import { createVehicleState } from '../../src/game/vehicle';
 import { AvatarVisual, createCityVisuals } from '../../src/game/visuals';
 import { cellIdAt } from '../../src/navigation/cells';
 import { PedestrianSystem } from '../../src/simulation/pedestrians';
@@ -735,6 +736,49 @@ describe('district city enrichment', () => {
       expect(detail, `missing ${name}`).toBeDefined();
       expect(detail?.position.z, `${name} must face local -Z`).toBeLessThan(0);
     }
+
+    avatar.dispose();
+  });
+
+  it('reuses Alex as an attached motorcycle rider and resets the pose on foot', () => {
+    const avatar = new AvatarVisual();
+    const motorcycle = createVehicleState(
+      { x: 12, y: 0.52, z: -7 },
+      'motorcycle',
+    );
+    motorcycle.heading = 0.72;
+    motorcycle.pitch = 0.08;
+    motorcycle.roll = -0.12;
+    motorcycle.speed = 14;
+
+    avatar.syncMotorcycleRider(motorcycle);
+
+    const leftArm = avatar.root.getObjectByName('avatar-part:hand-left')?.parent;
+    const rightArm = avatar.root.getObjectByName('avatar-part:hand-right')?.parent;
+    const leftLeg = avatar.root.getObjectByName('avatar-part:shoe-left')?.parent;
+    expect(avatar.root.userData.pose).toBe('motorcycle-rider');
+    expect(avatar.root.scale.toArray()).toEqual([0.9, 0.9, 0.9]);
+    expect(avatar.root.rotation.y).toBeCloseTo(motorcycle.heading);
+    expect(avatar.root.rotation.z).toBeCloseTo(motorcycle.roll);
+    expect(Math.hypot(
+      avatar.root.position.x - motorcycle.position.x,
+      avatar.root.position.y - motorcycle.position.y,
+      avatar.root.position.z - motorcycle.position.z,
+    )).toBeLessThan(0.4);
+    expect(leftArm?.rotation.x).toBeCloseTo(1.18);
+    expect(rightArm?.rotation.x).toBeCloseTo(1.18);
+    expect(leftLeg?.rotation.x).toBeCloseTo(-0.94);
+
+    const onFoot = createPlayerState({ x: 2, y: 0, z: 3 });
+    avatar.sync(onFoot);
+
+    expect(avatar.root.userData.pose).toBe('on-foot');
+    expect(avatar.root.position.toArray()).toEqual([2, 0, 3]);
+    expect(avatar.root.rotation.x).toBe(0);
+    expect(avatar.root.rotation.z).toBe(0);
+    expect(avatar.root.scale.toArray()).toEqual([1, 1, 1]);
+    expect(leftArm?.rotation.z).toBe(0);
+    expect(leftLeg?.rotation.z).toBe(0);
 
     avatar.dispose();
   });
