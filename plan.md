@@ -1,8 +1,8 @@
 # HEATLINE: SOLARA — Ground-Truth Implementation Plan
 
-Last updated: 2026-07-19 02:07 CEST
+Last updated: 2026-07-19 02:12 CEST
 Plan status: Active
-Current focus: M14 — occupied motorcycle rider and fixed follow camera
+Current focus: M14 complete — awaiting the next playtest-feedback milestone
 Canonical project path: `/Users/logge/Documents/GTA-Web`  
 Staging path while sandboxed: `/Users/logge/Documents/Codex/2026-07-16/grilling-users-logge-codex-skills-grilling/GTA-Web`
 
@@ -359,11 +359,11 @@ Acceptance: a fast player-car impact must visibly and comedically “yeet” the
 
 Acceptance: no police officer, response cruiser, tactical van, roadblock, spike strip, helicopter, spotlight, or ambient patrol cruiser may render, update, collide, or block traversal at any wanted level. The existing wanted/crime state may continue as compatibility data for saves and authored objectives, but it must not instantiate police world actors. The disabled presentation module must return one stable all-false snapshot and an empty collision list through its existing interface, allocate no response geometry/materials, and stay inert across exterior/interior transitions and levels 0–5. Ordinary civilian traffic density and vehicle pools remain unchanged.
 
-### M14 — Motorcycle rider and fixed follow camera — `IN PROGRESS`
+### M14 — Motorcycle rider and fixed follow camera — `COMPLETE`
 
 - [x] Reuse Alex's existing avatar visual as the occupied-motorcycle rider, with a seated forward-facing pose whose hands, legs, position, heading, pitch, and roll follow the live motorcycle every frame.
 - [x] Keep the occupied-motorcycle camera automatically behind the rider/vehicle, ignore free-orbit deltas in that mode, and use wrap-safe yaw plus existing positional smoothing and collision avoidance.
-- [ ] Preserve on-foot pose reset and all non-motorcycle vehicle camera/visibility behavior, pass focused visual/camera/browser checks, and publish a short muted preview.
+- [x] Preserve on-foot pose reset and all non-motorcycle vehicle camera/visibility behavior, pass focused visual/camera/browser checks, and publish a short muted preview.
 
 Acceptance: entering an occupied motorcycle must show exactly one Alex avatar seated on the saddle, facing the motorcycle's authored local −Z front with both arms reaching toward the handlebar and both legs posed toward the pegs. The rider must remain attached through acceleration, steering, pitch, roll, collision response, recovery, teleport, active-vehicle replacement, and Low/High rendering; exiting restores the existing on-foot pose and all enclosed vehicles continue hiding Alex. While the motorcycle is occupied, mouse/touch orbit deltas may not pull the camera away: camera yaw must converge smoothly to vehicle heading by the shortest wrap-safe arc, camera position must retain the existing damped obstacle-safe chase behavior, and the fixed mode must not alter on-foot or other vehicle cameras.
 
@@ -482,6 +482,7 @@ Acceptance: entering an occupied motorcycle must show exactly one Alex avatar se
 | 2026-07-19 01:34 | M13 Preview 1 / M13 complete | Published and live-verified the cop-free world adapter and ambient-traffic selection. The exact source commit and `m13-preview-1` tag passed the Pages build, Chromium, Firefox, WebKit, artifact upload, and deployment jobs. All six public shell files are byte-identical to the reviewed local build. One deliberately short live Chromium Heat-5 check confirmed the save-compatible heat ladder without creating a police actor, patrol vehicle, barricade, helicopter, spotlight, or police collision. | Source `b8e60104fed1e3b37434d32f3feac6294228dd59`; tag `m13-preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29665383618); [live preview](https://loggel.github.io/GTA-Web/?preview=m13-preview-1). Live smoke 1/1 in 2.3 s with visible Master 0 and output hard-muted before load. SHA-256: HTML `754fb341ddbda545c17a881446c6f19e64dbf1e1b9396fb3dcbd2fc8f6a33ffd`; app JS `24fac6d991bf0208fb9b5cd29c03dcf875d396955129b6a3ec51ae5362915113`; Three.js `7da18655f7a8ec969b3efd706b2bae1eb7e139f42b95505b07c005c680b351cb`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No performance matrix, long soak, hardware test, music playback, or reboot. |
 | 2026-07-19 01:57 | M14 motorcycle-rider kickoff | Opened a focused motorcycle presentation fix from direct player feedback. The existing Alex visual remains the single character module: WorldView switches its pose/visibility at the vehicle seam instead of allocating a duplicate rider. The existing camera module gains one pure wrap-safe yaw follower; WorldView selects it only while the occupied class is `motorcycle`, leaving all other camera modes untouched. | M14 marked `IN PROGRESS`; `plan.md` remains the sole tracker. Scope covers seated rider transform/pose, one-avatar invariant, per-frame vehicle attachment, entry/exit and class swaps, steering/pitch/roll, fixed-behind yaw with light smoothing, ignored orbit input, existing camera collision/position damping, Low/High parity, Master 0, concise testing, no hardware tests, no long soak, and no reboot. |
 | 2026-07-19 02:07 | M14 implementation and local acceptance | Reused the one existing Alex visual as the motorcycle occupant, added an authored handlebar/peg pose beneath a vehicle transform anchor, and synchronized it across entry, every occupied frame, teleport, recovery, orientation, condition restore, and active-class replacement. Enclosed vehicles still hide Alex and the existing on-foot sync fully resets the pose. Motorcycle input now suppresses orbit and camera-view toggles; one pure exponential shortest-arc yaw follower and a lightly damped authored pitch feed the existing obstacle-safe chase placement. | Exact-source `npm run check`: 94/94 Vitest files, 656/656 tests, 5/5 release checks, strict TypeScript, full ESLint, production build, source/dist asset graph, and 1.61 MiB / 0.69 MiB budget green. One focused real local Chromium acceptance passed in 4.1 s with output hard-muted before load and Master visibly set to 0: the screenshot confirms Alex on the saddle, a 240 px × 100 px orbit drag could not detach the camera, and follow yaw remained within 0.30 rad while steering. No performance matrix, long soak, hardware test, music playback, or reboot. Canonical sync, commit, Pages deployment, byte verification, and one short live smoke remain open. |
+| 2026-07-19 02:12 | M14 Preview 1 / M14 complete | Published and live-verified the occupied motorcycle rider and fixed smooth chase camera. The exact source commit and `m14-preview-1` tag passed the Pages build, Chromium, Firefox, WebKit, artifact upload, and deployment jobs. All six public shell files are byte-identical to the reviewed local build. One deliberately short live Chromium run selected a motorcycle, rendered the occupied vehicle mode, and proved that a 240 px × 100 px orbit drag could not detach camera yaw from the bike heading. | Source `2351e70c4fc1536cd7757caf8dbebef6023f2b26`; tag `m14-preview-1`; [successful workflow](https://github.com/LoggeL/GTA-Web/actions/runs/29666466853); [live preview](https://loggel.github.io/GTA-Web/?preview=m14-preview-1). Live smoke 1/1 in 3.4 s with visible Master 0 and output hard-muted before load. SHA-256: HTML `d6f531a0f0000e2c96a00b8f0bf758cf960bffdce4f0822f34f4472d9c2d8ab3`; app JS `7222eb0313875923abd90b499fe132c01fd29c5269e78e0c3cacfee661736db7`; Three.js `7da18655f7a8ec969b3efd706b2bae1eb7e139f42b95505b07c005c680b351cb`; CSS `d6388f2cada2daf0476bf55ad5ad30b1ca11e1273cbeb190da19c0cea6aaac25`; splash `183224d775ea65250899d85a9bca63f1e92296bdc3d93d3865429a98775cdad3`; social image `7f0fba175d0c9c5ad49a049d4812a20bbe6a077488b7d7bc75bd33091c5e6faa`. No performance matrix, long soak, hardware test, music playback, or reboot. |
 
 ## Release record
 
@@ -489,14 +490,14 @@ Acceptance: entering an occupied motorcycle must show exactly one Alex avatar se
 - GitHub Pages URL: `https://loggel.github.io/GTA-Web/`
 - Current stable release: Final v1.0.0 (`v1.0.0`)
 - Stable release commit: `32a3aa9b619c52f4a7c15db4e1ec9225de490ce9`
-- Latest playable preview: M13 cop-removal Preview 1 (`m13-preview-1`)
-- Preview source commit: `b8e60104fed1e3b37434d32f3feac6294228dd59`
-- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m13-preview-1`
+- Latest playable preview: M14 motorcycle-rider Preview 1 (`m14-preview-1`)
+- Preview source commit: `2351e70c4fc1536cd7757caf8dbebef6023f2b26`
+- Preview URL: `https://loggel.github.io/GTA-Web/?preview=m14-preview-1`
 - Physical Android evidence runner commit: `4baaca6a667a146c02f82f07789ceae84d2bbd7b`
 - Stable deployment workflow: [GitHub Pages run 29559022071 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29559022071)
-- Latest preview workflow: [GitHub Pages run 29665383618 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29665383618)
+- Latest preview workflow: [GitHub Pages run 29666466853 — success](https://github.com/LoggeL/GTA-Web/actions/runs/29666466853)
 - Initial compressed shell: 0.26 MiB at Preview 0 gate
-- Current compressed shell: 0.69 MiB at the M13 preview gate
-- Published artifact size: 1.60 MiB at the M13 preview gate
-- Latest `npm run check`: 94/94 Vitest files, 652/652 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
-- Latest browser smoke test: M13 Pages passed Chromium, Firefox, and WebKit release jobs before deployment. The byte-verified live Preview 1 then passed one deliberately short Chromium Heat-5 start in 2.3 seconds with hard-muted output and visible Master 0; all police response fields remained false/zero/inactive, ambient traffic contained no police cruiser, the abstract heat HUD read `EXPOSED`, and no uncaught page, console, or asset-request failure occurred. No additional performance matrix, long soak, hardware test, music playback, or reboot was run.
+- Current compressed shell: 0.69 MiB at the M14 preview gate
+- Published artifact size: 1.61 MiB at the M14 preview gate
+- Latest `npm run check`: 94/94 Vitest files, 656/656 tests, 5/5 release tests, typecheck, full lint, production build, source/dist asset graph, and bundle budget passed
+- Latest browser smoke test: M14 Pages passed Chromium, Firefox, and WebKit release jobs before deployment. The byte-verified live Preview 1 then passed one deliberately short Chromium occupied-motorcycle start in 3.4 seconds with hard-muted output and visible Master 0; the motorcycle class was active and a large orbit drag could not detach camera yaw from vehicle heading. No additional performance matrix, long soak, hardware test, music playback, or reboot was run.
